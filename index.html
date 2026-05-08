@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Firestore Chat</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero-panel">
+        <p class="eyebrow">Realtime Firestore Demo</p>
+        <h1>Chat with shared rooms and live updates.</h1>
+        <p class="hero-copy">
+          Create a room, invite people with the room code, and chat instantly
+          through Firebase Firestore.
+        </p>
+
+        <form id="join-form" class="card form-stack">
+          <label class="field">
+            <span>Your name</span>
+            <input
+              id="display-name"
+              name="displayName"
+              type="text"
+              maxlength="30"
+              placeholder="Ava"
+              required
+            />
+          </label>
+
+          <label class="field">
+            <span>Room code</span>
+            <div class="room-row">
+              <input
+                id="room-id"
+                name="roomId"
+                type="text"
+                maxlength="24"
+                placeholder="team-standup"
+              />
+              <button id="create-room" class="secondary" type="button">
+                New room
+              </button>
+            </div>
+          </label>
+
+          <button class="primary" type="submit">Enter chat</button>
+        </form>
+      </section>
+
+      <section class="chat-panel">
+        <div class="chat-header card">
+          <div>
+            <p class="label">Current room</p>
+            <h2 id="active-room">Not connected</h2>
+          </div>
+          <button id="leave-room" class="ghost" type="button" disabled>
+            Leave
+          </button>
+        </div>
+
+        <div id="status-banner" class="status-banner">
+          Add your Firebase config to start chatting.
+        </div>
+
+        <section id="messages" class="messages card" aria-live="polite"></section>
+
+        <form id="message-form" class="composer card">
+          <input
+            id="message-input"
+            type="text"
+            maxlength="500"
+            placeholder="Write a message..."
+            disabled
+            required
+          />
+          <button id="send-button" class="primary" type="submit" disabled>
+            Send
+          </button>
+        </form>
+      </section>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

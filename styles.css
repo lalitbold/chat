@@ -1,0 +1,260 @@
+:root {
+  color-scheme: light;
+  --bg: #f2efe7;
+  --panel: #fffaf1;
+  --panel-strong: #ffffff;
+  --ink: #16221f;
+  --muted: #5a6a65;
+  --line: #d6d0c2;
+  --accent: #0f766e;
+  --accent-strong: #115e59;
+  --accent-soft: #d7f3ee;
+  --danger: #9f1239;
+  --shadow: 0 24px 60px rgba(22, 34, 31, 0.12);
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(15, 118, 110, 0.12), transparent 30%),
+    linear-gradient(135deg, #f8f5ec, #ece4d4 60%, #f5efe0);
+  color: var(--ink);
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.app-shell {
+  width: min(1160px, calc(100% - 32px));
+  margin: 32px auto;
+  display: grid;
+  grid-template-columns: 380px 1fr;
+  gap: 24px;
+}
+
+.hero-panel,
+.chat-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.eyebrow,
+.label {
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+h1,
+h2,
+.hero-copy {
+  margin: 0;
+}
+
+h1 {
+  font-size: clamp(2.4rem, 6vw, 4.5rem);
+  line-height: 0.95;
+}
+
+h2 {
+  font-size: 1.5rem;
+}
+
+.hero-copy {
+  color: var(--muted);
+  line-height: 1.6;
+  max-width: 28rem;
+}
+
+.card {
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(214, 208, 194, 0.8);
+  backdrop-filter: blur(10px);
+  border-radius: 24px;
+  box-shadow: var(--shadow);
+}
+
+.form-stack,
+.composer {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.field span {
+  font-weight: 600;
+}
+
+input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px 16px;
+  background: var(--panel-strong);
+  color: var(--ink);
+}
+
+input:focus {
+  outline: 2px solid rgba(15, 118, 110, 0.25);
+  border-color: var(--accent);
+}
+
+.room-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+}
+
+button {
+  border: none;
+  border-radius: 14px;
+  padding: 14px 18px;
+  cursor: pointer;
+  transition: transform 150ms ease, background 150ms ease, opacity 150ms ease;
+}
+
+button:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.primary {
+  background: var(--accent);
+  color: #fff;
+}
+
+.primary:hover:not(:disabled) {
+  background: var(--accent-strong);
+}
+
+.secondary {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.ghost {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--ink);
+}
+
+.chat-header {
+  padding: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.status-banner {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(255, 250, 241, 0.85);
+  border: 1px dashed var(--line);
+  color: var(--muted);
+}
+
+.status-banner.error {
+  color: var(--danger);
+  border-color: rgba(159, 18, 57, 0.3);
+  background: rgba(255, 228, 236, 0.75);
+}
+
+.status-banner.success {
+  color: var(--accent-strong);
+  border-color: rgba(15, 118, 110, 0.3);
+  background: rgba(215, 243, 238, 0.8);
+}
+
+.messages {
+  min-height: 520px;
+  max-height: 520px;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.empty-state {
+  margin: auto;
+  text-align: center;
+  color: var(--muted);
+  max-width: 20rem;
+}
+
+.message {
+  max-width: min(80%, 32rem);
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: #f8f5ec;
+  border: 1px solid rgba(214, 208, 194, 0.8);
+  animation: rise-in 180ms ease-out;
+}
+
+.message.own {
+  align-self: flex-end;
+  background: var(--accent-soft);
+  border-color: rgba(15, 118, 110, 0.16);
+}
+
+.message-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.message-text {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 900px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .messages {
+    min-height: 420px;
+    max-height: 420px;
+  }
+}
