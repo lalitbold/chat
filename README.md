@@ -71,6 +71,29 @@ Then open:
 http://localhost:5500
 ```
 
+## Run without a local server
+
+The easiest way to use this app without running `python -m http.server 5500` is to deploy it to Firebase Hosting.
+
+Files already added for this:
+
+- `firebase.json`
+- `.firebaserc.example`
+
+One-time setup:
+
+1. Install the Firebase CLI.
+2. Copy `.firebaserc.example` to `.firebaserc`.
+3. Replace `your-firebase-project-id` with your real Firebase project ID.
+4. From `C:\work\poc\chat`, run:
+
+```powershell
+firebase login
+firebase deploy
+```
+
+After deployment, open the Firebase Hosting URL, and install the app from the browser if you want it as a desktop app. At that point, you no longer need the Python server.
+
 ## Important note
 
 The included `firestore.rules` file is intentionally open for demo purposes. Before using this in a real app, add Firebase Authentication and lock the rules down to authenticated users and room membership checks.

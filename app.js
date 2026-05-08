@@ -81,6 +81,7 @@ async function boot() {
 function wireEvents() {
   window.addEventListener("focus", handleAttentionChange);
   document.addEventListener("visibilitychange", handleAttentionChange);
+  messageInput.addEventListener("keydown", handleMessageInputKeydown);
 
   createRoomButton.addEventListener("click", () => {
     roomIdInput.value = generateRoomId();
@@ -359,6 +360,18 @@ function setStatus(message, tone = "") {
 function setComposerState(enabled) {
   messageInput.disabled = !enabled;
   sendButton.disabled = !enabled;
+}
+
+function handleMessageInputKeydown(event) {
+  if (event.key !== "Enter" || event.shiftKey) {
+    return;
+  }
+
+  event.preventDefault();
+
+  if (!messageInput.disabled) {
+    messageForm.requestSubmit();
+  }
 }
 
 function handleLocalCommand(text) {

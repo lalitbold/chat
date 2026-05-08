@@ -28,7 +28,8 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -103,7 +104,8 @@ h2 {
   font-weight: 600;
 }
 
-input {
+input,
+textarea {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 14px;
@@ -112,9 +114,17 @@ input {
   color: var(--ink);
 }
 
-input:focus {
+input:focus,
+textarea:focus {
   outline: 2px solid rgba(15, 118, 110, 0.25);
   border-color: var(--accent);
+}
+
+textarea {
+  min-height: 72px;
+  max-height: 180px;
+  resize: vertical;
+  line-height: 1.45;
 }
 
 .room-row {
@@ -326,6 +336,7 @@ body.stealth-active .composer .primary {
 
 body.stealth-active #message-input {
   border-radius: 12px;
+  min-height: 56px;
 }
 
 @keyframes rise-in {

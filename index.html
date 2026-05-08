@@ -90,9 +90,8 @@
         <section id="messages" class="messages card" aria-live="polite"></section>
 
         <form id="message-form" class="composer card" autocomplete="off">
-          <input
+          <textarea
             id="message-input"
-            type="text"
             maxlength="500"
             placeholder="Write a message..."
             autocomplete="off"
@@ -101,7 +100,8 @@
             spellcheck="false"
             disabled
             required
-          />
+            rows="2"
+          ></textarea>
           <button id="send-button" class="primary" type="submit" disabled>
             Send
           </button>
