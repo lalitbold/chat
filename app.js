@@ -16,6 +16,7 @@ import { firebaseConfig } from "./firebase-config.js";
 const joinForm = document.getElementById("join-form");
 const displayNameInput = document.getElementById("display-name");
 const roomIdInput = document.getElementById("room-id");
+const roomPasscodeInput = document.getElementById("room-passcode");
 const createRoomButton = document.getElementById("create-room");
 const leaveRoomButton = document.getElementById("leave-room");
 const activeRoom = document.getElementById("active-room");
@@ -37,7 +38,9 @@ const state = {
   db: null,
   profile: null,
   roomId: null,
+  roomPasscode: "",
   messages: [],
+  hasHydratedRoom: false,
   visibleMessageLimit: null,
   seenMessageIds: new Set(),
   unreadMessageIds: [],
@@ -94,6 +97,7 @@ function wireEvents() {
 
     const displayName = displayNameInput.value.trim();
     const roomId = sanitizeRoomId(roomIdInput.value);
+    const roomPasscode = normalizePasscode(roomPasscodeInput.value);
 
     if (!displayName) {
       setStatus("Enter a name before joining.", "error");
@@ -111,14 +115,22 @@ function wireEvents() {
     };
 
     try {
-      await ensureRoom(roomId);
-      await connectToRoom(roomId);
+      await ensureRoomAccess(roomId, roomPasscode);
+      await connectToRoom(roomId, roomPasscode);
+      await ensureNotificationPermission();
       persistSession();
       displayNameInput.value = state.profile.name;
       roomIdInput.value = state.roomId;
+      roomPasscodeInput.value = state.roomPasscode;
     } catch (error) {
       console.error(error);
-      setStatus("We couldn't join that room. Check Firestore rules and try again.", "error");
+      if (error?.message === "ROOM_PASSCODE_REQUIRED") {
+        setStatus("This room needs a passcode.", "error");
+      } else if (error?.message === "ROOM_PASSCODE_INVALID") {
+        setStatus("That passcode is incorrect for this room.", "error");
+      } else {
+        setStatus("We couldn't join that room. Check Firestore rules and try again.", "error");
+      }
     }
   });
 
@@ -146,6 +158,10 @@ function wireEvents() {
         createdAt: serverTimestamp(),
       });
 
+      if (state.isPrivacyEnabled && state.isPrivacyPreviewVisible) {
+        hidePrivacyPreview();
+      }
+
       messageInput.value = "";
       messageInput.focus();
     } catch (error) {
@@ -159,7 +175,7 @@ function wireEvents() {
   leaveRoomButton.addEventListener("click", disconnectFromRoom);
 }
 
-async function ensureRoom(roomId) {
+async function ensureRoomAccess(roomId, roomPasscode) {
   const roomRef = doc(state.db, "rooms", roomId);
   const roomSnapshot = await getDoc(roomRef);
 
@@ -167,14 +183,33 @@ async function ensureRoom(roomId) {
     await setDoc(roomRef, {
       createdAt: serverTimestamp(),
       createdBy: state.profile.id,
+      hasPasscode: Boolean(roomPasscode),
+      passcode: roomPasscode || null,
     });
+    return;
+  }
+
+  const roomData = roomSnapshot.data();
+
+  if (!roomData?.hasPasscode) {
+    return;
+  }
+
+  if (!roomPasscode) {
+    throw new Error("ROOM_PASSCODE_REQUIRED");
+  }
+
+  if (roomData.passcode !== roomPasscode) {
+    throw new Error("ROOM_PASSCODE_INVALID");
   }
 }
 
-async function connectToRoom(roomId) {
+async function connectToRoom(roomId, roomPasscode = "") {
   disconnectFromRoom(false, false);
 
   state.roomId = roomId;
+  state.roomPasscode = roomPasscode;
+  state.hasHydratedRoom = false;
   activeRoom.textContent = roomId;
   leaveRoomButton.disabled = false;
   setComposerState(true);
@@ -187,14 +222,20 @@ async function connectToRoom(roomId) {
   state.unsubscribeMessages = onSnapshot(
     messagesQuery,
     (snapshot) => {
+      const previousIds = new Set(state.messages.map((message) => message.id));
       const nextMessages = snapshot.docs.map((messageDoc) => ({
         id: messageDoc.id,
         ...messageDoc.data(),
       }));
+      const incomingMessages = nextMessages.filter(
+        (message) => !previousIds.has(message.id) && message.senderId !== state.profile?.id
+      );
 
       updateHiddenIncomingCount(nextMessages);
       state.messages = nextMessages;
       renderMessages();
+      maybeNotifyIncomingMessages(incomingMessages);
+      state.hasHydratedRoom = true;
       handleAttentionChange();
     },
     (error) => {
@@ -212,6 +253,8 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
 
   clearPrivacyPreviewTimer();
   state.roomId = null;
+  state.roomPasscode = "";
+  state.hasHydratedRoom = false;
   state.messages = [];
   state.visibleMessageLimit = null;
   state.seenMessageIds = new Set();
@@ -409,6 +452,18 @@ function revealPrivacyTemporarily() {
   setStatus("", "");
 }
 
+function hidePrivacyPreview() {
+  clearPrivacyPreviewTimer();
+  state.isPrivacyPreviewVisible = false;
+  state.previewMessageIds = [];
+  syncStealthLayout();
+  updatePrivacyIndicator();
+  updateDocumentTitle();
+  updateAppBadge();
+  renderMessages();
+  persistSession();
+}
+
 function clearPrivacyPreviewTimer() {
   if (state.privacyPreviewTimeoutId) {
     window.clearTimeout(state.privacyPreviewTimeoutId);
@@ -481,6 +536,65 @@ function updateHiddenIncomingCount(nextMessages) {
 function updateDocumentTitle() {
   const count = getUnreadCount();
   document.title = count > 0 ? `(${count}) ${DEFAULT_TITLE}` : DEFAULT_TITLE;
+}
+
+async function ensureNotificationPermission() {
+  if (typeof Notification === "undefined") {
+    return;
+  }
+
+  if (Notification.permission !== "default") {
+    return;
+  }
+
+  try {
+    await Notification.requestPermission();
+  } catch (error) {
+    console.error("Notification permission request failed:", error);
+  }
+}
+
+function maybeNotifyIncomingMessages(incomingMessages) {
+  if (
+    !state.hasHydratedRoom ||
+    state.isPrivacyEnabled ||
+    shouldAutoMarkAsRead() ||
+    typeof Notification === "undefined" ||
+    Notification.permission !== "granted"
+  ) {
+    return;
+  }
+
+  incomingMessages.forEach((message) => {
+    showIncomingNotification(message);
+  });
+}
+
+async function showIncomingNotification(message) {
+  const title = message.senderName || "New message";
+  const body = message.text || "You received a new message.";
+  const options = {
+    body,
+    tag: `chat-${state.roomId}-${message.id}`,
+    renotify: false,
+    badge: "./icons/icon-192.png",
+    icon: "./icons/icon-192.png",
+    data: {
+      roomId: state.roomId,
+    },
+  };
+
+  try {
+    if ("serviceWorker" in navigator) {
+      const registration = await navigator.serviceWorker.ready;
+      await registration.showNotification(title, options);
+      return;
+    }
+
+    new Notification(title, options);
+  } catch (error) {
+    console.error("Notification display failed:", error);
+  }
 }
 
 function updateAppBadge() {
@@ -575,6 +689,10 @@ function sanitizeRoomId(value) {
   return value.trim().toLowerCase().replace(/\s+/g, "-");
 }
 
+function normalizePasscode(value) {
+  return value.trim();
+}
+
 function getOrCreateUserId() {
   const saved = localStorage.getItem("firestore-chat-user-id");
   if (saved) {
@@ -596,6 +714,7 @@ function persistSession() {
     JSON.stringify({
       displayName: state.profile.name,
       roomId: state.roomId,
+      roomPasscode: state.roomPasscode,
       isPrivacyEnabled: state.isPrivacyEnabled,
       visibleMessageLimit: state.visibleMessageLimit,
       unreadMessageIds: state.unreadMessageIds,
@@ -622,6 +741,10 @@ async function restoreSession() {
     if (saved.roomId) {
       roomIdInput.value = saved.roomId;
     }
+    if (saved.roomPasscode) {
+      roomPasscodeInput.value = saved.roomPasscode;
+      state.roomPasscode = saved.roomPasscode;
+    }
     state.isPrivacyEnabled = Boolean(saved.isPrivacyEnabled);
     state.visibleMessageLimit =
       Number.isInteger(saved.visibleMessageLimit) && saved.visibleMessageLimit > 0
@@ -635,8 +758,8 @@ async function restoreSession() {
     updateAppBadge();
 
     if (state.db && saved.displayName && saved.roomId) {
-      await ensureRoom(saved.roomId);
-      await connectToRoom(saved.roomId);
+      await ensureRoomAccess(saved.roomId, saved.roomPasscode || "");
+      await connectToRoom(saved.roomId, saved.roomPasscode || "");
       persistSession();
     }
   } catch (error) {
