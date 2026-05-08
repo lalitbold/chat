@@ -19,22 +19,43 @@ const roomIdInput = document.getElementById("room-id");
 const createRoomButton = document.getElementById("create-room");
 const leaveRoomButton = document.getElementById("leave-room");
 const activeRoom = document.getElementById("active-room");
+const privacyIndicator = document.getElementById("privacy-indicator");
 const statusBanner = document.getElementById("status-banner");
 const messagesContainer = document.getElementById("messages");
 const messageForm = document.getElementById("message-form");
 const messageInput = document.getElementById("message-input");
 const sendButton = document.getElementById("send-button");
+const DEFAULT_TITLE = "Firestore Chat";
+
+const ENABLE_PRIVACY_COMMAND = "enableprivacy";
+const REVEAL_PRIVACY_COMMANDS = new Set(["whatisit", "whatitis"]);
+const DISABLE_PRIVACY_COMMAND = "letitroll";
+const PRIVACY_PREVIEW_MS = 10000;
+const SESSION_KEY = "firestore-chat-session";
 
 const state = {
   db: null,
   profile: null,
   roomId: null,
+  messages: [],
+  visibleMessageLimit: null,
+  seenMessageIds: new Set(),
+  unreadMessageIds: [],
+  hiddenMessageIds: [],
+  previewMessageIds: [],
+  isPrivacyEnabled: false,
+  isPrivacyPreviewVisible: false,
+  privacyPreviewTimeoutId: null,
   unsubscribeMessages: null,
 };
 
 boot();
 
-function boot() {
+async function boot() {
+  registerServiceWorker();
+  updateDocumentTitle();
+  updateAppBadge();
+
   try {
     validateFirebaseConfig(firebaseConfig);
     const app = initializeApp(firebaseConfig);
@@ -50,11 +71,14 @@ function boot() {
   }
 
   renderEmptyState("Join a room to start chatting.");
-  restoreSession();
   wireEvents();
+  await restoreSession();
 }
 
 function wireEvents() {
+  window.addEventListener("focus", handleAttentionChange);
+  document.addEventListener("visibilitychange", handleAttentionChange);
+
   createRoomButton.addEventListener("click", () => {
     roomIdInput.value = generateRoomId();
     roomIdInput.focus();
@@ -90,8 +114,8 @@ function wireEvents() {
       await ensureRoom(roomId);
       await connectToRoom(roomId);
       persistSession();
-      joinForm.reset();
       displayNameInput.value = state.profile.name;
+      roomIdInput.value = state.roomId;
     } catch (error) {
       console.error(error);
       setStatus("We couldn't join that room. Check Firestore rules and try again.", "error");
@@ -103,6 +127,12 @@ function wireEvents() {
 
     const text = messageInput.value.trim();
     if (!text || !state.roomId || !state.db || !state.profile) {
+      return;
+    }
+
+    if (handleLocalCommand(text)) {
+      messageInput.value = "";
+      messageInput.focus();
       return;
     }
 
@@ -142,7 +172,7 @@ async function ensureRoom(roomId) {
 }
 
 async function connectToRoom(roomId) {
-  disconnectFromRoom(false);
+  disconnectFromRoom(false, false);
 
   state.roomId = roomId;
   activeRoom.textContent = roomId;
@@ -157,20 +187,15 @@ async function connectToRoom(roomId) {
   state.unsubscribeMessages = onSnapshot(
     messagesQuery,
     (snapshot) => {
-      if (snapshot.empty) {
-        renderEmptyState("No messages yet. Say hello.");
-        return;
-      }
+      const nextMessages = snapshot.docs.map((messageDoc) => ({
+        id: messageDoc.id,
+        ...messageDoc.data(),
+      }));
 
-      const fragment = document.createDocumentFragment();
-
-      snapshot.forEach((messageDoc) => {
-        const message = messageDoc.data();
-        fragment.appendChild(renderMessage(message));
-      });
-
-      messagesContainer.replaceChildren(fragment);
-      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      updateHiddenIncomingCount(nextMessages);
+      state.messages = nextMessages;
+      renderMessages();
+      handleAttentionChange();
     },
     (error) => {
       console.error(error);
@@ -179,21 +204,36 @@ async function connectToRoom(roomId) {
   );
 }
 
-function disconnectFromRoom(clearSession = true) {
+function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   if (state.unsubscribeMessages) {
     state.unsubscribeMessages();
     state.unsubscribeMessages = null;
   }
 
+  clearPrivacyPreviewTimer();
   state.roomId = null;
+  state.messages = [];
+  state.visibleMessageLimit = null;
+  state.seenMessageIds = new Set();
+  state.unreadMessageIds = [];
+  state.hiddenMessageIds = resetStealthState ? [] : state.hiddenMessageIds;
+  state.previewMessageIds = [];
+  state.isPrivacyEnabled = resetStealthState ? false : state.isPrivacyEnabled;
+  state.isPrivacyPreviewVisible = false;
   activeRoom.textContent = "Not connected";
   leaveRoomButton.disabled = true;
   setComposerState(false);
+  syncStealthLayout();
+  updatePrivacyIndicator();
+  updateDocumentTitle();
+  updateAppBadge();
   renderEmptyState("Join a room to start chatting.");
 
   if (clearSession) {
-    sessionStorage.removeItem("firestore-chat-session");
+    localStorage.removeItem(SESSION_KEY);
     setStatus("You left the room.", "success");
+  } else {
+    persistSession();
   }
 }
 
@@ -223,11 +263,45 @@ function renderMessage(message) {
   return wrapper;
 }
 
+function renderMessages() {
+  if (state.isPrivacyEnabled && !state.isPrivacyPreviewVisible) {
+    renderPrivacyState();
+    return;
+  }
+
+  const messagesToRender = getVisibleMessages();
+
+  if (messagesToRender.length === 0) {
+    renderEmptyState("No messages yet. Say hello.");
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+
+  messagesToRender.forEach((message) => {
+    fragment.appendChild(renderMessage(message));
+  });
+
+  messagesContainer.replaceChildren(fragment);
+  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
 function renderEmptyState(message) {
   const placeholder = document.createElement("div");
   placeholder.className = "empty-state";
   placeholder.textContent = message;
   messagesContainer.replaceChildren(placeholder);
+}
+
+function renderPrivacyState() {
+  const wrapper = document.createElement("div");
+  wrapper.className = "privacy-state";
+
+  const count = document.createElement("div");
+  count.className = "privacy-count";
+  count.textContent = String(state.hiddenMessageIds.length);
+  wrapper.append(count);
+  messagesContainer.replaceChildren(wrapper);
 }
 
 function setStatus(message, tone = "") {
@@ -242,6 +316,245 @@ function setStatus(message, tone = "") {
 function setComposerState(enabled) {
   messageInput.disabled = !enabled;
   sendButton.disabled = !enabled;
+}
+
+function handleLocalCommand(text) {
+  const normalized = text.trim().toLowerCase();
+  const disableMatch = normalized.match(/^letitroll(?:\s+(\d+))?$/);
+
+  if (normalized === ENABLE_PRIVACY_COMMAND) {
+    enablePrivacyMode();
+    return true;
+  }
+
+  if (disableMatch) {
+    const requestedCount = disableMatch[1] ? Number.parseInt(disableMatch[1], 10) : null;
+    disablePrivacyMode(requestedCount);
+    return true;
+  }
+
+  if (REVEAL_PRIVACY_COMMANDS.has(normalized)) {
+    revealPrivacyTemporarily();
+    return true;
+  }
+
+  return false;
+}
+
+function enablePrivacyMode() {
+  state.isPrivacyEnabled = true;
+  state.isPrivacyPreviewVisible = false;
+  state.visibleMessageLimit = null;
+  state.unreadMessageIds = [];
+  clearPrivacyPreviewTimer();
+  state.hiddenMessageIds = [];
+  state.previewMessageIds = [];
+  syncStealthLayout();
+  updatePrivacyIndicator();
+  updateDocumentTitle();
+  updateAppBadge();
+  renderPrivacyState();
+  persistSession();
+  setStatus("", "");
+}
+
+function disablePrivacyMode(messageLimit = null) {
+  state.isPrivacyEnabled = false;
+  state.isPrivacyPreviewVisible = false;
+  state.visibleMessageLimit = Number.isInteger(messageLimit) && messageLimit > 0 ? messageLimit : null;
+  state.unreadMessageIds = [];
+  state.hiddenMessageIds = [];
+  state.previewMessageIds = [];
+  state.seenMessageIds = new Set(state.messages.map((message) => message.id));
+  clearPrivacyPreviewTimer();
+  syncStealthLayout();
+  updatePrivacyIndicator();
+  updateDocumentTitle();
+  updateAppBadge();
+  renderMessages();
+  persistSession();
+  setStatus("", "");
+}
+
+function revealPrivacyTemporarily() {
+  if (!state.isPrivacyEnabled) {
+    setStatus("", "");
+    return;
+  }
+
+  state.previewMessageIds = [...state.hiddenMessageIds];
+  state.isPrivacyPreviewVisible = true;
+  const revealedIds = new Set(state.previewMessageIds);
+  state.unreadMessageIds = state.unreadMessageIds.filter((id) => !revealedIds.has(id));
+  state.hiddenMessageIds = [];
+  state.seenMessageIds = new Set([...state.seenMessageIds, ...revealedIds]);
+  syncStealthLayout();
+  updatePrivacyIndicator();
+  updateDocumentTitle();
+  updateAppBadge();
+  renderMessages();
+  persistSession();
+  clearPrivacyPreviewTimer();
+  state.privacyPreviewTimeoutId = window.setTimeout(() => {
+    state.isPrivacyPreviewVisible = false;
+    state.previewMessageIds = [];
+    syncStealthLayout();
+    updatePrivacyIndicator();
+    updateDocumentTitle();
+    updateAppBadge();
+    renderMessages();
+    persistSession();
+    setStatus("", "");
+  }, PRIVACY_PREVIEW_MS);
+  setStatus("", "");
+}
+
+function clearPrivacyPreviewTimer() {
+  if (state.privacyPreviewTimeoutId) {
+    window.clearTimeout(state.privacyPreviewTimeoutId);
+    state.privacyPreviewTimeoutId = null;
+  }
+}
+
+function updatePrivacyIndicator() {
+  const count = getUnreadCount();
+  const shouldShowCount = count > 0 && (!state.isPrivacyEnabled || !state.isPrivacyPreviewVisible);
+
+  privacyIndicator.textContent = shouldShowCount ? String(count) : "";
+  privacyIndicator.className = shouldShowCount ? "privacy-indicator active" : "privacy-indicator";
+}
+
+function updateHiddenIncomingCount(nextMessages) {
+  const nextIds = new Set(nextMessages.map((message) => message.id));
+  const hiddenIds = new Set(state.hiddenMessageIds);
+  const unreadIds = new Set(state.unreadMessageIds);
+  const isInitialHydration = state.messages.length === 0 && state.seenMessageIds.size === 0;
+
+  if (isInitialHydration) {
+    state.seenMessageIds = new Set(
+      nextMessages
+        .filter((message) => !hiddenIds.has(message.id))
+        .map((message) => message.id)
+    );
+  }
+
+  if (state.isPrivacyEnabled && !state.isPrivacyPreviewVisible) {
+    nextMessages.forEach((message) => {
+      if (
+        !state.seenMessageIds.has(message.id) &&
+        message.senderId !== state.profile?.id &&
+        !hiddenIds.has(message.id)
+      ) {
+        hiddenIds.add(message.id);
+      }
+    });
+    state.hiddenMessageIds = nextMessages
+      .filter((message) => hiddenIds.has(message.id))
+      .map((message) => message.id);
+  } else {
+    nextMessages.forEach((message) => {
+      if (
+        !state.seenMessageIds.has(message.id) &&
+        message.senderId !== state.profile?.id &&
+        !unreadIds.has(message.id)
+      ) {
+        unreadIds.add(message.id);
+      }
+    });
+
+    if (shouldAutoMarkAsRead()) {
+      state.seenMessageIds = nextIds;
+      state.unreadMessageIds = [];
+    } else {
+      state.unreadMessageIds = nextMessages
+        .filter((message) => unreadIds.has(message.id))
+        .map((message) => message.id);
+    }
+  }
+
+  updatePrivacyIndicator();
+  updateDocumentTitle();
+  updateAppBadge();
+  persistSession();
+}
+
+function updateDocumentTitle() {
+  const count = getUnreadCount();
+  document.title = count > 0 ? `(${count}) ${DEFAULT_TITLE}` : DEFAULT_TITLE;
+}
+
+function updateAppBadge() {
+  const count = getUnreadCount();
+
+  if (typeof navigator === "undefined") {
+    return;
+  }
+
+  if (count > 0 && typeof navigator.setAppBadge === "function") {
+    navigator.setAppBadge(count).catch(() => {});
+    return;
+  }
+
+  if (count === 0 && typeof navigator.clearAppBadge === "function") {
+    navigator.clearAppBadge().catch(() => {});
+  }
+}
+
+function syncStealthLayout() {
+  document.body.classList.toggle("stealth-active", state.isPrivacyEnabled);
+}
+
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) {
+    return;
+  }
+
+  window.addEventListener("load", () => {
+    navigator.serviceWorker
+      .register("./sw.js")
+      .then((registration) => registration.update())
+      .catch((error) => {
+        console.error("Service worker registration failed:", error);
+      });
+  });
+}
+
+function getVisibleMessages() {
+  if (!state.isPrivacyPreviewVisible) {
+    if (state.visibleMessageLimit && !state.isPrivacyEnabled) {
+      return state.messages.slice(-state.visibleMessageLimit);
+    }
+
+    return state.messages;
+  }
+
+  const previewIds = new Set(state.previewMessageIds);
+  return state.messages.filter((message) => previewIds.has(message.id));
+}
+
+function getUnreadCount() {
+  return state.isPrivacyEnabled ? state.hiddenMessageIds.length : state.unreadMessageIds.length;
+}
+
+function shouldAutoMarkAsRead() {
+  return (
+    !state.isPrivacyEnabled &&
+    document.visibilityState === "visible" &&
+    document.hasFocus()
+  );
+}
+
+function handleAttentionChange() {
+  if (!shouldAutoMarkAsRead() || !state.roomId) {
+    return;
+  }
+
+  state.unreadMessageIds = [];
+  state.seenMessageIds = new Set(state.messages.map((message) => message.id));
+  updatePrivacyIndicator();
+  updateDocumentTitle();
+  updateAppBadge();
+  persistSession();
 }
 
 function validateFirebaseConfig(config) {
@@ -274,21 +587,25 @@ function getOrCreateUserId() {
 }
 
 function persistSession() {
-  if (!state.profile || !state.roomId) {
+  if (!state.profile) {
     return;
   }
 
-  sessionStorage.setItem(
-    "firestore-chat-session",
+  localStorage.setItem(
+    SESSION_KEY,
     JSON.stringify({
       displayName: state.profile.name,
       roomId: state.roomId,
+      isPrivacyEnabled: state.isPrivacyEnabled,
+      visibleMessageLimit: state.visibleMessageLimit,
+      unreadMessageIds: state.unreadMessageIds,
+      hiddenMessageIds: state.hiddenMessageIds,
     })
   );
 }
 
-function restoreSession() {
-  const raw = sessionStorage.getItem("firestore-chat-session");
+async function restoreSession() {
+  const raw = localStorage.getItem(SESSION_KEY);
   if (!raw) {
     return;
   }
@@ -297,13 +614,34 @@ function restoreSession() {
     const saved = JSON.parse(raw);
     if (saved.displayName) {
       displayNameInput.value = saved.displayName;
+      state.profile = {
+        id: getOrCreateUserId(),
+        name: saved.displayName,
+      };
     }
     if (saved.roomId) {
       roomIdInput.value = saved.roomId;
     }
+    state.isPrivacyEnabled = Boolean(saved.isPrivacyEnabled);
+    state.visibleMessageLimit =
+      Number.isInteger(saved.visibleMessageLimit) && saved.visibleMessageLimit > 0
+        ? saved.visibleMessageLimit
+        : null;
+    state.unreadMessageIds = Array.isArray(saved.unreadMessageIds) ? saved.unreadMessageIds : [];
+    state.hiddenMessageIds = Array.isArray(saved.hiddenMessageIds) ? saved.hiddenMessageIds : [];
+    syncStealthLayout();
+    updatePrivacyIndicator();
+    updateDocumentTitle();
+    updateAppBadge();
+
+    if (state.db && saved.displayName && saved.roomId) {
+      await ensureRoom(saved.roomId);
+      await connectToRoom(saved.roomId);
+      persistSession();
+    }
   } catch (error) {
     console.error(error);
-    sessionStorage.removeItem("firestore-chat-session");
+    localStorage.removeItem(SESSION_KEY);
   }
 }
 

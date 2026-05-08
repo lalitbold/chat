@@ -167,6 +167,30 @@ button:disabled {
   justify-content: space-between;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.privacy-indicator {
+  min-height: 40px;
+  min-width: 40px;
+  padding: 10px 12px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: transparent;
+  font-size: 0.88rem;
+  white-space: nowrap;
+}
+
+.privacy-indicator.active {
+  background: rgba(22, 34, 31, 0.92);
+  border-color: rgba(22, 34, 31, 0.92);
+  color: #fff;
+}
+
 .status-banner {
   padding: 14px 16px;
   border-radius: 16px;
@@ -204,6 +228,33 @@ button:disabled {
   max-width: 20rem;
 }
 
+.privacy-state {
+  margin: auto;
+  min-width: 72px;
+  min-height: 72px;
+  padding: 12px;
+  border-radius: 999px;
+  text-align: center;
+  background: rgba(22, 34, 31, 0.92);
+  color: #f8f5ec;
+  box-shadow: 0 20px 50px rgba(22, 34, 31, 0.18);
+}
+
+.privacy-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 48px;
+  min-height: 48px;
+  margin: 0;
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: transparent;
+  color: #fff;
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
 .message {
   max-width: min(80%, 32rem);
   padding: 12px 14px;
@@ -236,6 +287,47 @@ button:disabled {
   line-height: 1.45;
 }
 
+body.stealth-active {
+  background: #f8f5ec;
+}
+
+body.stealth-active .app-shell {
+  width: min(760px, calc(100% - 24px));
+  grid-template-columns: 1fr;
+  gap: 0;
+  margin: 12px auto;
+}
+
+body.stealth-active .hero-panel,
+body.stealth-active .chat-header,
+body.stealth-active .status-banner {
+  display: none;
+}
+
+body.stealth-active .chat-panel {
+  gap: 12px;
+}
+
+body.stealth-active .messages {
+  min-height: calc(100vh - 132px);
+  max-height: calc(100vh - 132px);
+  border-radius: 18px;
+}
+
+body.stealth-active .composer {
+  border-radius: 18px;
+  padding: 12px;
+  display: block;
+}
+
+body.stealth-active .composer .primary {
+  display: none;
+}
+
+body.stealth-active #message-input {
+  border-radius: 12px;
+}
+
 @keyframes rise-in {
   from {
     opacity: 0;
@@ -256,5 +348,15 @@ button:disabled {
   .messages {
     min-height: 420px;
     max-height: 420px;
+  }
+
+  body.stealth-active .app-shell {
+    width: min(100%, calc(100% - 16px));
+    margin: 8px auto;
+  }
+
+  body.stealth-active .messages {
+    min-height: calc(100vh - 120px);
+    max-height: calc(100vh - 120px);
   }
 }

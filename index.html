@@ -4,6 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Firestore Chat</title>
+    <meta name="theme-color" content="#16221f" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="./icons/icon-192.png" />
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
@@ -16,7 +22,7 @@
           through Firebase Firestore.
         </p>
 
-        <form id="join-form" class="card form-stack">
+        <form id="join-form" class="card form-stack" autocomplete="off">
           <label class="field">
             <span>Your name</span>
             <input
@@ -25,6 +31,7 @@
               type="text"
               maxlength="30"
               placeholder="Ava"
+              autocomplete="off"
               required
             />
           </label>
@@ -38,6 +45,7 @@
                 type="text"
                 maxlength="24"
                 placeholder="team-standup"
+                autocomplete="off"
               />
               <button id="create-room" class="secondary" type="button">
                 New room
@@ -55,9 +63,12 @@
             <p class="label">Current room</p>
             <h2 id="active-room">Not connected</h2>
           </div>
-          <button id="leave-room" class="ghost" type="button" disabled>
-            Leave
-          </button>
+          <div class="header-actions">
+            <div id="privacy-indicator" class="privacy-indicator" aria-live="polite"></div>
+            <button id="leave-room" class="ghost" type="button" disabled>
+              Leave
+            </button>
+          </div>
         </div>
 
         <div id="status-banner" class="status-banner">
@@ -66,12 +77,16 @@
 
         <section id="messages" class="messages card" aria-live="polite"></section>
 
-        <form id="message-form" class="composer card">
+        <form id="message-form" class="composer card" autocomplete="off">
           <input
             id="message-input"
             type="text"
             maxlength="500"
             placeholder="Write a message..."
+            autocomplete="off"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
             disabled
             required
           />

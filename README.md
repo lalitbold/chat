@@ -11,6 +11,9 @@ This project is a lightweight realtime chat app built with:
 - Create or join a chat room with a simple room code
 - Realtime message updates for everyone in the same room
 - Separate Firestore room documents and `messages` subcollections
+- Stealth hidden-chat mode with incoming message count
+- Title badge count for hidden incoming messages
+- Installable PWA support
 - Local user identity persistence and session restore
 - Example Firestore rules for quick testing
 
@@ -43,6 +46,13 @@ rooms/{roomId}/messages/{messageId}
   senderName
   createdAt
 ```
+
+## Hidden chat behavior
+
+- A local stealth mode can hide all chat messages from view.
+- While it is active, sent messages are still stored in Firestore but are not shown on screen.
+- Incoming messages are hidden and shown only as a count.
+- The chat can be briefly revealed for 10 seconds, then it hides again automatically.
 
 ## Run locally
 
