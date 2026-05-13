@@ -87,9 +87,28 @@
           Add your Firebase config to start chatting.
         </div>
 
+        <section id="share-link-panel" class="share-link-panel card" hidden>
+          <p class="label">Share Link</p>
+          <textarea
+            id="share-link-output"
+            readonly
+            rows="3"
+            spellcheck="false"
+          ></textarea>
+          <div class="settings-actions">
+            <button id="copy-share-link" class="primary" type="button">
+              Copy
+            </button>
+            <button id="close-share-link" class="ghost" type="button">
+              Close
+            </button>
+          </div>
+        </section>
+
         <section id="messages" class="messages card" aria-live="polite"></section>
 
         <form id="message-form" class="composer card" autocomplete="off">
+          <div id="composer-count" class="composer-count" aria-live="polite"></div>
           <textarea
             id="message-input"
             maxlength="500"
@@ -102,10 +121,70 @@
             required
             rows="2"
           ></textarea>
-          <button id="send-button" class="primary" type="submit" disabled>
-            Send
-          </button>
+          <div class="composer-actions">
+            <button id="toggle-message-mask" class="ghost" type="button" disabled>
+              Mask text
+            </button>
+            <button id="send-button" class="primary" type="submit" disabled>
+              Send
+            </button>
+          </div>
         </form>
+
+        <section id="advanced-settings" class="advanced-settings card" hidden>
+          <p class="label">Advanced Settings</p>
+          <label class="field">
+            <span>Apply to</span>
+            <select id="command-scope" name="commandScope">
+              <option value="group">This group</option>
+              <option value="personal">Only me</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Hide command</span>
+            <input
+              id="privacy-command"
+              name="privacyCommand"
+              type="password"
+              maxlength="50"
+              placeholder="Custom hide command"
+              autocomplete="off"
+            />
+          </label>
+          <label class="field">
+            <span>Show command</span>
+            <input
+              id="reveal-command"
+              name="revealCommand"
+              type="password"
+              maxlength="50"
+              placeholder="Custom show command"
+              autocomplete="off"
+            />
+          </label>
+          <label class="field">
+            <span>Exit command</span>
+            <input
+              id="disable-command"
+              name="disableCommand"
+              type="password"
+              maxlength="50"
+              placeholder="Custom exit command"
+              autocomplete="off"
+            />
+          </label>
+          <div class="settings-actions">
+            <button id="toggle-command-visibility" class="ghost" type="button">
+              Show text
+            </button>
+            <button id="save-advanced-settings" class="primary" type="button">
+              Save
+            </button>
+            <button id="close-advanced-settings" class="ghost" type="button">
+              Close
+            </button>
+          </div>
+        </section>
       </section>
     </main>
 

@@ -4,11 +4,14 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
   getFirestore,
+  limit,
   onSnapshot,
   orderBy,
   query,
   serverTimestamp,
+  startAfter,
   setDoc,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
@@ -17,30 +20,64 @@ const joinForm = document.getElementById("join-form");
 const displayNameInput = document.getElementById("display-name");
 const roomIdInput = document.getElementById("room-id");
 const roomPasscodeInput = document.getElementById("room-passcode");
+const commandScopeInput = document.getElementById("command-scope");
+const privacyCommandInput = document.getElementById("privacy-command");
+const revealCommandInput = document.getElementById("reveal-command");
+const disableCommandInput = document.getElementById("disable-command");
+const toggleCommandVisibilityButton = document.getElementById("toggle-command-visibility");
 const createRoomButton = document.getElementById("create-room");
 const leaveRoomButton = document.getElementById("leave-room");
 const activeRoom = document.getElementById("active-room");
 const privacyIndicator = document.getElementById("privacy-indicator");
 const statusBanner = document.getElementById("status-banner");
+const shareLinkPanel = document.getElementById("share-link-panel");
+const shareLinkOutput = document.getElementById("share-link-output");
+const copyShareLinkButton = document.getElementById("copy-share-link");
+const closeShareLinkButton = document.getElementById("close-share-link");
 const messagesContainer = document.getElementById("messages");
 const messageForm = document.getElementById("message-form");
+const advancedSettingsPanel = document.getElementById("advanced-settings");
+const composerCount = document.getElementById("composer-count");
 const messageInput = document.getElementById("message-input");
+const toggleMessageMaskButton = document.getElementById("toggle-message-mask");
 const sendButton = document.getElementById("send-button");
+const saveAdvancedSettingsButton = document.getElementById("save-advanced-settings");
+const closeAdvancedSettingsButton = document.getElementById("close-advanced-settings");
 const DEFAULT_TITLE = "Firestore Chat";
 
-const ENABLE_PRIVACY_COMMAND = "enableprivacy";
-const REVEAL_PRIVACY_COMMANDS = new Set(["whatisit", "whatitis"]);
-const DISABLE_PRIVACY_COMMAND = "letitroll";
+const DEFAULT_ROOM_COMMANDS = {
+  enable: "enableprivacy",
+  reveal: "whatitis",
+  disable: "letitroll",
+};
+const DEFAULT_REVEAL_ALIASES = new Set(["whatisit", "whatitis"]);
+const ADVANCED_SETTINGS_COMMANDS = new Set(["advancesetting", "advancedsetting"]);
+const GET_LINK_COMMAND = "getlink";
 const PRIVACY_PREVIEW_MS = 10000;
 const SESSION_KEY = "firestore-chat-session";
+const MESSAGES_PAGE_SIZE = 25;
+const LOCAL_ROOM_COMMANDS_KEY_PREFIX = "firestore-chat-room-commands";
+const GROUP_COMMAND_SCOPE = "group";
+const PERSONAL_COMMAND_SCOPE = "personal";
+const SHARE_QUERY_KEY = "c";
+const SHARE_SECRET = "firestore-chat-share-v1";
 
 const state = {
   db: null,
   profile: null,
   roomId: null,
   roomPasscode: "",
+  roomCommands: { ...DEFAULT_ROOM_COMMANDS },
+  groupRoomCommands: {},
+  isAdvancedSettingsVisible: false,
+  areAdvancedCommandsVisible: false,
+  pendingInvitePrivacyMode: false,
+  isMessageInputMasked: false,
   messages: [],
   hasHydratedRoom: false,
+  hasMoreMessages: true,
+  isLoadingOlderMessages: false,
+  oldestMessageCursor: null,
   visibleMessageLimit: null,
   seenMessageIds: new Set(),
   unreadMessageIds: [],
@@ -58,6 +95,7 @@ async function boot() {
   registerServiceWorker();
   updateDocumentTitle();
   updateAppBadge();
+  clearRoomCommandInputs();
 
   try {
     validateFirebaseConfig(firebaseConfig);
@@ -75,6 +113,10 @@ async function boot() {
 
   renderEmptyState("Join a room to start chatting.");
   wireEvents();
+  const handledInvite = await hydrateFromSharedLink();
+  if (handledInvite) {
+    return;
+  }
   await restoreSession();
 }
 
@@ -82,6 +124,14 @@ function wireEvents() {
   window.addEventListener("focus", handleAttentionChange);
   document.addEventListener("visibilitychange", handleAttentionChange);
   messageInput.addEventListener("keydown", handleMessageInputKeydown);
+  messagesContainer.addEventListener("scroll", handleMessageListScroll);
+  toggleMessageMaskButton.addEventListener("click", toggleMessageInputMask);
+  saveAdvancedSettingsButton.addEventListener("click", saveAdvancedSettings);
+  closeAdvancedSettingsButton.addEventListener("click", () => setAdvancedSettingsVisibility(false));
+  commandScopeInput.addEventListener("change", handleCommandScopeChange);
+  toggleCommandVisibilityButton.addEventListener("click", toggleAdvancedCommandVisibility);
+  copyShareLinkButton.addEventListener("click", copyShareLink);
+  closeShareLinkButton.addEventListener("click", hideShareLinkPanel);
 
   createRoomButton.addEventListener("click", () => {
     roomIdInput.value = generateRoomId();
@@ -116,13 +166,18 @@ function wireEvents() {
     };
 
     try {
-      await ensureRoomAccess(roomId, roomPasscode);
-      await connectToRoom(roomId, roomPasscode);
+      const roomData = await ensureRoomAccess(roomId, roomPasscode);
+      await connectToRoom(roomId, roomPasscode, roomData);
       await ensureNotificationPermission();
+      if (state.pendingInvitePrivacyMode) {
+        enablePrivacyMode();
+        state.pendingInvitePrivacyMode = false;
+      }
       persistSession();
       displayNameInput.value = state.profile.name;
       roomIdInput.value = state.roomId;
       roomPasscodeInput.value = state.roomPasscode;
+      applyRoomCommandsToInputs(state.roomCommands);
     } catch (error) {
       console.error(error);
       if (error?.message === "ROOM_PASSCODE_REQUIRED") {
@@ -181,19 +236,21 @@ async function ensureRoomAccess(roomId, roomPasscode) {
   const roomSnapshot = await getDoc(roomRef);
 
   if (!roomSnapshot.exists()) {
-    await setDoc(roomRef, {
+    const roomData = {
       createdAt: serverTimestamp(),
       createdBy: state.profile.id,
       hasPasscode: Boolean(roomPasscode),
       passcode: roomPasscode || null,
-    });
-    return;
+      commands: {},
+    };
+    await setDoc(roomRef, roomData);
+    return roomData;
   }
 
   const roomData = roomSnapshot.data();
 
   if (!roomData?.hasPasscode) {
-    return;
+    return roomData;
   }
 
   if (!roomPasscode) {
@@ -203,31 +260,86 @@ async function ensureRoomAccess(roomId, roomPasscode) {
   if (roomData.passcode !== roomPasscode) {
     throw new Error("ROOM_PASSCODE_INVALID");
   }
+
+  return roomData;
 }
 
-async function connectToRoom(roomId, roomPasscode = "") {
+async function connectToRoom(roomId, roomPasscode = "", roomData = null) {
+  const pendingInvitePrivacyMode = state.pendingInvitePrivacyMode;
   disconnectFromRoom(false, false);
 
+  state.pendingInvitePrivacyMode = pendingInvitePrivacyMode;
   state.roomId = roomId;
   state.roomPasscode = roomPasscode;
+  state.groupRoomCommands = loadGroupRoomCommands(roomData);
+  state.roomCommands = getEffectiveRoomCommands(roomId, state.groupRoomCommands);
+  state.isAdvancedSettingsVisible = false;
   state.hasHydratedRoom = false;
+  state.messages = [];
+  state.oldestMessageCursor = null;
+  state.hasMoreMessages = true;
+  state.isLoadingOlderMessages = false;
   activeRoom.textContent = roomId;
   leaveRoomButton.disabled = false;
   setComposerState(true);
   setStatus(`Connected to room "${roomId}".`, "success");
+  hideShareLinkPanel();
   renderEmptyState("No messages yet. Say hello.");
+  applyRoomCommandsToInputs({});
+  setAdvancedSettingsVisibility(false);
 
+  await loadInitialMessages(roomId);
+  subscribeToLatestMessages(roomId);
+}
+
+async function loadInitialMessages(roomId) {
   const messagesRef = collection(state.db, "rooms", roomId, "messages");
-  const messagesQuery = query(messagesRef, orderBy("createdAt", "asc"));
+  const initialQuery = query(
+    messagesRef,
+    orderBy("createdAt", "desc"),
+    limit(MESSAGES_PAGE_SIZE)
+  );
+  const snapshot = await getDocs(initialQuery);
+  const docs = snapshot.docs;
+
+  state.messages = docs
+    .map((messageDoc) => ({
+      id: messageDoc.id,
+      ...messageDoc.data(),
+    }))
+    .reverse();
+  state.oldestMessageCursor = docs.length > 0 ? docs[docs.length - 1] : null;
+  state.hasMoreMessages = docs.length === MESSAGES_PAGE_SIZE;
+  state.seenMessageIds = new Set(
+    state.messages
+      .filter((message) => !state.hiddenMessageIds.includes(message.id))
+      .map((message) => message.id)
+  );
+
+  renderMessages();
+}
+
+function subscribeToLatestMessages(roomId) {
+  const messagesRef = collection(state.db, "rooms", roomId, "messages");
+  const latestMessagesQuery = query(
+    messagesRef,
+    orderBy("createdAt", "desc"),
+    limit(MESSAGES_PAGE_SIZE)
+  );
 
   state.unsubscribeMessages = onSnapshot(
-    messagesQuery,
+    latestMessagesQuery,
     (snapshot) => {
       const previousIds = new Set(state.messages.map((message) => message.id));
-      const nextMessages = snapshot.docs.map((messageDoc) => ({
-        id: messageDoc.id,
-        ...messageDoc.data(),
-      }));
+      const latestMessages = snapshot.docs
+        .map((messageDoc) => ({
+          id: messageDoc.id,
+          ...messageDoc.data(),
+        }))
+        .reverse();
+      const latestIds = new Set(latestMessages.map((message) => message.id));
+      const olderMessages = state.messages.filter((message) => !latestIds.has(message.id));
+      const nextMessages = [...olderMessages, ...latestMessages].sort(compareMessagesByTime);
       const incomingMessages = nextMessages.filter(
         (message) => !previousIds.has(message.id) && message.senderId !== state.profile?.id
       );
@@ -246,6 +358,55 @@ async function connectToRoom(roomId, roomPasscode = "") {
   );
 }
 
+async function loadOlderMessages() {
+  if (
+    !state.roomId ||
+    !state.oldestMessageCursor ||
+    !state.hasMoreMessages ||
+    state.isLoadingOlderMessages
+  ) {
+    return;
+  }
+
+  state.isLoadingOlderMessages = true;
+  const previousScrollHeight = messagesContainer.scrollHeight;
+  const previousScrollTop = messagesContainer.scrollTop;
+
+  try {
+    const messagesRef = collection(state.db, "rooms", state.roomId, "messages");
+    const olderMessagesQuery = query(
+      messagesRef,
+      orderBy("createdAt", "desc"),
+      startAfter(state.oldestMessageCursor),
+      limit(MESSAGES_PAGE_SIZE)
+    );
+    const snapshot = await getDocs(olderMessagesQuery);
+    const docs = snapshot.docs;
+    const olderMessages = docs
+      .map((messageDoc) => ({
+        id: messageDoc.id,
+        ...messageDoc.data(),
+      }))
+      .reverse();
+    const existingIds = new Set(state.messages.map((message) => message.id));
+
+    state.messages = [...olderMessages.filter((message) => !existingIds.has(message.id)), ...state.messages];
+    state.oldestMessageCursor = docs.length > 0 ? docs[docs.length - 1] : state.oldestMessageCursor;
+    state.hasMoreMessages = docs.length === MESSAGES_PAGE_SIZE;
+
+    renderMessages({
+      preserveScroll: true,
+      previousScrollHeight,
+      previousScrollTop,
+    });
+  } catch (error) {
+    console.error(error);
+    setStatus("Older messages could not be loaded.", "error");
+  } finally {
+    state.isLoadingOlderMessages = false;
+  }
+}
+
 function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   if (state.unsubscribeMessages) {
     state.unsubscribeMessages();
@@ -255,8 +416,15 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   clearPrivacyPreviewTimer();
   state.roomId = null;
   state.roomPasscode = "";
+  state.roomCommands = { ...DEFAULT_ROOM_COMMANDS };
+  state.groupRoomCommands = {};
+  state.isAdvancedSettingsVisible = false;
+  state.pendingInvitePrivacyMode = false;
   state.hasHydratedRoom = false;
   state.messages = [];
+  state.hasMoreMessages = true;
+  state.isLoadingOlderMessages = false;
+  state.oldestMessageCursor = null;
   state.visibleMessageLimit = null;
   state.seenMessageIds = new Set();
   state.unreadMessageIds = [];
@@ -267,6 +435,8 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   activeRoom.textContent = "Not connected";
   leaveRoomButton.disabled = true;
   setComposerState(false);
+  hideShareLinkPanel();
+  setAdvancedSettingsVisibility(false);
   syncStealthLayout();
   updatePrivacyIndicator();
   updateDocumentTitle();
@@ -293,7 +463,7 @@ function renderMessage(message) {
   meta.className = "message-meta";
 
   const sender = document.createElement("strong");
-  sender.textContent = message.senderName || "Anonymous";
+  sender.textContent = getDisplaySenderName(message);
 
   const timestamp = document.createElement("span");
   timestamp.textContent = formatTimestamp(message.createdAt);
@@ -307,7 +477,7 @@ function renderMessage(message) {
   return wrapper;
 }
 
-function renderMessages() {
+function renderMessages(options = {}) {
   if (state.isPrivacyEnabled && !state.isPrivacyPreviewVisible) {
     renderPrivacyState();
     return;
@@ -327,6 +497,13 @@ function renderMessages() {
   });
 
   messagesContainer.replaceChildren(fragment);
+
+  if (options.preserveScroll) {
+    messagesContainer.scrollTop =
+      messagesContainer.scrollHeight - options.previousScrollHeight + options.previousScrollTop;
+    return;
+  }
+
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
 
@@ -360,6 +537,17 @@ function setStatus(message, tone = "") {
 function setComposerState(enabled) {
   messageInput.disabled = !enabled;
   sendButton.disabled = !enabled;
+  toggleMessageMaskButton.disabled = !enabled;
+}
+
+function toggleMessageInputMask() {
+  state.isMessageInputMasked = !state.isMessageInputMasked;
+  syncMessageInputMask();
+}
+
+function syncMessageInputMask() {
+  messageInput.classList.toggle("masked", state.isMessageInputMasked);
+  toggleMessageMaskButton.textContent = state.isMessageInputMasked ? "Show text" : "Mask text";
 }
 
 function handleMessageInputKeydown(event) {
@@ -374,12 +562,43 @@ function handleMessageInputKeydown(event) {
   }
 }
 
+function handleMessageListScroll() {
+  if (messagesContainer.scrollTop > 60) {
+    return;
+  }
+
+  if (state.isPrivacyEnabled && !state.isPrivacyPreviewVisible) {
+    return;
+  }
+
+  loadOlderMessages();
+}
+
 function handleLocalCommand(text) {
   const normalized = text.trim().toLowerCase();
-  const disableMatch = normalized.match(/^letitroll(?:\s+(\d+))?$/);
+  const roomCommands = getEffectiveRoomCommands(state.roomId, state.groupRoomCommands);
+  state.roomCommands = roomCommands;
+  const disableMatch = matchCommandWithOptionalCount(normalized, [
+    DEFAULT_ROOM_COMMANDS.disable,
+    roomCommands.disable,
+  ]);
+  const revealMatch = matchCommandWithOptionalCount(normalized, [
+    ...DEFAULT_REVEAL_ALIASES,
+    roomCommands.reveal,
+  ]);
 
-  if (normalized === ENABLE_PRIVACY_COMMAND) {
+  if (matchesCommand(normalized, DEFAULT_ROOM_COMMANDS.enable, roomCommands.enable)) {
     enablePrivacyMode();
+    return true;
+  }
+
+  if (ADVANCED_SETTINGS_COMMANDS.has(normalized)) {
+    setAdvancedSettingsVisibility(true);
+    return true;
+  }
+
+  if (normalized === GET_LINK_COMMAND) {
+    void generateShareLink();
     return true;
   }
 
@@ -389,8 +608,9 @@ function handleLocalCommand(text) {
     return true;
   }
 
-  if (REVEAL_PRIVACY_COMMANDS.has(normalized)) {
-    revealPrivacyTemporarily();
+  if (revealMatch) {
+    const requestedCount = revealMatch[1] ? Number.parseInt(revealMatch[1], 10) : null;
+    revealPrivacyTemporarily(requestedCount);
     return true;
   }
 
@@ -432,13 +652,16 @@ function disablePrivacyMode(messageLimit = null) {
   setStatus("", "");
 }
 
-function revealPrivacyTemporarily() {
+function revealPrivacyTemporarily(messageLimit = null) {
   if (!state.isPrivacyEnabled) {
     setStatus("", "");
     return;
   }
 
-  state.previewMessageIds = [...state.hiddenMessageIds];
+  const previewLimit = Number.isInteger(messageLimit) && messageLimit > 0 ? messageLimit : null;
+  state.previewMessageIds = previewLimit
+    ? state.messages.slice(-previewLimit).map((message) => message.id)
+    : [...state.hiddenMessageIds];
   state.isPrivacyPreviewVisible = true;
   const revealedIds = new Set(state.previewMessageIds);
   state.unreadMessageIds = state.unreadMessageIds.filter((id) => !revealedIds.has(id));
@@ -490,6 +713,9 @@ function updatePrivacyIndicator() {
 
   privacyIndicator.textContent = shouldShowCount ? String(count) : "";
   privacyIndicator.className = shouldShowCount ? "privacy-indicator active" : "privacy-indicator";
+  composerCount.textContent = state.isPrivacyEnabled ? String(count) : "";
+  composerCount.className =
+    state.isPrivacyEnabled ? "composer-count active" : "composer-count";
 }
 
 function updateHiddenIncomingCount(nextMessages) {
@@ -544,6 +770,40 @@ function updateHiddenIncomingCount(nextMessages) {
   updateDocumentTitle();
   updateAppBadge();
   persistSession();
+}
+
+function compareMessagesByTime(left, right) {
+  const leftTime = left.createdAt?.toMillis?.() ?? 0;
+  const rightTime = right.createdAt?.toMillis?.() ?? 0;
+
+  if (leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+
+  return left.id.localeCompare(right.id);
+}
+
+function getDisplaySenderName(message) {
+  if (state.isPrivacyEnabled && state.isPrivacyPreviewVisible) {
+    return getPrivateAlias(message.senderId);
+  }
+
+  return message.senderName || "Anonymous";
+}
+
+function getPrivateAlias(senderId) {
+  const uniqueSenderIds = [];
+
+  state.messages.forEach((message) => {
+    if (!message.senderId || uniqueSenderIds.includes(message.senderId)) {
+      return;
+    }
+
+    uniqueSenderIds.push(message.senderId);
+  });
+
+  const index = uniqueSenderIds.indexOf(senderId);
+  return index >= 0 ? `User ${index + 1}` : "User";
 }
 
 function updateDocumentTitle() {
@@ -627,8 +887,61 @@ function updateAppBadge() {
   }
 }
 
+async function generateShareLink() {
+  if (!state.roomId) {
+    setStatus("Join a room before creating a share link.", "error");
+    return;
+  }
+
+  try {
+    const token = await encryptSharePayload({
+      roomId: state.roomId,
+      roomPasscode: state.roomPasscode,
+      privacyMode: true,
+    });
+    const url = new URL(window.location.href);
+    url.searchParams.set(SHARE_QUERY_KEY, token);
+    showShareLinkPanel(url.toString());
+    setStatus("Share link ready.", "success");
+  } catch (error) {
+    console.error(error);
+    setStatus("Share link could not be generated.", "error");
+  }
+}
+
+function showShareLinkPanel(link) {
+  shareLinkOutput.value = link;
+  shareLinkPanel.hidden = false;
+}
+
+function hideShareLinkPanel() {
+  shareLinkOutput.value = "";
+  shareLinkPanel.hidden = true;
+}
+
+async function copyShareLink() {
+  if (!shareLinkOutput.value) {
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(shareLinkOutput.value);
+    setStatus("Share link copied.", "success");
+  } catch (error) {
+    console.error(error);
+    setStatus("Copy failed. You can still copy the link manually.", "error");
+  }
+}
+
 function syncStealthLayout() {
-  document.body.classList.toggle("stealth-active", state.isPrivacyEnabled);
+  document.body.classList.toggle(
+    "stealth-active",
+    state.isPrivacyEnabled && !state.isPrivacyPreviewVisible
+  );
+  document.body.classList.toggle(
+    "preview-active",
+    state.isPrivacyEnabled && state.isPrivacyPreviewVisible
+  );
 }
 
 function registerServiceWorker() {
@@ -706,6 +1019,224 @@ function normalizePasscode(value) {
   return value.trim();
 }
 
+function normalizeRoomCommands(commands = DEFAULT_ROOM_COMMANDS) {
+  return {
+    enable: normalizeCommandPhrase(commands.enable) || DEFAULT_ROOM_COMMANDS.enable,
+    reveal: normalizeCommandPhrase(commands.reveal) || DEFAULT_ROOM_COMMANDS.reveal,
+    disable: normalizeCommandPhrase(commands.disable) || DEFAULT_ROOM_COMMANDS.disable,
+  };
+}
+
+function normalizeCommandPhrase(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
+function applyRoomCommandsToInputs(commands) {
+  privacyCommandInput.value = commands?.enable || "";
+  revealCommandInput.value = commands?.reveal || "";
+  disableCommandInput.value = commands?.disable || "";
+}
+
+function matchesCommand(value, ...candidates) {
+  return candidates.some((candidate) => normalizeCommandPhrase(candidate) === value);
+}
+
+function matchCommandWithOptionalCount(value, candidates) {
+  const uniqueCandidates = [...new Set(candidates.map((candidate) => normalizeCommandPhrase(candidate)).filter(Boolean))];
+
+  for (const candidate of uniqueCandidates) {
+    const regex = new RegExp(`^${escapeRegExp(candidate)}(?:\\s+(\\d+))?$`);
+    const match = value.match(regex);
+
+    if (match) {
+      return match;
+    }
+  }
+
+  return null;
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function getRoomCommandsStorageKey(roomId) {
+  const userId = state.profile?.id || getOrCreateUserId();
+  return `${LOCAL_ROOM_COMMANDS_KEY_PREFIX}:${userId}:${roomId}`;
+}
+
+function loadGroupRoomCommands(roomData) {
+  return roomData?.commands && typeof roomData.commands === "object" ? roomData.commands : {};
+}
+
+function getEffectiveRoomCommands(roomId, groupCommands = {}) {
+  return normalizeRoomCommands({
+    ...groupCommands,
+    ...loadRawLocalRoomCommands(roomId),
+  });
+}
+
+function loadRawLocalRoomCommands(roomId) {
+  if (!roomId) {
+    return {};
+  }
+
+  const raw = localStorage.getItem(getRoomCommandsStorageKey(roomId));
+  if (!raw) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    console.error(error);
+    localStorage.removeItem(getRoomCommandsStorageKey(roomId));
+    return {};
+  }
+}
+
+function saveLocalRoomCommands(roomId, commands) {
+  if (!roomId) {
+    return;
+  }
+
+  const sanitizedCommands = stripEmptyCommandFields(commands);
+  localStorage.setItem(
+    getRoomCommandsStorageKey(roomId),
+    JSON.stringify(sanitizedCommands)
+  );
+}
+
+async function saveAdvancedSettings() {
+  const rawCommands = {
+    enable: normalizeCommandPhrase(privacyCommandInput.value),
+    reveal: normalizeCommandPhrase(revealCommandInput.value),
+    disable: normalizeCommandPhrase(disableCommandInput.value),
+  };
+
+  setAdvancedSettingsVisibility(false);
+
+  try {
+    if (commandScopeInput.value === GROUP_COMMAND_SCOPE) {
+      await saveGroupRoomCommands(state.roomId, rawCommands);
+      state.groupRoomCommands = rawCommands;
+      localStorage.removeItem(getRoomCommandsStorageKey(state.roomId));
+    } else {
+      saveLocalRoomCommands(state.roomId, rawCommands);
+    }
+
+    state.roomCommands = getEffectiveRoomCommands(state.roomId, state.groupRoomCommands);
+    persistSession();
+    setStatus("Advanced settings saved.", "success");
+  } catch (error) {
+    console.error(error);
+    setStatus("Advanced settings could not be saved.", "error");
+  }
+}
+
+async function saveGroupRoomCommands(roomId, commands) {
+  if (!roomId) {
+    return;
+  }
+
+  const roomRef = doc(state.db, "rooms", roomId);
+  const sanitizedCommands = stripEmptyCommandFields(commands);
+  await setDoc(
+    roomRef,
+    {
+      commands: sanitizedCommands,
+    },
+    { merge: true }
+  );
+}
+
+function handleCommandScopeChange() {
+  populateAdvancedSettingsForScope(commandScopeInput.value);
+}
+
+function populateAdvancedSettingsForScope(scope, cachedCommands = null) {
+  const localCommands = cachedCommands?.localCommands ?? loadRawLocalRoomCommands(state.roomId);
+  const groupCommands = cachedCommands?.groupCommands ?? state.groupRoomCommands;
+
+  if (scope === PERSONAL_COMMAND_SCOPE) {
+    applyRoomCommandsToInputs(localCommands);
+    return;
+  }
+
+  applyRoomCommandsToInputs(groupCommands);
+}
+
+function hasCustomCommands(commands) {
+  return Boolean(
+    normalizeCommandPhrase(commands?.enable) ||
+      normalizeCommandPhrase(commands?.reveal) ||
+      normalizeCommandPhrase(commands?.disable)
+  );
+}
+
+function stripEmptyCommandFields(commands) {
+  const sanitized = {};
+
+  if (normalizeCommandPhrase(commands?.enable)) {
+    sanitized.enable = normalizeCommandPhrase(commands.enable);
+  }
+
+  if (normalizeCommandPhrase(commands?.reveal)) {
+    sanitized.reveal = normalizeCommandPhrase(commands.reveal);
+  }
+
+  if (normalizeCommandPhrase(commands?.disable)) {
+    sanitized.disable = normalizeCommandPhrase(commands.disable);
+  }
+
+  return sanitized;
+}
+
+function setAdvancedSettingsVisibility(visible) {
+  state.isAdvancedSettingsVisible = visible;
+  advancedSettingsPanel.hidden = !visible;
+
+  if (visible) {
+    setAdvancedCommandVisibility(false);
+    const localCommands = loadRawLocalRoomCommands(state.roomId);
+    const groupCommands = state.groupRoomCommands;
+    const initialScope = hasCustomCommands(localCommands)
+      ? PERSONAL_COMMAND_SCOPE
+      : GROUP_COMMAND_SCOPE;
+    commandScopeInput.value = initialScope;
+    populateAdvancedSettingsForScope(initialScope, {
+      localCommands,
+      groupCommands,
+    });
+    return;
+  }
+
+  clearRoomCommandInputs();
+}
+
+function clearRoomCommandInputs() {
+  commandScopeInput.value = GROUP_COMMAND_SCOPE;
+  privacyCommandInput.value = "";
+  revealCommandInput.value = "";
+  disableCommandInput.value = "";
+}
+
+function toggleAdvancedCommandVisibility() {
+  setAdvancedCommandVisibility(!state.areAdvancedCommandsVisible);
+}
+
+function setAdvancedCommandVisibility(visible) {
+  state.areAdvancedCommandsVisible = visible;
+  const inputType = visible ? "text" : "password";
+
+  privacyCommandInput.type = inputType;
+  revealCommandInput.type = inputType;
+  disableCommandInput.type = inputType;
+  toggleCommandVisibilityButton.textContent = visible ? "Hide text" : "Show text";
+}
+
 function getOrCreateUserId() {
   const saved = localStorage.getItem("firestore-chat-user-id");
   if (saved) {
@@ -715,6 +1246,55 @@ function getOrCreateUserId() {
   const newId = crypto.randomUUID();
   localStorage.setItem("firestore-chat-user-id", newId);
   return newId;
+}
+
+async function hydrateFromSharedLink() {
+  const url = new URL(window.location.href);
+  const token = url.searchParams.get(SHARE_QUERY_KEY);
+
+  if (!token) {
+    return false;
+  }
+
+  try {
+    const invite = await decryptSharePayload(token);
+    state.pendingInvitePrivacyMode = Boolean(invite.privacyMode);
+    roomIdInput.value = invite.roomId || "";
+    roomPasscodeInput.value = invite.roomPasscode || "";
+
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (raw) {
+      const saved = JSON.parse(raw);
+      if (saved.displayName) {
+        displayNameInput.value = saved.displayName;
+        state.profile = {
+          id: getOrCreateUserId(),
+          name: saved.displayName,
+        };
+      }
+    }
+
+    if (state.db && displayNameInput.value.trim() && invite.roomId) {
+      const roomData = await ensureRoomAccess(invite.roomId, invite.roomPasscode || "");
+      await connectToRoom(invite.roomId, invite.roomPasscode || "", roomData);
+      if (state.pendingInvitePrivacyMode) {
+        enablePrivacyMode();
+        state.pendingInvitePrivacyMode = false;
+      }
+      persistSession();
+    } else {
+      setStatus("Invite loaded. Enter your name to join.", "success");
+    }
+
+    url.searchParams.delete(SHARE_QUERY_KEY);
+    window.history.replaceState({}, "", url.toString());
+
+    return true;
+  } catch (error) {
+    console.error(error);
+    setStatus("The shared link is invalid or expired.", "error");
+    return false;
+  }
 }
 
 function persistSession() {
@@ -758,6 +1338,8 @@ async function restoreSession() {
       roomPasscodeInput.value = saved.roomPasscode;
       state.roomPasscode = saved.roomPasscode;
     }
+    state.roomCommands = loadLocalRoomCommands(saved.roomId);
+    applyRoomCommandsToInputs(state.roomCommands);
     state.isPrivacyEnabled = Boolean(saved.isPrivacyEnabled);
     state.visibleMessageLimit =
       Number.isInteger(saved.visibleMessageLimit) && saved.visibleMessageLimit > 0
@@ -771,14 +1353,86 @@ async function restoreSession() {
     updateAppBadge();
 
     if (state.db && saved.displayName && saved.roomId) {
-      await ensureRoomAccess(saved.roomId, saved.roomPasscode || "");
-      await connectToRoom(saved.roomId, saved.roomPasscode || "");
+      const roomData = await ensureRoomAccess(saved.roomId, saved.roomPasscode || "");
+      await connectToRoom(saved.roomId, saved.roomPasscode || "", roomData);
       persistSession();
     }
   } catch (error) {
     console.error(error);
     localStorage.removeItem(SESSION_KEY);
   }
+}
+
+async function encryptSharePayload(payload) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await getShareCryptoKey();
+  const plaintext = new TextEncoder().encode(JSON.stringify(payload));
+  const ciphertext = await crypto.subtle.encrypt(
+    {
+      name: "AES-GCM",
+      iv,
+    },
+    key,
+    plaintext
+  );
+
+  const merged = new Uint8Array(iv.length + ciphertext.byteLength);
+  merged.set(iv, 0);
+  merged.set(new Uint8Array(ciphertext), iv.length);
+  return toBase64Url(merged);
+}
+
+async function decryptSharePayload(token) {
+  const bytes = fromBase64Url(token);
+  const iv = bytes.slice(0, 12);
+  const ciphertext = bytes.slice(12);
+  const key = await getShareCryptoKey();
+  const plaintext = await crypto.subtle.decrypt(
+    {
+      name: "AES-GCM",
+      iv,
+    },
+    key,
+    ciphertext
+  );
+
+  return JSON.parse(new TextDecoder().decode(plaintext));
+}
+
+async function getShareCryptoKey() {
+  const secretBytes = new TextEncoder().encode(SHARE_SECRET);
+  const digest = await crypto.subtle.digest("SHA-256", secretBytes);
+
+  return crypto.subtle.importKey(
+    "raw",
+    digest,
+    {
+      name: "AES-GCM",
+    },
+    false,
+    ["encrypt", "decrypt"]
+  );
+}
+
+function toBase64Url(bytes) {
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function fromBase64Url(value) {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
+  const binary = atob(padded);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+
+  return bytes;
 }
 
 function formatTimestamp(timestamp) {

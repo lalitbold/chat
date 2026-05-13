@@ -29,6 +29,7 @@ body {
 
 button,
 input,
+select,
 textarea {
   font: inherit;
 }
@@ -94,6 +95,26 @@ h2 {
   gap: 16px;
 }
 
+.composer-count {
+  display: none;
+}
+
+.composer-count.active {
+  display: inline-flex;
+  align-self: flex-end;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  min-height: 36px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(22, 34, 31, 0.92);
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
 .field {
   display: flex;
   flex-direction: column;
@@ -104,7 +125,42 @@ h2 {
   font-weight: 600;
 }
 
+.advanced-settings {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.share-link-panel {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.share-link-panel[hidden] {
+  display: none;
+}
+
+.advanced-settings[hidden] {
+  display: none;
+}
+
+.settings-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.composer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 input,
+select,
 textarea {
   width: 100%;
   border: 1px solid var(--line);
@@ -115,6 +171,7 @@ textarea {
 }
 
 input:focus,
+select:focus,
 textarea:focus {
   outline: 2px solid rgba(15, 118, 110, 0.25);
   border-color: var(--accent);
@@ -125,6 +182,10 @@ textarea {
   max-height: 180px;
   resize: vertical;
   line-height: 1.45;
+}
+
+textarea.masked {
+  -webkit-text-security: disc;
 }
 
 .room-row {
@@ -301,7 +362,8 @@ body.stealth-active {
   background: #f8f5ec;
 }
 
-body.stealth-active .app-shell {
+body.stealth-active .app-shell,
+body.preview-active .app-shell {
   width: min(760px, calc(100% - 24px));
   grid-template-columns: 1fr;
   gap: 0;
@@ -309,34 +371,80 @@ body.stealth-active .app-shell {
 }
 
 body.stealth-active .hero-panel,
-body.stealth-active .chat-header,
+body.preview-active .hero-panel,
 body.stealth-active .status-banner {
   display: none;
 }
 
-body.stealth-active .chat-panel {
+body.preview-active .status-banner {
+  display: none;
+}
+
+body.stealth-active .chat-panel,
+body.preview-active .chat-panel {
   gap: 12px;
 }
 
+body.stealth-active .chat-header {
+  display: flex;
+  padding: 0;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+body.stealth-active .chat-header > div:first-child,
+body.stealth-active .ghost {
+  display: none;
+}
+
+body.stealth-active .header-actions {
+  width: 100%;
+  justify-content: flex-end;
+}
+
 body.stealth-active .messages {
+  display: none;
+}
+
+body.preview-active .chat-header,
+body.preview-active .chat-header {
+  display: none;
+}
+
+body.preview-active .messages {
   min-height: calc(100vh - 132px);
   max-height: calc(100vh - 132px);
   border-radius: 18px;
 }
 
-body.stealth-active .composer {
+body.preview-active .composer {
+  display: flex;
   border-radius: 18px;
-  padding: 12px;
-  display: block;
 }
 
-body.stealth-active .composer .primary {
-  display: none;
+body.stealth-active .composer {
+  border-radius: 18px;
+  min-height: calc(100vh - 76px);
+  display: flex;
+  justify-content: flex-end;
 }
 
 body.stealth-active #message-input {
-  border-radius: 12px;
-  min-height: 56px;
+  min-height: 72px;
+}
+
+body.stealth-active .privacy-indicator {
+  display: none;
+}
+
+body.stealth-active .composer-count.active {
+  align-self: flex-end;
+  margin-bottom: 8px;
+  position: sticky;
+  top: 0;
+  z-index: 2;
 }
 
 @keyframes rise-in {
@@ -361,13 +469,22 @@ body.stealth-active #message-input {
     max-height: 420px;
   }
 
-  body.stealth-active .app-shell {
+  body.stealth-active .app-shell,
+  body.preview-active .app-shell {
     width: min(100%, calc(100% - 16px));
     margin: 8px auto;
   }
 
   body.stealth-active .messages {
-    min-height: calc(100vh - 120px);
-    max-height: calc(100vh - 120px);
+    display: none;
+  }
+
+  body.preview-active .messages {
+    min-height: calc(100vh - 124px);
+    max-height: calc(100vh - 124px);
+  }
+
+  body.stealth-active .composer {
+    min-height: calc(100vh - 68px);
   }
 }
