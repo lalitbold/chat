@@ -39,6 +39,7 @@ const messageForm = document.getElementById("message-form");
 const advancedSettingsPanel = document.getElementById("advanced-settings");
 const composerCount = document.getElementById("composer-count");
 const messageInput = document.getElementById("message-input");
+const messageMaskOverlay = document.getElementById("message-mask-overlay");
 const toggleMessageMaskButton = document.getElementById("toggle-message-mask");
 const sendButton = document.getElementById("send-button");
 const saveAdvancedSettingsButton = document.getElementById("save-advanced-settings");
@@ -124,6 +125,8 @@ function wireEvents() {
   window.addEventListener("focus", handleAttentionChange);
   document.addEventListener("visibilitychange", handleAttentionChange);
   messageInput.addEventListener("keydown", handleMessageInputKeydown);
+  messageInput.addEventListener("input", syncMessageMaskOverlay);
+  messageInput.addEventListener("scroll", syncMessageMaskOverlayScroll);
   messagesContainer.addEventListener("scroll", handleMessageListScroll);
   toggleMessageMaskButton.addEventListener("click", toggleMessageInputMask);
   saveAdvancedSettingsButton.addEventListener("click", saveAdvancedSettings);
@@ -200,6 +203,7 @@ function wireEvents() {
 
     if (handleLocalCommand(text)) {
       messageInput.value = "";
+      syncMessageMaskOverlay();
       messageInput.focus();
       return;
     }
@@ -219,6 +223,7 @@ function wireEvents() {
       }
 
       messageInput.value = "";
+      syncMessageMaskOverlay();
       messageInput.focus();
     } catch (error) {
       console.error(error);
@@ -548,6 +553,18 @@ function toggleMessageInputMask() {
 function syncMessageInputMask() {
   messageInput.classList.toggle("masked", state.isMessageInputMasked);
   toggleMessageMaskButton.textContent = state.isMessageInputMasked ? "Show text" : "Mask text";
+  syncMessageMaskOverlay();
+}
+
+function syncMessageMaskOverlay() {
+  const maskedText = messageInput.value.replace(/[^\n]/g, "*");
+  messageMaskOverlay.textContent = maskedText;
+  syncMessageMaskOverlayScroll();
+}
+
+function syncMessageMaskOverlayScroll() {
+  messageMaskOverlay.scrollTop = messageInput.scrollTop;
+  messageMaskOverlay.scrollLeft = messageInput.scrollLeft;
 }
 
 function handleMessageInputKeydown(event) {

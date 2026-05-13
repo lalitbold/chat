@@ -159,6 +159,10 @@ h2 {
   gap: 10px;
 }
 
+.message-input-wrap {
+  position: relative;
+}
+
 input,
 select,
 textarea {
@@ -184,8 +188,31 @@ textarea {
   line-height: 1.45;
 }
 
+.message-mask-overlay {
+  position: absolute;
+  inset: 1px;
+  display: none;
+  overflow: hidden;
+  padding: 14px 16px;
+  border-radius: 13px;
+  color: var(--ink);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+  pointer-events: none;
+}
+
 textarea.masked {
-  -webkit-text-security: disc;
+  color: transparent;
+  caret-color: var(--ink);
+}
+
+textarea.masked::placeholder {
+  color: var(--muted);
+}
+
+textarea.masked + .message-mask-overlay {
+  display: block;
 }
 
 .room-row {

@@ -109,18 +109,21 @@
 
         <form id="message-form" class="composer card" autocomplete="off">
           <div id="composer-count" class="composer-count" aria-live="polite"></div>
-          <textarea
-            id="message-input"
-            maxlength="500"
-            placeholder="Write a message..."
-            autocomplete="off"
-            autocapitalize="off"
-            autocorrect="off"
-            spellcheck="false"
-            disabled
-            required
-            rows="2"
-          ></textarea>
+          <div class="message-input-wrap">
+            <textarea
+              id="message-input"
+              maxlength="500"
+              placeholder="Write a message..."
+              autocomplete="off"
+              autocapitalize="off"
+              autocorrect="off"
+              spellcheck="false"
+              disabled
+              required
+              rows="2"
+            ></textarea>
+            <div id="message-mask-overlay" class="message-mask-overlay" aria-hidden="true"></div>
+          </div>
           <div class="composer-actions">
             <button id="toggle-message-mask" class="ghost" type="button" disabled>
               Mask text
