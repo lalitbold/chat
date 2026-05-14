@@ -1,5 +1,17 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
+  getAuth,
+  getRedirectResult,
+  GoogleAuthProvider,
+  linkWithPopup,
+  linkWithRedirect,
+  onAuthStateChanged,
+  signInAnonymously,
+  signInWithPopup,
+  signInWithRedirect,
+  updateProfile,
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {
   addDoc,
   collection,
   doc,
@@ -20,6 +32,8 @@ const joinForm = document.getElementById("join-form");
 const displayNameInput = document.getElementById("display-name");
 const roomIdInput = document.getElementById("room-id");
 const roomPasscodeInput = document.getElementById("room-passcode");
+const authStatus = document.getElementById("auth-status");
+const linkGoogleButton = document.getElementById("link-google");
 const commandScopeInput = document.getElementById("command-scope");
 const privacyCommandInput = document.getElementById("privacy-command");
 const revealCommandInput = document.getElementById("reveal-command");
@@ -62,9 +76,14 @@ const GROUP_COMMAND_SCOPE = "group";
 const PERSONAL_COMMAND_SCOPE = "personal";
 const SHARE_QUERY_KEY = "c";
 const SHARE_SECRET = "firestore-chat-share-v1";
+const READ_RECEIPT_SYNC_DELAY_MS = 1200;
 
 const state = {
   db: null,
+  auth: null,
+  authUser: null,
+  authReady: null,
+  authError: null,
   profile: null,
   roomId: null,
   roomPasscode: "",
@@ -88,6 +107,11 @@ const state = {
   isPrivacyPreviewVisible: false,
   privacyPreviewTimeoutId: null,
   unsubscribeMessages: null,
+  unsubscribeReadReceipts: null,
+  readReceipts: [],
+  lastSyncedReadMessageId: null,
+  pendingReadMessageId: null,
+  readReceiptTimeoutId: null,
 };
 
 boot();
@@ -102,14 +126,32 @@ async function boot() {
     validateFirebaseConfig(firebaseConfig);
     const app = initializeApp(firebaseConfig);
     state.db = getFirestore(app);
-    setStatus("Firebase connected. Create or join a room.", "success");
+    state.auth = getAuth(app);
+    state.authReady = initializeAuthSession();
+    await state.authReady;
+    const handledGoogleRedirect = await handleGoogleRedirectResult();
+    await ensureAnonymousAuthSession();
+
+    if (!handledGoogleRedirect) {
+      setStatus("Firebase connected. Create or join a room.", "success");
+    }
   } catch (error) {
     console.error(error);
     setComposerState(false);
-    setStatus(
-      "Firebase is not configured yet. Copy firebase-config.example.js to firebase-config.js and add your Firebase project keys.",
-      "error"
-    );
+
+    if (isFirebaseAuthSetupError(error)) {
+      state.authError = error;
+      updateAuthUi();
+      setStatus(
+        "Firebase Auth is not enabled yet. Enable Authentication and the Anonymous provider in Firebase.",
+        "error"
+      );
+    } else {
+      setStatus(
+        "Firebase is not configured yet. Copy firebase-config.example.js to firebase-config.js and add your Firebase project keys.",
+        "error"
+      );
+    }
   }
 
   renderEmptyState("Join a room to start chatting.");
@@ -135,6 +177,7 @@ function wireEvents() {
   toggleCommandVisibilityButton.addEventListener("click", toggleAdvancedCommandVisibility);
   copyShareLinkButton.addEventListener("click", copyShareLink);
   closeShareLinkButton.addEventListener("click", hideShareLinkPanel);
+  linkGoogleButton.addEventListener("click", linkGoogleAccount);
 
   createRoomButton.addEventListener("click", () => {
     roomIdInput.value = generateRoomId();
@@ -144,8 +187,15 @@ function wireEvents() {
   joinForm.addEventListener("submit", async (event) => {
     event.preventDefault();
 
-    if (!state.db) {
+    if (!state.db || !state.auth) {
       setStatus("Add your Firebase config before joining a room.", "error");
+      return;
+    }
+
+    await state.authReady;
+
+    if (!state.authUser) {
+      setStatus("Auth is still starting. Try again in a moment.", "error");
       return;
     }
 
@@ -164,9 +214,10 @@ function wireEvents() {
     }
 
     state.profile = {
-      id: getOrCreateUserId(),
+      id: state.authUser.uid,
       name: displayName,
     };
+    await syncAuthDisplayName(displayName);
 
     try {
       const roomData = await ensureRoomAccess(roomId, roomPasscode);
@@ -236,6 +287,279 @@ function wireEvents() {
   leaveRoomButton.addEventListener("click", disconnectFromRoom);
 }
 
+function initializeAuthSession() {
+  updateAuthUi();
+
+  return new Promise((resolve, reject) => {
+    let isResolved = false;
+
+    onAuthStateChanged(
+      state.auth,
+      async (user) => {
+        try {
+          if (user) {
+            applyAuthUser(user);
+          }
+
+          if (!isResolved) {
+            isResolved = true;
+            resolve(user || null);
+          }
+        } catch (error) {
+          console.error(error);
+          state.authError = error;
+          updateAuthUi();
+
+          if (!isResolved) {
+            isResolved = true;
+            reject(error);
+          }
+        }
+      },
+      (error) => {
+        console.error(error);
+        state.authError = error;
+        updateAuthUi();
+
+        if (!isResolved) {
+          isResolved = true;
+          reject(error);
+        }
+      }
+    );
+  });
+}
+
+async function ensureAnonymousAuthSession() {
+  if (state.authUser || state.auth.currentUser) {
+    return;
+  }
+
+  try {
+    const result = await signInAnonymously(state.auth);
+    applyAuthUser(result.user);
+  } catch (error) {
+    console.error(error);
+    state.authError = error;
+    updateAuthUi();
+    throw error;
+  }
+}
+
+function applyAuthUser(user) {
+  const previousProfileId = state.profile?.id;
+  state.authError = null;
+  state.authUser = user;
+
+  if (!displayNameInput.value.trim() && user.displayName) {
+    displayNameInput.value = user.displayName.slice(0, 30);
+  }
+
+  if (state.profile) {
+    state.profile = {
+      id: user.uid,
+      name: displayNameInput.value.trim() || user.displayName || state.profile.name,
+    };
+  }
+
+  if (previousProfileId && previousProfileId !== user.uid) {
+    state.lastSyncedReadMessageId = null;
+    state.pendingReadMessageId = null;
+    renderMessages();
+    queueReadReceiptSync();
+    persistSession();
+  }
+
+  updateAuthUi();
+}
+
+async function linkGoogleAccount() {
+  if (!state.auth || !state.authUser) {
+    setStatus("Auth is still starting. Try again in a moment.", "error");
+    return;
+  }
+
+  const provider = new GoogleAuthProvider();
+  state.authError = null;
+  linkGoogleButton.disabled = true;
+
+  try {
+    if (state.authUser.isAnonymous) {
+      try {
+        const result = await linkWithPopup(state.authUser, provider);
+        applyAuthUser(result.user);
+        await syncAuthDisplayName(displayNameInput.value.trim());
+        setStatus("Google linked. This account can now be used on other devices.", "success");
+        return;
+      } catch (error) {
+        if (isPopupBlockedError(error)) {
+          await startGoogleRedirectLink(provider);
+          return;
+        }
+
+        if (error?.code !== "auth/credential-already-in-use") {
+          throw error;
+        }
+      }
+    }
+
+    try {
+      const result = await signInWithPopup(state.auth, provider);
+      applyAuthUser(result.user);
+      setStatus("Signed in with Google. Your chats now use this account.", "success");
+    } catch (error) {
+      if (isPopupBlockedError(error)) {
+        await startGoogleRedirectSignIn(provider);
+        return;
+      }
+
+      throw error;
+    }
+  } catch (error) {
+    console.error(error);
+    setStatus(getGoogleAuthErrorMessage(error), "error");
+  } finally {
+    updateAuthUi();
+  }
+}
+
+async function startGoogleRedirectLink(provider = new GoogleAuthProvider()) {
+  sessionStorage.setItem("firestore-chat-google-redirect-mode", "link");
+  setStatus("Popup was blocked. Redirecting to Google sign-in...", "success");
+  await linkWithRedirect(state.authUser, provider);
+}
+
+async function startGoogleRedirectSignIn(provider = new GoogleAuthProvider()) {
+  sessionStorage.setItem("firestore-chat-google-redirect-mode", "signin");
+  setStatus("Popup was blocked. Redirecting to Google sign-in...", "success");
+  await signInWithRedirect(state.auth, provider);
+}
+
+async function handleGoogleRedirectResult() {
+  const redirectMode = sessionStorage.getItem("firestore-chat-google-redirect-mode");
+
+  if (!redirectMode) {
+    return false;
+  }
+
+  sessionStorage.removeItem("firestore-chat-google-redirect-mode");
+
+  try {
+    const result = await getRedirectResult(state.auth);
+
+    if (!result?.user) {
+      return false;
+    }
+
+    applyAuthUser(result.user);
+
+    if (redirectMode === "link") {
+      await syncAuthDisplayName(displayNameInput.value.trim());
+      setStatus("Google linked. This account can now be used on other devices.", "success");
+      return true;
+    }
+
+    setStatus("Signed in with Google. Your chats now use this account.", "success");
+    return true;
+  } catch (error) {
+    console.error(error);
+
+    if (redirectMode === "link" && error?.code === "auth/credential-already-in-use") {
+      await startGoogleRedirectSignIn();
+      return true;
+    }
+
+    setStatus(getGoogleAuthErrorMessage(error), "error");
+    return true;
+  }
+}
+
+async function syncAuthDisplayName(displayName) {
+  if (!state.authUser || !displayName || state.authUser.displayName === displayName) {
+    return;
+  }
+
+  try {
+    await updateProfile(state.authUser, { displayName });
+    state.authUser = state.auth.currentUser;
+    updateAuthUi();
+  } catch (error) {
+    console.error("Display name sync failed:", error);
+  }
+}
+
+function updateAuthUi() {
+  if (!authStatus || !linkGoogleButton) {
+    return;
+  }
+
+  if (!state.auth) {
+    authStatus.textContent = "Firebase Auth is not configured.";
+    linkGoogleButton.disabled = true;
+    return;
+  }
+
+  if (state.authError) {
+    authStatus.textContent = isFirebaseAuthSetupError(state.authError)
+      ? "Enable Firebase Auth and Anonymous sign-in."
+      : "Firebase Auth could not start.";
+    linkGoogleButton.disabled = true;
+    return;
+  }
+
+  if (!state.authUser) {
+    authStatus.textContent = "Starting secure guest session...";
+    linkGoogleButton.disabled = true;
+    return;
+  }
+
+  const googleProvider = state.authUser.providerData.find(
+    (provider) => provider.providerId === "google.com"
+  );
+
+  if (googleProvider) {
+    authStatus.textContent = `Google account: ${googleProvider.email || state.authUser.displayName || "linked"}`;
+    linkGoogleButton.textContent = "Switch Google";
+  } else {
+    authStatus.textContent = "Guest account. Link Google to use this chat on another device.";
+    linkGoogleButton.textContent = "Link Google";
+  }
+
+  linkGoogleButton.disabled = false;
+}
+
+function isFirebaseAuthSetupError(error) {
+  return ["auth/configuration-not-found", "auth/admin-restricted-operation"].includes(error?.code);
+}
+
+function isPopupBlockedError(error) {
+  return ["auth/popup-blocked", "auth/cancelled-popup-request"].includes(error?.code);
+}
+
+function getGoogleAuthErrorMessage(error) {
+  if (error?.code === "auth/popup-blocked") {
+    return "Google popup was blocked. Use the redirect flow or allow popups for this site.";
+  }
+
+  if (error?.code === "auth/popup-closed-by-user") {
+    return "Google linking was cancelled.";
+  }
+
+  if (error?.code === "auth/unauthorized-domain") {
+    return "Add this domain to Firebase Auth authorized domains.";
+  }
+
+  if (error?.code === "auth/operation-not-allowed") {
+    return "Enable the Google provider in Firebase Authentication.";
+  }
+
+  if (isFirebaseAuthSetupError(error)) {
+    return "Enable Firebase Auth, Anonymous sign-in, and Google sign-in.";
+  }
+
+  return `Google linking failed${error?.code ? ` (${error.code})` : ""}.`;
+}
+
 async function ensureRoomAccess(roomId, roomPasscode) {
   const roomRef = doc(state.db, "rooms", roomId);
   const roomSnapshot = await getDoc(roomRef);
@@ -294,7 +618,9 @@ async function connectToRoom(roomId, roomPasscode = "", roomData = null) {
   setAdvancedSettingsVisibility(false);
 
   await loadInitialMessages(roomId);
+  subscribeToReadReceipts(roomId);
   subscribeToLatestMessages(roomId);
+  queueReadReceiptSync();
 }
 
 async function loadInitialMessages(roomId) {
@@ -418,6 +744,12 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
     state.unsubscribeMessages = null;
   }
 
+  if (state.unsubscribeReadReceipts) {
+    state.unsubscribeReadReceipts();
+    state.unsubscribeReadReceipts = null;
+  }
+
+  clearReadReceiptTimer();
   clearPrivacyPreviewTimer();
   state.roomId = null;
   state.roomPasscode = "";
@@ -437,6 +769,9 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   state.previewMessageIds = [];
   state.isPrivacyEnabled = resetStealthState ? false : state.isPrivacyEnabled;
   state.isPrivacyPreviewVisible = false;
+  state.readReceipts = [];
+  state.lastSyncedReadMessageId = null;
+  state.pendingReadMessageId = null;
   activeRoom.textContent = "Not connected";
   leaveRoomButton.disabled = true;
   setComposerState(false);
@@ -479,6 +814,18 @@ function renderMessage(message) {
 
   meta.append(sender, timestamp);
   wrapper.append(meta, body);
+
+  if (message.senderId === state.profile?.id) {
+    const readBy = getMessageReadByNames(message);
+
+    if (readBy.length > 0) {
+      const receipt = document.createElement("div");
+      receipt.className = "message-read-receipt";
+      receipt.textContent = `Read by ${formatNameList(readBy)}`;
+      wrapper.append(receipt);
+    }
+  }
+
   return wrapper;
 }
 
@@ -557,8 +904,7 @@ function syncMessageInputMask() {
 }
 
 function syncMessageMaskOverlay() {
-  const maskedText = messageInput.value.replace(/[^\n]/g, "*");
-  messageMaskOverlay.textContent = maskedText;
+  messageMaskOverlay.textContent = messageInput.value.replace(/[^\n]/g, "*");
   syncMessageMaskOverlayScroll();
 }
 
@@ -665,6 +1011,7 @@ function disablePrivacyMode(messageLimit = null) {
   updateDocumentTitle();
   updateAppBadge();
   renderMessages();
+  queueReadReceiptSync();
   persistSession();
   setStatus("", "");
 }
@@ -689,6 +1036,7 @@ function revealPrivacyTemporarily(messageLimit = null) {
   updateDocumentTitle();
   updateAppBadge();
   renderMessages();
+  queueReadReceiptSync();
   persistSession();
   clearPrivacyPreviewTimer();
   state.privacyPreviewTimeoutId = window.setTimeout(() => {
@@ -715,6 +1063,79 @@ function hidePrivacyPreview() {
   updateAppBadge();
   renderMessages();
   persistSession();
+}
+
+function subscribeToReadReceipts(roomId) {
+  const receiptsRef = collection(state.db, "rooms", roomId, "readReceipts");
+
+  state.unsubscribeReadReceipts = onSnapshot(
+    receiptsRef,
+    (snapshot) => {
+      state.readReceipts = snapshot.docs.map((receiptDoc) => ({
+        id: receiptDoc.id,
+        ...receiptDoc.data(),
+      }));
+      renderMessages();
+    },
+    (error) => {
+      console.error(error);
+      setStatus("Read notifications stopped. Verify your Firestore rules.", "error");
+    }
+  );
+}
+
+function queueReadReceiptSync() {
+  const latestReadableMessage = getLatestReadableMessage();
+
+  if (
+    !latestReadableMessage ||
+    latestReadableMessage.id === state.lastSyncedReadMessageId ||
+    latestReadableMessage.id === state.pendingReadMessageId
+  ) {
+    return;
+  }
+
+  state.pendingReadMessageId = latestReadableMessage.id;
+  clearReadReceiptTimer();
+  state.readReceiptTimeoutId = window.setTimeout(() => {
+    void syncReadReceipt(latestReadableMessage);
+  }, READ_RECEIPT_SYNC_DELAY_MS);
+}
+
+async function syncReadReceipt(message) {
+  clearReadReceiptTimer();
+
+  if (!state.db || !state.roomId || !state.profile || !message?.createdAt?.toMillis) {
+    state.pendingReadMessageId = null;
+    return;
+  }
+
+  try {
+    const receiptRef = doc(state.db, "rooms", state.roomId, "readReceipts", state.profile.id);
+    await setDoc(
+      receiptRef,
+      {
+        userId: state.profile.id,
+        displayName: state.profile.name,
+        lastReadMessageId: message.id,
+        lastReadCreatedAt: message.createdAt,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+    state.lastSyncedReadMessageId = message.id;
+  } catch (error) {
+    console.error(error);
+  } finally {
+    state.pendingReadMessageId = null;
+  }
+}
+
+function clearReadReceiptTimer() {
+  if (state.readReceiptTimeoutId) {
+    window.clearTimeout(state.readReceiptTimeoutId);
+    state.readReceiptTimeoutId = null;
+  }
 }
 
 function clearPrivacyPreviewTimer() {
@@ -806,6 +1227,34 @@ function getDisplaySenderName(message) {
   }
 
   return message.senderName || "Anonymous";
+}
+
+function getMessageReadByNames(message) {
+  const messageTime = message.createdAt?.toMillis?.();
+
+  if (!messageTime) {
+    return [];
+  }
+
+  return state.readReceipts
+    .filter((receipt) => {
+      if (!receipt.lastReadCreatedAt?.toMillis || receipt.userId === state.profile?.id) {
+        return false;
+      }
+
+      return receipt.lastReadCreatedAt.toMillis() >= messageTime;
+    })
+    .map((receipt) => receipt.displayName || "Someone")
+    .filter((name, index, names) => names.indexOf(name) === index)
+    .sort((left, right) => left.localeCompare(right));
+}
+
+function formatNameList(names) {
+  if (names.length <= 2) {
+    return names.join(" and ");
+  }
+
+  return `${names.slice(0, 2).join(", ")} and ${names.length - 2} more`;
 }
 
 function getPrivateAlias(senderId) {
@@ -989,6 +1438,20 @@ function getVisibleMessages() {
   return state.messages.filter((message) => previewIds.has(message.id));
 }
 
+function getLatestReadableMessage() {
+  if (!shouldAutoMarkAsRead() && !(state.isPrivacyEnabled && state.isPrivacyPreviewVisible)) {
+    return null;
+  }
+
+  const visibleMessages = getVisibleMessages().filter((message) => message.createdAt?.toMillis);
+
+  if (visibleMessages.length === 0) {
+    return null;
+  }
+
+  return visibleMessages[visibleMessages.length - 1];
+}
+
 function getUnreadCount() {
   return state.isPrivacyEnabled ? state.hiddenMessageIds.length : state.unreadMessageIds.length;
 }
@@ -1011,6 +1474,7 @@ function handleAttentionChange() {
   updatePrivacyIndicator();
   updateDocumentTitle();
   updateAppBadge();
+  queueReadReceiptSync();
   persistSession();
 }
 
@@ -1080,7 +1544,7 @@ function escapeRegExp(value) {
 }
 
 function getRoomCommandsStorageKey(roomId) {
-  const userId = state.profile?.id || getOrCreateUserId();
+  const userId = state.profile?.id || state.authUser?.uid || "pending-auth";
   return `${LOCAL_ROOM_COMMANDS_KEY_PREFIX}:${userId}:${roomId}`;
 }
 
@@ -1254,17 +1718,6 @@ function setAdvancedCommandVisibility(visible) {
   toggleCommandVisibilityButton.textContent = visible ? "Hide text" : "Show text";
 }
 
-function getOrCreateUserId() {
-  const saved = localStorage.getItem("firestore-chat-user-id");
-  if (saved) {
-    return saved;
-  }
-
-  const newId = crypto.randomUUID();
-  localStorage.setItem("firestore-chat-user-id", newId);
-  return newId;
-}
-
 async function hydrateFromSharedLink() {
   const url = new URL(window.location.href);
   const token = url.searchParams.get(SHARE_QUERY_KEY);
@@ -1285,7 +1738,7 @@ async function hydrateFromSharedLink() {
       if (saved.displayName) {
         displayNameInput.value = saved.displayName;
         state.profile = {
-          id: getOrCreateUserId(),
+          id: state.authUser.uid,
           name: saved.displayName,
         };
       }
@@ -1344,7 +1797,7 @@ async function restoreSession() {
     if (saved.displayName) {
       displayNameInput.value = saved.displayName;
       state.profile = {
-        id: getOrCreateUserId(),
+        id: state.authUser.uid,
         name: saved.displayName,
       };
     }
@@ -1355,7 +1808,7 @@ async function restoreSession() {
       roomPasscodeInput.value = saved.roomPasscode;
       state.roomPasscode = saved.roomPasscode;
     }
-    state.roomCommands = loadLocalRoomCommands(saved.roomId);
+    state.roomCommands = getEffectiveRoomCommands(saved.roomId);
     applyRoomCommandsToInputs(state.roomCommands);
     state.isPrivacyEnabled = Boolean(saved.isPrivacyEnabled);
     state.visibleMessageLimit =

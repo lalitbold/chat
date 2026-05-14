@@ -3,6 +3,7 @@
 This project is a lightweight realtime chat app built with:
 
 - HTML, CSS, and vanilla JavaScript
+- Firebase Authentication for guest sessions and optional Google linking
 - Firebase Firestore for room and message storage
 - Firestore realtime listeners with `onSnapshot`
 
@@ -14,8 +15,8 @@ This project is a lightweight realtime chat app built with:
 - Stealth hidden-chat mode with incoming message count
 - Title badge count for hidden incoming messages
 - Installable PWA support
-- Local user identity persistence and session restore
-- Example Firestore rules for quick testing
+- Auth-backed user identity, read receipts, and session restore
+- Firestore rules scoped to authenticated users
 
 ## Project structure
 
@@ -28,10 +29,13 @@ This project is a lightweight realtime chat app built with:
 ## Firebase setup
 
 1. Create a Firebase project in the Firebase console.
-2. Enable Firestore Database in production or test mode.
-3. Create a Web App inside your Firebase project.
-4. Copy the Firebase config values into `firebase-config.js`.
-5. Apply the rules from `firestore.rules`.
+2. Enable Firestore Database.
+3. Enable Firebase Authentication.
+4. Turn on the Anonymous provider.
+5. Turn on the Google provider if you want the `Link Google` button to work.
+6. Create a Web App inside your Firebase project.
+7. Copy the Firebase config values into `firebase-config.js`.
+8. Apply the rules from `firestore.rules`.
 
 ## Firestore data model
 
@@ -45,6 +49,13 @@ rooms/{roomId}/messages/{messageId}
   senderId
   senderName
   createdAt
+
+rooms/{roomId}/readReceipts/{userId}
+  userId
+  displayName
+  lastReadMessageId
+  lastReadCreatedAt
+  updatedAt
 ```
 
 ## Hidden chat behavior
@@ -96,4 +107,4 @@ After deployment, open the Firebase Hosting URL, and install the app from the br
 
 ## Important note
 
-The included `firestore.rules` file is intentionally open for demo purposes. Before using this in a real app, add Firebase Authentication and lock the rules down to authenticated users and room membership checks.
+The included `firestore.rules` file now requires Firebase Auth. It verifies message authors and read-receipt owners, but room membership is still simple for this demo. For a production app, add explicit room membership checks and avoid storing passcodes in client-readable room documents.
