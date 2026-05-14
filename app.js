@@ -139,6 +139,7 @@ const state = {
   pendingInvitePrivacyMode: false,
   isMessageInputMasked: false,
   messages: [],
+  localMessages: [],
   hasHydratedRoom: false,
   hasMoreMessages: true,
   isLoadingOlderMessages: false,
@@ -640,6 +641,7 @@ async function connectToRoom(roomId, roomPasscode = "", roomData = null) {
   state.isAdvancedSettingsVisible = false;
   state.hasHydratedRoom = false;
   state.messages = [];
+  state.localMessages = [];
   state.oldestMessageCursor = null;
   state.hasMoreMessages = true;
   state.isLoadingOlderMessages = false;
@@ -795,6 +797,7 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   state.pendingInvitePrivacyMode = false;
   state.hasHydratedRoom = false;
   state.messages = [];
+  state.localMessages = [];
   state.hasMoreMessages = true;
   state.isLoadingOlderMessages = false;
   state.oldestMessageCursor = null;
@@ -833,7 +836,11 @@ function renderMessage(message, context = {}) {
   const wrapper = document.createElement("article");
   wrapper.className = "message";
 
-  if (message.senderId === state.profile?.id) {
+  if (message.isLocalOnly) {
+    wrapper.classList.add("local-only");
+  }
+
+  if (!message.isLocalOnly && message.senderId === state.profile?.id) {
     wrapper.classList.add("own");
   }
 
@@ -853,7 +860,7 @@ function renderMessage(message, context = {}) {
   meta.append(sender, timestamp);
   wrapper.append(meta, body);
 
-  if (message.senderId === state.profile?.id) {
+  if (!message.isLocalOnly && message.senderId === state.profile?.id) {
     const readBy = getMessageReadByNames(message);
 
     if (readBy.length > 0) {
@@ -873,7 +880,7 @@ function renderMessages(options = {}) {
     return;
   }
 
-  const messagesToRender = getVisibleMessages();
+  const messagesToRender = getVisibleMessagesWithLocal();
   const renderContext = createRenderContext(messagesToRender);
 
   if (messagesToRender.length === 0) {
@@ -913,7 +920,21 @@ function renderPrivacyState() {
   count.className = "privacy-count";
   count.textContent = String(state.hiddenMessageIds.length);
   wrapper.append(count);
-  messagesContainer.replaceChildren(wrapper);
+
+  if (state.localMessages.length === 0) {
+    messagesContainer.replaceChildren(wrapper);
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  fragment.append(wrapper);
+
+  state.localMessages.forEach((message) => {
+    fragment.appendChild(renderMessage(message, createRenderContext(state.localMessages)));
+  });
+
+  messagesContainer.replaceChildren(fragment);
+  messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
 
 function setStatus(message, tone = "") {
@@ -1265,7 +1286,7 @@ async function postTaskList(filterText = "") {
     .slice(0, TASK_LIST_LIMIT);
 
   if (pendingTasks.length === 0) {
-    await postTaskMessage(
+    postLocalTaskMessage(
       requestedLabels.length > 0
         ? `No pending tasks with ${formatTaskLabels(requestedLabels).trim()}.`
         : "No pending tasks."
@@ -1284,7 +1305,7 @@ async function postTaskList(filterText = "") {
     requestedLabels.length > 0
       ? `Pending tasks ${formatTaskLabels(requestedLabels).trim()}:`
       : "Pending tasks:";
-  await postTaskMessage(`${heading}\n${taskLines.join("\n")}`);
+  postLocalTaskMessage(`${heading}\n${taskLines.join("\n")}`);
   setStatus(`${pendingTasks.length} pending task${pendingTasks.length === 1 ? "" : "s"} listed.`, "success");
 }
 
@@ -1402,6 +1423,20 @@ async function postTaskMessage(text) {
     type: "task",
     createdAt: serverTimestamp(),
   });
+}
+
+function postLocalTaskMessage(text) {
+  state.localMessages.push({
+    id: `local-task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    text,
+    senderId: null,
+    senderName: "Tasks (only you)",
+    type: "task",
+    isLocalOnly: true,
+    createdAt: new Date(),
+  });
+  syncStealthLayout();
+  renderMessages();
 }
 
 function compareTasksByCreatedAt(left, right) {
@@ -1707,14 +1742,22 @@ function updateHiddenIncomingCount(nextMessages) {
 }
 
 function compareMessagesByTime(left, right) {
-  const leftTime = left.createdAt?.toMillis?.() ?? 0;
-  const rightTime = right.createdAt?.toMillis?.() ?? 0;
+  const leftTime = getTimestampMillis(left.createdAt);
+  const rightTime = getTimestampMillis(right.createdAt);
 
   if (leftTime !== rightTime) {
     return leftTime - rightTime;
   }
 
   return left.id.localeCompare(right.id);
+}
+
+function getTimestampMillis(timestamp) {
+  if (timestamp instanceof Date) {
+    return timestamp.getTime();
+  }
+
+  return timestamp?.toMillis?.() ?? 0;
 }
 
 function getMessageReadByNames(message) {
@@ -1944,6 +1987,10 @@ function syncStealthLayout() {
     "preview-active",
     state.isPrivacyEnabled && state.isPrivacyPreviewVisible
   );
+  document.body.classList.toggle(
+    "local-tasks-visible",
+    state.isPrivacyEnabled && !state.isPrivacyPreviewVisible && state.localMessages.length > 0
+  );
 }
 
 function registerServiceWorker() {
@@ -1972,6 +2019,16 @@ function getVisibleMessages() {
 
   const previewIds = new Set(state.previewMessageIds);
   return state.messages.filter((message) => previewIds.has(message.id));
+}
+
+function getVisibleMessagesWithLocal() {
+  const visibleMessages = getVisibleMessages();
+
+  if (state.localMessages.length === 0) {
+    return visibleMessages;
+  }
+
+  return [...visibleMessages, ...state.localMessages].sort(compareMessagesByTime);
 }
 
 function getLatestReadableMessage() {
@@ -2470,7 +2527,7 @@ function fromBase64Url(value) {
 }
 
 function formatTimestamp(timestamp) {
-  const date = timestamp?.toDate?.();
+  const date = timestamp instanceof Date ? timestamp : timestamp?.toDate?.();
   if (!date) {
     return "sending...";
   }

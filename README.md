@@ -75,8 +75,8 @@ rooms/{roomId}/tasks/{taskId}
 ## Task commands
 
 - `/task fix that issue #bug #urgent` creates a pending task with optional labels.
-- `/task list` posts the pending task list into the room. Completed tasks are hidden by default.
-- `/task list #bug` posts pending tasks with that label.
+- `/task list` shows the pending task list only to you. Completed tasks are hidden by default.
+- `/task list #bug` shows pending tasks with that label only to you.
 - `/task complete <id>` marks a task complete. The `<id>` can be the short ID shown in the task list, like `#abc123`, or the full Firestore document ID.
 - `/task label <id> #bug` adds a label to an existing task.
 - `/task unlabel <id> #bug` removes a label from an existing task.

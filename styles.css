@@ -438,6 +438,13 @@ button:disabled {
   border-color: rgba(15, 118, 110, 0.16);
 }
 
+.message.local-only {
+  align-self: stretch;
+  max-width: 100%;
+  background: rgba(255, 250, 241, 0.92);
+  border-style: dashed;
+}
+
 .message-meta {
   display: flex;
   align-items: center;
@@ -513,6 +520,13 @@ body.stealth-active .messages {
   display: none;
 }
 
+body.stealth-active.local-tasks-visible .messages {
+  display: flex;
+  min-height: calc(100vh - 180px);
+  max-height: calc(100vh - 180px);
+  border-radius: 18px;
+}
+
 body.preview-active .chat-header,
 body.preview-active .chat-header {
   display: none;
@@ -582,6 +596,12 @@ body.stealth-active .composer-count.active {
 
   body.stealth-active .messages {
     display: none;
+  }
+
+  body.stealth-active.local-tasks-visible .messages {
+    display: flex;
+    min-height: calc(100vh - 180px);
+    max-height: calc(100vh - 180px);
   }
 
   body.preview-active .messages {
