@@ -15,8 +15,10 @@ This project is a lightweight realtime chat app built with:
 - Stealth hidden-chat mode with incoming message count
 - Title badge count for hidden incoming messages
 - Installable PWA support
+- Android packaging path via Trusted Web Activity
 - Auth-backed user identity, read receipts, and session restore
 - Firestore rules scoped to authenticated users
+- Room task commands for creating, listing, and completing shared tasks
 
 ## Project structure
 
@@ -25,6 +27,7 @@ This project is a lightweight realtime chat app built with:
 - `app.js` - Firestore chat logic
 - `firebase-config.js` - your Firebase project credentials
 - `firestore.rules` - starter Firestore rules
+- `ANDROID.md` - smallest-size Android packaging guide
 
 ## Firebase setup
 
@@ -56,7 +59,27 @@ rooms/{roomId}/readReceipts/{userId}
   lastReadMessageId
   lastReadCreatedAt
   updatedAt
+
+rooms/{roomId}/tasks/{taskId}
+  description
+  labels
+  status
+  createdAt
+  createdBy
+  createdByName
+  completedAt
+  completedBy
+  completedByName
 ```
+
+## Task commands
+
+- `/task fix that issue #bug #urgent` creates a pending task with optional labels.
+- `/task list` posts the pending task list into the room. Completed tasks are hidden by default.
+- `/task list #bug` posts pending tasks with that label.
+- `/task complete <id>` marks a task complete. The `<id>` can be the short ID shown in the task list, like `#abc123`, or the full Firestore document ID.
+- `/task label <id> #bug` adds a label to an existing task.
+- `/task unlabel <id> #bug` removes a label from an existing task.
 
 ## Hidden chat behavior
 
@@ -104,6 +127,12 @@ firebase deploy
 ```
 
 After deployment, open the Firebase Hosting URL, and install the app from the browser if you want it as a desktop app. At that point, you no longer need the Python server.
+
+## Android app
+
+For the smallest Android package, use a Trusted Web Activity instead of a WebView wrapper. The app is already structured as a PWA, so the Android build can stay as a thin shell around the Firebase-hosted app.
+
+See `ANDROID.md` for the Bubblewrap build flow and Digital Asset Links setup.
 
 ## Important note
 

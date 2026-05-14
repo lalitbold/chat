@@ -13,6 +13,8 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   addDoc,
+  arrayRemove,
+  arrayUnion,
   collection,
   doc,
   getDoc,
@@ -25,6 +27,8 @@ import {
   serverTimestamp,
   startAfter,
   setDoc,
+  updateDoc,
+  where,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
 
@@ -54,6 +58,7 @@ const advancedSettingsPanel = document.getElementById("advanced-settings");
 const composerCount = document.getElementById("composer-count");
 const messageInput = document.getElementById("message-input");
 const messageMaskOverlay = document.getElementById("message-mask-overlay");
+let commandSuggestions = document.getElementById("command-suggestions");
 const toggleMessageMaskButton = document.getElementById("toggle-message-mask");
 const sendButton = document.getElementById("send-button");
 const saveAdvancedSettingsButton = document.getElementById("save-advanced-settings");
@@ -68,6 +73,35 @@ const DEFAULT_ROOM_COMMANDS = {
 const DEFAULT_REVEAL_ALIASES = new Set(["whatisit", "whatitis"]);
 const ADVANCED_SETTINGS_COMMANDS = new Set(["advancesetting", "advancedsetting"]);
 const GET_LINK_COMMAND = "getlink";
+const TASK_COMMAND = "/task";
+const TASK_LIST_LIMIT = 50;
+const SLASH_COMMANDS = [
+  {
+    label: "/task <description> #label",
+    insertText: "/task ",
+    hint: "Create task",
+  },
+  {
+    label: "/task list",
+    insertText: "/task list",
+    hint: "Pending tasks",
+  },
+  {
+    label: "/task complete <id>",
+    insertText: "/task complete ",
+    hint: "Complete task",
+  },
+  {
+    label: "/task label <id> #label",
+    insertText: "/task label ",
+    hint: "Add label",
+  },
+  {
+    label: "/task unlabel <id> #label",
+    insertText: "/task unlabel ",
+    hint: "Remove label",
+  },
+];
 const PRIVACY_PREVIEW_MS = 10000;
 const SESSION_KEY = "firestore-chat-session";
 const MESSAGES_PAGE_SIZE = 25;
@@ -77,6 +111,17 @@ const PERSONAL_COMMAND_SCOPE = "personal";
 const SHARE_QUERY_KEY = "c";
 const SHARE_SECRET = "firestore-chat-share-v1";
 const READ_RECEIPT_SYNC_DELAY_MS = 1200;
+const SESSION_PERSIST_DELAY_MS = 250;
+
+if (!commandSuggestions) {
+  commandSuggestions = document.createElement("div");
+  commandSuggestions.id = "command-suggestions";
+  commandSuggestions.className = "command-suggestions";
+  commandSuggestions.setAttribute("role", "listbox");
+  commandSuggestions.setAttribute("aria-label", "Command suggestions");
+  commandSuggestions.hidden = true;
+  messageInput.parentElement.append(commandSuggestions);
+}
 
 const state = {
   db: null,
@@ -112,6 +157,11 @@ const state = {
   lastSyncedReadMessageId: null,
   pendingReadMessageId: null,
   readReceiptTimeoutId: null,
+  sessionPersistTimeoutId: null,
+  lastPersistedSession: "",
+  pendingSessionPayload: "",
+  commandSuggestionMatches: [],
+  selectedCommandSuggestionIndex: 0,
 };
 
 boot();
@@ -165,10 +215,13 @@ async function boot() {
 
 function wireEvents() {
   window.addEventListener("focus", handleAttentionChange);
+  window.addEventListener("pagehide", flushPendingSessionPersist);
   document.addEventListener("visibilitychange", handleAttentionChange);
   messageInput.addEventListener("keydown", handleMessageInputKeydown);
-  messageInput.addEventListener("input", syncMessageMaskOverlay);
+  messageInput.addEventListener("input", handleMessageInputChange);
   messageInput.addEventListener("scroll", syncMessageMaskOverlayScroll);
+  messageInput.addEventListener("blur", scheduleCommandAutocompleteHide);
+  commandSuggestions.addEventListener("mousedown", handleCommandSuggestionMouseDown);
   messagesContainer.addEventListener("scroll", handleMessageListScroll);
   toggleMessageMaskButton.addEventListener("click", toggleMessageInputMask);
   saveAdvancedSettingsButton.addEventListener("click", saveAdvancedSettings);
@@ -259,29 +312,11 @@ function wireEvents() {
       return;
     }
 
-    sendButton.disabled = true;
-
-    try {
-      await addDoc(collection(state.db, "rooms", state.roomId, "messages"), {
-        text,
-        senderId: state.profile.id,
-        senderName: state.profile.name,
-        createdAt: serverTimestamp(),
-      });
-
-      if (state.isPrivacyEnabled && state.isPrivacyPreviewVisible) {
-        hidePrivacyPreview();
-      }
-
-      messageInput.value = "";
-      syncMessageMaskOverlay();
-      messageInput.focus();
-    } catch (error) {
-      console.error(error);
-      setStatus("Message send failed. Check Firestore permissions.", "error");
-    } finally {
-      sendButton.disabled = false;
-    }
+    messageInput.value = "";
+    syncMessageMaskOverlay();
+    hideCommandAutocomplete();
+    messageInput.focus();
+    void sendSubmittedText(text);
   });
 
   leaveRoomButton.addEventListener("click", disconnectFromRoom);
@@ -750,6 +785,7 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   }
 
   clearReadReceiptTimer();
+  clearSessionPersistTimer();
   clearPrivacyPreviewTimer();
   state.roomId = null;
   state.roomPasscode = "";
@@ -784,6 +820,8 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   renderEmptyState("Join a room to start chatting.");
 
   if (clearSession) {
+    state.pendingSessionPayload = "";
+    state.lastPersistedSession = "";
     localStorage.removeItem(SESSION_KEY);
     setStatus("You left the room.", "success");
   } else {
@@ -791,7 +829,7 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   }
 }
 
-function renderMessage(message) {
+function renderMessage(message, context = {}) {
   const wrapper = document.createElement("article");
   wrapper.className = "message";
 
@@ -803,7 +841,7 @@ function renderMessage(message) {
   meta.className = "message-meta";
 
   const sender = document.createElement("strong");
-  sender.textContent = getDisplaySenderName(message);
+  sender.textContent = getDisplaySenderName(message, context);
 
   const timestamp = document.createElement("span");
   timestamp.textContent = formatTimestamp(message.createdAt);
@@ -836,6 +874,7 @@ function renderMessages(options = {}) {
   }
 
   const messagesToRender = getVisibleMessages();
+  const renderContext = createRenderContext(messagesToRender);
 
   if (messagesToRender.length === 0) {
     renderEmptyState("No messages yet. Say hello.");
@@ -845,7 +884,7 @@ function renderMessages(options = {}) {
   const fragment = document.createDocumentFragment();
 
   messagesToRender.forEach((message) => {
-    fragment.appendChild(renderMessage(message));
+    fragment.appendChild(renderMessage(message, renderContext));
   });
 
   messagesContainer.replaceChildren(fragment);
@@ -913,7 +952,16 @@ function syncMessageMaskOverlayScroll() {
   messageMaskOverlay.scrollLeft = messageInput.scrollLeft;
 }
 
+function handleMessageInputChange() {
+  syncMessageMaskOverlay();
+  updateCommandAutocomplete();
+}
+
 function handleMessageInputKeydown(event) {
+  if (handleCommandAutocompleteKeydown(event)) {
+    return;
+  }
+
   if (event.key !== "Enter" || event.shiftKey) {
     return;
   }
@@ -923,6 +971,167 @@ function handleMessageInputKeydown(event) {
   if (!messageInput.disabled) {
     messageForm.requestSubmit();
   }
+}
+
+async function sendSubmittedText(text) {
+  try {
+    if (isTaskCommand(text)) {
+      await handleTaskCommand(text);
+      return;
+    }
+
+    await addDoc(collection(state.db, "rooms", state.roomId, "messages"), {
+      text,
+      senderId: state.profile.id,
+      senderName: state.profile.name,
+      createdAt: serverTimestamp(),
+    });
+
+    if (state.isPrivacyEnabled && state.isPrivacyPreviewVisible) {
+      hidePrivacyPreview();
+    }
+  } catch (error) {
+    console.error(error);
+    setStatus(
+      isTaskCommand(text)
+        ? "Task command failed. Check the command and Firestore permissions."
+        : "Message send failed. Check Firestore permissions.",
+      "error"
+    );
+  }
+}
+
+function updateCommandAutocomplete() {
+  const matches = getCommandAutocompleteMatches(messageInput.value);
+  state.commandSuggestionMatches = matches;
+  state.selectedCommandSuggestionIndex = 0;
+
+  if (matches.length === 0) {
+    hideCommandAutocomplete();
+    return;
+  }
+
+  renderCommandAutocomplete();
+}
+
+function getCommandAutocompleteMatches(value) {
+  const queryText = value.trimStart();
+  const query = queryText.toLowerCase();
+
+  if (!query.startsWith("/") || query.includes("\n")) {
+    return [];
+  }
+
+  return SLASH_COMMANDS.filter((command) => {
+    const label = command.label.toLowerCase();
+    const insertText = command.insertText.toLowerCase();
+    return label.startsWith(query) || insertText.startsWith(query);
+  }).slice(0, 5);
+}
+
+function renderCommandAutocomplete() {
+  const fragment = document.createDocumentFragment();
+
+  state.commandSuggestionMatches.forEach((command, index) => {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "command-suggestion";
+    option.classList.toggle("active", index === state.selectedCommandSuggestionIndex);
+    option.dataset.commandIndex = String(index);
+    option.setAttribute("role", "option");
+    option.setAttribute("aria-selected", index === state.selectedCommandSuggestionIndex ? "true" : "false");
+
+    const commandText = document.createElement("span");
+    commandText.className = "command-suggestion-command";
+    commandText.textContent = command.label;
+
+    const hint = document.createElement("span");
+    hint.className = "command-suggestion-hint";
+    hint.textContent = command.hint;
+
+    option.append(commandText, hint);
+    fragment.append(option);
+  });
+
+  commandSuggestions.replaceChildren(fragment);
+  commandSuggestions.hidden = false;
+}
+
+function hideCommandAutocomplete() {
+  state.commandSuggestionMatches = [];
+  state.selectedCommandSuggestionIndex = 0;
+  commandSuggestions.hidden = true;
+  commandSuggestions.replaceChildren();
+}
+
+function scheduleCommandAutocompleteHide() {
+  window.setTimeout(() => {
+    if (document.activeElement !== messageInput) {
+      hideCommandAutocomplete();
+    }
+  }, 120);
+}
+
+function handleCommandAutocompleteKeydown(event) {
+  if (commandSuggestions.hidden || state.commandSuggestionMatches.length === 0) {
+    return false;
+  }
+
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    state.selectedCommandSuggestionIndex =
+      (state.selectedCommandSuggestionIndex + 1) % state.commandSuggestionMatches.length;
+    renderCommandAutocomplete();
+    return true;
+  }
+
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    state.selectedCommandSuggestionIndex =
+      (state.selectedCommandSuggestionIndex - 1 + state.commandSuggestionMatches.length) %
+      state.commandSuggestionMatches.length;
+    renderCommandAutocomplete();
+    return true;
+  }
+
+  if (event.key === "Tab" || event.key === "Enter") {
+    event.preventDefault();
+    applyCommandSuggestion(state.selectedCommandSuggestionIndex);
+    return true;
+  }
+
+  if (event.key === "Escape") {
+    event.preventDefault();
+    hideCommandAutocomplete();
+    return true;
+  }
+
+  return false;
+}
+
+function handleCommandSuggestionMouseDown(event) {
+  const option = event.target.closest(".command-suggestion");
+
+  if (!option) {
+    return;
+  }
+
+  event.preventDefault();
+  applyCommandSuggestion(Number.parseInt(option.dataset.commandIndex, 10));
+}
+
+function applyCommandSuggestion(index) {
+  const command = state.commandSuggestionMatches[index];
+
+  if (!command) {
+    return;
+  }
+
+  messageInput.value = command.insertText;
+  syncMessageMaskOverlay();
+  hideCommandAutocomplete();
+  messageInput.focus();
+  messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
 }
 
 function handleMessageListScroll() {
@@ -978,6 +1187,290 @@ function handleLocalCommand(text) {
   }
 
   return false;
+}
+
+function isTaskCommand(text) {
+  const normalized = text.trim().toLowerCase();
+  return normalized === TASK_COMMAND || normalized.startsWith(`${TASK_COMMAND} `);
+}
+
+async function handleTaskCommand(text) {
+  const rawCommand = text.trim();
+  const payload = rawCommand.slice(TASK_COMMAND.length).trim();
+  const [action = "", ...rest] = payload.split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+
+  if (!payload || normalizedAction === "help") {
+    await postTaskMessage(
+      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task complete <id>\n/task label <id> #bug\n/task unlabel <id> #bug"
+    );
+    return;
+  }
+
+  if (normalizedAction === "list") {
+    await postTaskList(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "complete") {
+    const taskId = rest.join(" ").trim();
+    await completeTask(taskId);
+    return;
+  }
+
+  if (normalizedAction === "label") {
+    await updateTaskLabels(rest.join(" "), "add");
+    return;
+  }
+
+  if (normalizedAction === "unlabel") {
+    await updateTaskLabels(rest.join(" "), "remove");
+    return;
+  }
+
+  await createTask(payload);
+}
+
+async function createTask(description) {
+  const { text: trimmedDescription, labels } = extractLabels(description);
+
+  if (!trimmedDescription) {
+    await postTaskMessage("Add a task description after /task.");
+    return;
+  }
+
+  const taskRef = await addDoc(collection(state.db, "rooms", state.roomId, "tasks"), {
+    description: trimmedDescription,
+    labels,
+    status: "pending",
+    createdAt: serverTimestamp(),
+    createdBy: state.profile.id,
+    createdByName: state.profile.name,
+    completedAt: null,
+    completedBy: null,
+    completedByName: null,
+  });
+
+  await postTaskMessage(
+    `Task ${formatTaskId(taskRef.id)} created: ${trimmedDescription}${formatTaskLabels(labels)}`
+  );
+  setStatus("Task created.", "success");
+}
+
+async function postTaskList(filterText = "") {
+  const requestedLabels = parseLabels(filterText);
+  const pendingTasks = (await loadPendingRoomTasks())
+    .filter((task) => taskHasLabels(task, requestedLabels))
+    .sort(compareTasksByCreatedAt)
+    .slice(0, TASK_LIST_LIMIT);
+
+  if (pendingTasks.length === 0) {
+    await postTaskMessage(
+      requestedLabels.length > 0
+        ? `No pending tasks with ${formatTaskLabels(requestedLabels).trim()}.`
+        : "No pending tasks."
+    );
+    setStatus("No pending tasks.", "success");
+    return;
+  }
+
+  const taskLines = pendingTasks.map((task) => {
+    const creator = task.createdByName || "Unknown";
+    const createdAt = formatTaskTimestamp(task.createdAt);
+    return `${formatTaskId(task.id)} - ${task.description}${formatTaskLabels(task.labels)} (${creator}, ${createdAt})`;
+  });
+
+  const heading =
+    requestedLabels.length > 0
+      ? `Pending tasks ${formatTaskLabels(requestedLabels).trim()}:`
+      : "Pending tasks:";
+  await postTaskMessage(`${heading}\n${taskLines.join("\n")}`);
+  setStatus(`${pendingTasks.length} pending task${pendingTasks.length === 1 ? "" : "s"} listed.`, "success");
+}
+
+async function completeTask(taskIdInput) {
+  const taskId = taskIdInput.trim();
+
+  if (!taskId) {
+    await postTaskMessage("Use /task complete <id> to complete a task.");
+    return;
+  }
+
+  const task = await findTaskById(taskId);
+
+  if (!task) {
+    await postTaskMessage(`Task ${taskId} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  if (task.status === "complete") {
+    await postTaskMessage(`Task ${formatTaskId(task.id)} is already complete.`);
+    setStatus("Task is already complete.", "success");
+    return;
+  }
+
+  await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", task.id), {
+    status: "complete",
+    completedAt: serverTimestamp(),
+    completedBy: state.profile.id,
+    completedByName: state.profile.name,
+  });
+
+  await postTaskMessage(`Task ${formatTaskId(task.id)} completed: ${task.description}`);
+  setStatus("Task completed.", "success");
+}
+
+async function updateTaskLabels(input, mode) {
+  const [taskId = "", ...labelParts] = input.trim().split(/\s+/);
+  const labels = parseLabels(labelParts.join(" "));
+  const action = mode === "add" ? "label" : "unlabel";
+
+  if (!taskId || labels.length === 0) {
+    await postTaskMessage(`Use /task ${action} <id> #label.`);
+    return;
+  }
+
+  const task = await findTaskById(taskId);
+
+  if (!task) {
+    await postTaskMessage(`Task ${taskId} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", task.id), {
+    labels: mode === "add" ? arrayUnion(...labels) : arrayRemove(...labels),
+  });
+
+  await postTaskMessage(
+    `Task ${formatTaskId(task.id)} ${mode === "add" ? "labeled" : "unlabeled"} ${formatTaskLabels(labels).trim()}: ${task.description}`
+  );
+  setStatus(`Task ${mode === "add" ? "labeled" : "unlabeled"}.`, "success");
+}
+
+async function findTaskById(taskIdInput) {
+  const normalizedId = taskIdInput.trim().replace(/^#/, "");
+
+  if (!normalizedId) {
+    return null;
+  }
+
+  const directSnapshot = await getDoc(doc(state.db, "rooms", state.roomId, "tasks", normalizedId));
+
+  if (directSnapshot.exists()) {
+    return {
+      id: directSnapshot.id,
+      ...directSnapshot.data(),
+    };
+  }
+
+  const tasks = await loadRoomTasks();
+  const normalizedPrefix = normalizedId.toLowerCase();
+  const matches = tasks.filter((task) => task.id.toLowerCase().startsWith(normalizedPrefix));
+
+  return matches.length === 1 ? matches[0] : null;
+}
+
+async function loadRoomTasks() {
+  const tasksSnapshot = await getDocs(collection(state.db, "rooms", state.roomId, "tasks"));
+
+  return tasksSnapshot.docs.map((taskDoc) => ({
+    id: taskDoc.id,
+    ...taskDoc.data(),
+  }));
+}
+
+async function loadPendingRoomTasks() {
+  const pendingTasksQuery = query(
+    collection(state.db, "rooms", state.roomId, "tasks"),
+    where("status", "==", "pending")
+  );
+  const tasksSnapshot = await getDocs(pendingTasksQuery);
+
+  return tasksSnapshot.docs.map((taskDoc) => ({
+    id: taskDoc.id,
+    ...taskDoc.data(),
+  }));
+}
+
+async function postTaskMessage(text) {
+  await addDoc(collection(state.db, "rooms", state.roomId, "messages"), {
+    text,
+    senderId: state.profile.id,
+    senderName: "Tasks",
+    type: "task",
+    createdAt: serverTimestamp(),
+  });
+}
+
+function compareTasksByCreatedAt(left, right) {
+  const leftTime = left.createdAt?.toMillis?.() ?? 0;
+  const rightTime = right.createdAt?.toMillis?.() ?? 0;
+
+  if (leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+
+  return left.id.localeCompare(right.id);
+}
+
+function formatTaskId(taskId) {
+  return `#${taskId.slice(0, 6)}`;
+}
+
+function extractLabels(value) {
+  const labels = parseLabels(value);
+  const text = value
+    .replace(/(^|\s)#[a-z0-9][a-z0-9_-]*/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return {
+    text,
+    labels,
+  };
+}
+
+function parseLabels(value) {
+  const labels = new Set();
+  const labelMatches = String(value || "").matchAll(/(?:^|\s)#([a-z0-9][a-z0-9_-]*)/gi);
+
+  for (const match of labelMatches) {
+    labels.add(match[1].toLowerCase());
+  }
+
+  return [...labels];
+}
+
+function taskHasLabels(task, requestedLabels) {
+  if (requestedLabels.length === 0) {
+    return true;
+  }
+
+  const taskLabels = new Set(Array.isArray(task.labels) ? task.labels : []);
+  return requestedLabels.every((label) => taskLabels.has(label));
+}
+
+function formatTaskLabels(labels) {
+  if (!Array.isArray(labels) || labels.length === 0) {
+    return "";
+  }
+
+  return ` ${labels.map((label) => `#${label}`).join(" ")}`;
+}
+
+function formatTaskTimestamp(timestamp) {
+  const date = timestamp?.toDate?.();
+
+  if (!date) {
+    return "just now";
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
 }
 
 function enablePrivacyMode() {
@@ -1071,11 +1564,14 @@ function subscribeToReadReceipts(roomId) {
   state.unsubscribeReadReceipts = onSnapshot(
     receiptsRef,
     (snapshot) => {
-      state.readReceipts = snapshot.docs.map((receiptDoc) => ({
+      const nextReadReceipts = snapshot.docs.map((receiptDoc) => ({
         id: receiptDoc.id,
         ...receiptDoc.data(),
       }));
-      renderMessages();
+      if (haveReadReceiptsChanged(state.readReceipts, nextReadReceipts)) {
+        state.readReceipts = nextReadReceipts;
+        renderMessages();
+      }
     },
     (error) => {
       console.error(error);
@@ -1221,14 +1717,6 @@ function compareMessagesByTime(left, right) {
   return left.id.localeCompare(right.id);
 }
 
-function getDisplaySenderName(message) {
-  if (state.isPrivacyEnabled && state.isPrivacyPreviewVisible) {
-    return getPrivateAlias(message.senderId);
-  }
-
-  return message.senderName || "Anonymous";
-}
-
 function getMessageReadByNames(message) {
   const messageTime = message.createdAt?.toMillis?.();
 
@@ -1257,19 +1745,67 @@ function formatNameList(names) {
   return `${names.slice(0, 2).join(", ")} and ${names.length - 2} more`;
 }
 
-function getPrivateAlias(senderId) {
-  const uniqueSenderIds = [];
+function createRenderContext(messages) {
+  const privateAliases = new Map();
 
-  state.messages.forEach((message) => {
-    if (!message.senderId || uniqueSenderIds.includes(message.senderId)) {
-      return;
+  if (state.isPrivacyEnabled && state.isPrivacyPreviewVisible) {
+    let index = 1;
+
+    messages.forEach((message) => {
+      if (!message.senderId || privateAliases.has(message.senderId)) {
+        return;
+      }
+
+      privateAliases.set(message.senderId, `User ${index}`);
+      index += 1;
+    });
+  }
+
+  return {
+    privateAliases,
+  };
+}
+
+function getDisplaySenderName(message, context = {}) {
+  if (state.isPrivacyEnabled && state.isPrivacyPreviewVisible) {
+    return getPrivateAlias(message.senderId, context.privateAliases);
+  }
+
+  return message.senderName || "Anonymous";
+}
+
+function getPrivateAlias(senderId, privateAliases = null) {
+  if (!senderId) {
+    return "User";
+  }
+
+  if (privateAliases?.has(senderId)) {
+    return privateAliases.get(senderId);
+  }
+
+  return "User";
+}
+
+function haveReadReceiptsChanged(previousReceipts, nextReceipts) {
+  if (previousReceipts.length !== nextReceipts.length) {
+    return true;
+  }
+
+  for (let index = 0; index < previousReceipts.length; index += 1) {
+    const previous = previousReceipts[index];
+    const next = nextReceipts[index];
+
+    if (
+      previous.id !== next.id ||
+      previous.displayName !== next.displayName ||
+      previous.lastReadMessageId !== next.lastReadMessageId ||
+      previous.lastReadCreatedAt?.toMillis?.() !== next.lastReadCreatedAt?.toMillis?.()
+    ) {
+      return true;
     }
+  }
 
-    uniqueSenderIds.push(message.senderId);
-  });
-
-  const index = uniqueSenderIds.indexOf(senderId);
-  return index >= 0 ? `User ${index + 1}` : "User";
+  return false;
 }
 
 function updateDocumentTitle() {
@@ -1772,18 +2308,44 @@ function persistSession() {
     return;
   }
 
-  localStorage.setItem(
-    SESSION_KEY,
-    JSON.stringify({
-      displayName: state.profile.name,
-      roomId: state.roomId,
-      roomPasscode: state.roomPasscode,
-      isPrivacyEnabled: state.isPrivacyEnabled,
-      visibleMessageLimit: state.visibleMessageLimit,
-      unreadMessageIds: state.unreadMessageIds,
-      hiddenMessageIds: state.hiddenMessageIds,
-    })
-  );
+  const nextSession = JSON.stringify({
+    displayName: state.profile.name,
+    roomId: state.roomId,
+    roomPasscode: state.roomPasscode,
+    isPrivacyEnabled: state.isPrivacyEnabled,
+    visibleMessageLimit: state.visibleMessageLimit,
+    unreadMessageIds: state.unreadMessageIds,
+    hiddenMessageIds: state.hiddenMessageIds,
+  });
+
+  if (state.lastPersistedSession === nextSession) {
+    return;
+  }
+
+  state.pendingSessionPayload = nextSession;
+  clearSessionPersistTimer();
+  state.sessionPersistTimeoutId = window.setTimeout(() => {
+    flushPendingSessionPersist();
+  }, SESSION_PERSIST_DELAY_MS);
+}
+
+function clearSessionPersistTimer() {
+  if (state.sessionPersistTimeoutId) {
+    window.clearTimeout(state.sessionPersistTimeoutId);
+    state.sessionPersistTimeoutId = null;
+  }
+}
+
+function flushPendingSessionPersist() {
+  clearSessionPersistTimer();
+
+  if (!state.pendingSessionPayload || state.pendingSessionPayload === state.lastPersistedSession) {
+    return;
+  }
+
+  localStorage.setItem(SESSION_KEY, state.pendingSessionPayload);
+  state.lastPersistedSession = state.pendingSessionPayload;
+  state.pendingSessionPayload = "";
 }
 
 async function restoreSession() {
@@ -1829,6 +2391,8 @@ async function restoreSession() {
     }
   } catch (error) {
     console.error(error);
+    state.pendingSessionPayload = "";
+    state.lastPersistedSession = "";
     localStorage.removeItem(SESSION_KEY);
   }
 }

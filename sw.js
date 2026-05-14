@@ -1,4 +1,4 @@
-const CACHE_NAME = "firestore-chat-v2";
+const CACHE_NAME = "firestore-chat-v3";
 const APP_SHELL = [
   "./",
   "./index.html",

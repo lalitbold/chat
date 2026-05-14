@@ -2,9 +2,11 @@
   "name": "Firestore Chat",
   "short_name": "Chat",
   "description": "Realtime room chat powered by Firestore.",
+  "id": "/",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
+  "categories": ["communication", "productivity"],
   "background_color": "#f2efe7",
   "theme_color": "#16221f",
   "icons": [
