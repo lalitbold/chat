@@ -20,6 +20,7 @@ import {
   getDoc,
   getDocs,
   getFirestore,
+  increment,
   limit,
   onSnapshot,
   orderBy,
@@ -75,6 +76,7 @@ const ADVANCED_SETTINGS_COMMANDS = new Set(["advancesetting", "advancedsetting"]
 const GET_LINK_COMMAND = "getlink";
 const TASK_COMMAND = "/task";
 const TASK_LIST_LIMIT = 50;
+const TASK_TIMER_REMINDER_MS = 25 * 60 * 1000;
 const SLASH_COMMANDS = [
   {
     label: "/task <description> #label",
@@ -90,6 +92,26 @@ const SLASH_COMMANDS = [
     label: "/task complete <id>",
     insertText: "/task complete ",
     hint: "Complete task",
+  },
+  {
+    label: "/task start <id>",
+    insertText: "/task start ",
+    hint: "Start timer",
+  },
+  {
+    label: "/task stop <id>",
+    insertText: "/task stop ",
+    hint: "Stop timer",
+  },
+  {
+    label: "/task summary",
+    insertText: "/task summary",
+    hint: "Today's summary",
+  },
+  {
+    label: "/task summary share",
+    insertText: "/task summary share",
+    hint: "Share summary",
   },
   {
     label: "/task label <id> #label",
@@ -163,6 +185,7 @@ const state = {
   pendingSessionPayload: "",
   commandSuggestionMatches: [],
   selectedCommandSuggestionIndex: 0,
+  taskTimerReminderTimeouts: new Map(),
 };
 
 boot();
@@ -788,6 +811,7 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
 
   clearReadReceiptTimer();
   clearSessionPersistTimer();
+  clearTaskTimerReminders();
   clearPrivacyPreviewTimer();
   state.roomId = null;
   state.roomPasscode = "";
@@ -1222,7 +1246,7 @@ async function handleTaskCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     await postTaskMessage(
-      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task complete <id>\n/task label <id> #bug\n/task unlabel <id> #bug"
+      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task start <id>\n/task stop <id>\n/task summary\n/task summary share\n/task complete <id>\n/task label <id> #bug\n/task unlabel <id> #bug"
     );
     return;
   }
@@ -1235,6 +1259,23 @@ async function handleTaskCommand(text) {
   if (normalizedAction === "complete") {
     const taskId = rest.join(" ").trim();
     await completeTask(taskId);
+    return;
+  }
+
+  if (normalizedAction === "start") {
+    const taskId = rest.join(" ").trim();
+    await startTaskTimer(taskId);
+    return;
+  }
+
+  if (normalizedAction === "stop") {
+    const taskId = rest.join(" ").trim();
+    await stopTaskTimer(taskId);
+    return;
+  }
+
+  if (normalizedAction === "summary") {
+    await postTaskSummary(rest.join(" "));
     return;
   }
 
@@ -1269,6 +1310,10 @@ async function createTask(description) {
     completedAt: null,
     completedBy: null,
     completedByName: null,
+    totalTrackedMs: 0,
+    activeTimerStartedAt: null,
+    activeTimerStartedBy: null,
+    activeTimerStartedByName: null,
   });
 
   await postTaskMessage(
@@ -1297,7 +1342,7 @@ async function postTaskList(filterText = "") {
   const taskLines = pendingTasks.map((task) => {
     const creator = task.createdByName || "Unknown";
     const createdAt = formatTaskTimestamp(task.createdAt);
-    return `${formatTaskId(task.id)} - ${task.description}${formatTaskLabels(task.labels)} (${creator}, ${createdAt})`;
+    return `${formatTaskId(task.id)} - ${task.description}${formatTaskLabels(task.labels)}${formatTaskTimeSummary(task)} (${creator}, ${createdAt})`;
   });
 
   const heading =
@@ -1330,15 +1375,127 @@ async function completeTask(taskIdInput) {
     return;
   }
 
-  await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", task.id), {
+  const completionUpdate = {
     status: "complete",
     completedAt: serverTimestamp(),
     completedBy: state.profile.id,
     completedByName: state.profile.name,
+  };
+  const timerElapsedMs = task.activeTimerStartedAt
+    ? Math.max(0, Date.now() - getTimestampMillis(task.activeTimerStartedAt))
+    : 0;
+
+  if (task.activeTimerStartedAt) {
+    completionUpdate.totalTrackedMs = increment(timerElapsedMs);
+    completionUpdate.activeTimerStartedAt = null;
+    completionUpdate.activeTimerStartedBy = null;
+    completionUpdate.activeTimerStartedByName = null;
+    clearTaskTimerReminder(task.id);
+  }
+
+  await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", task.id), completionUpdate);
+
+  if (timerElapsedMs > 0) {
+    await recordTaskTimeEntry(task, task.activeTimerStartedAt, new Date(), timerElapsedMs);
+  }
+
+  await postTaskMessage(
+    `Task ${formatTaskId(task.id)} completed${timerElapsedMs > 0 ? ` and timer stopped after ${formatDuration(timerElapsedMs)}` : ""}: ${task.description}`
+  );
+  setStatus("Task completed.", "success");
+}
+
+async function startTaskTimer(taskIdInput) {
+  const taskId = taskIdInput.trim();
+
+  if (!taskId) {
+    await postTaskMessage("Use /task start <id> to start tracking time.");
+    return;
+  }
+
+  const task = await findTaskById(taskId);
+
+  if (!task) {
+    await postTaskMessage(`Task ${taskId} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  if (task.status === "complete") {
+    await postTaskMessage(`Task ${formatTaskId(task.id)} is already complete.`);
+    setStatus("Task is already complete.", "error");
+    return;
+  }
+
+  if (task.activeTimerStartedAt) {
+    const owner = task.activeTimerStartedByName || "Someone";
+    await postTaskMessage(`Task ${formatTaskId(task.id)} already has a timer running by ${owner}.`);
+    setStatus("Task timer is already running.", "error");
+    return;
+  }
+
+  const startedAt = new Date();
+
+  await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", task.id), {
+    activeTimerStartedAt: startedAt,
+    activeTimerStartedBy: state.profile.id,
+    activeTimerStartedByName: state.profile.name,
   });
 
-  await postTaskMessage(`Task ${formatTaskId(task.id)} completed: ${task.description}`);
-  setStatus("Task completed.", "success");
+  scheduleTaskTimerReminder({
+    id: task.id,
+    description: task.description,
+    startedAt,
+  });
+  await postTaskMessage(`Task ${formatTaskId(task.id)} timer started: ${task.description}`);
+  setStatus("Task timer started.", "success");
+}
+
+async function stopTaskTimer(taskIdInput) {
+  const taskId = taskIdInput.trim();
+
+  if (!taskId) {
+    await postTaskMessage("Use /task stop <id> to stop tracking time.");
+    return;
+  }
+
+  const task = await findTaskById(taskId);
+
+  if (!task) {
+    await postTaskMessage(`Task ${taskId} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  if (!task.activeTimerStartedAt) {
+    await postTaskMessage(`Task ${formatTaskId(task.id)} does not have a running timer.`);
+    setStatus("Task timer is not running.", "error");
+    return;
+  }
+
+  if (task.activeTimerStartedBy && task.activeTimerStartedBy !== state.profile.id) {
+    const owner = task.activeTimerStartedByName || "another user";
+    await postTaskMessage(`Task ${formatTaskId(task.id)} timer is running by ${owner}.`);
+    setStatus("Task timer belongs to another user.", "error");
+    return;
+  }
+
+  const elapsedMs = Math.max(0, Date.now() - getTimestampMillis(task.activeTimerStartedAt));
+  const stoppedAt = new Date();
+
+  await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", task.id), {
+    totalTrackedMs: increment(elapsedMs),
+    activeTimerStartedAt: null,
+    activeTimerStartedBy: null,
+    activeTimerStartedByName: null,
+  });
+
+  await recordTaskTimeEntry(task, task.activeTimerStartedAt, stoppedAt, elapsedMs);
+  clearTaskTimerReminder(task.id);
+  await postTaskMessage(
+    `Task ${formatTaskId(task.id)} timer stopped after ${formatDuration(elapsedMs)}: ${task.description}`
+  );
+  setStatus("Task timer stopped.", "success");
 }
 
 async function updateTaskLabels(input, mode) {
@@ -1367,6 +1524,80 @@ async function updateTaskLabels(input, mode) {
     `Task ${formatTaskId(task.id)} ${mode === "add" ? "labeled" : "unlabeled"} ${formatTaskLabels(labels).trim()}: ${task.description}`
   );
   setStatus(`Task ${mode === "add" ? "labeled" : "unlabeled"}.`, "success");
+}
+
+async function postTaskSummary(input = "") {
+  const shouldShare = ["share", "send", "group"].includes(input.trim().toLowerCase());
+  const summary = await buildDailyTaskSummary();
+
+  if (shouldShare) {
+    await postTaskMessage(summary);
+    setStatus("Task summary shared with the group.", "success");
+    return;
+  }
+
+  postLocalTaskMessage(summary);
+  setStatus("Task summary ready.", "success");
+}
+
+async function buildDailyTaskSummary() {
+  const tasks = await loadRoomTasks();
+  const { start, end } = getTodayBounds();
+  const timeEntriesByTaskId = new Map();
+
+  await Promise.all(
+    tasks.map(async (task) => {
+      const entries = await loadTaskTimeEntries(task.id);
+      timeEntriesByTaskId.set(
+        task.id,
+        entries.filter(
+          (entry) =>
+            entry.userId === state.profile.id &&
+            isTimestampWithin(entry.stoppedAt, start, end)
+        )
+      );
+    })
+  );
+
+  const createdToday = tasks.filter(
+    (task) => task.createdBy === state.profile.id && isTimestampWithin(task.createdAt, start, end)
+  );
+  const completedToday = tasks.filter(
+    (task) => task.completedBy === state.profile.id && isTimestampWithin(task.completedAt, start, end)
+  );
+  const activeTimers = tasks.filter(
+    (task) => task.activeTimerStartedBy === state.profile.id && task.activeTimerStartedAt
+  );
+  const trackedMs = [...timeEntriesByTaskId.values()]
+    .flat()
+    .reduce((total, entry) => total + (Number.isFinite(entry.durationMs) ? entry.durationMs : 0), 0);
+  const lines = [
+    `Work summary for ${formatSummaryDate(start)}`,
+    `Time tracked: ${formatDuration(trackedMs)}`,
+    `Completed: ${completedToday.length}`,
+  ];
+
+  completedToday.slice(0, 10).forEach((task) => {
+    lines.push(`- ${task.description}${formatTaskLabels(task.labels)}${formatSummaryTimeForTask(task, timeEntriesByTaskId)}`);
+  });
+
+  lines.push(`Created: ${createdToday.length}`);
+  createdToday.slice(0, 10).forEach((task) => {
+    lines.push(`- ${task.description}${formatTaskLabels(task.labels)}`);
+  });
+
+  if (activeTimers.length > 0) {
+    lines.push(`Running timers: ${activeTimers.length}`);
+    activeTimers.slice(0, 10).forEach((task) => {
+      lines.push(`- ${task.description} (${formatDuration(Date.now() - getTimestampMillis(task.activeTimerStartedAt))})`);
+    });
+  }
+
+  if (trackedMs === 0 && completedToday.length === 0 && createdToday.length === 0 && activeTimers.length === 0) {
+    lines.push("No task activity recorded today.");
+  }
+
+  return lines.join("\n");
 }
 
 async function findTaskById(taskIdInput) {
@@ -1401,6 +1632,17 @@ async function loadRoomTasks() {
   }));
 }
 
+async function loadTaskTimeEntries(taskId) {
+  const entriesSnapshot = await getDocs(
+    collection(state.db, "rooms", state.roomId, "tasks", taskId, "timeEntries")
+  );
+
+  return entriesSnapshot.docs.map((entryDoc) => ({
+    id: entryDoc.id,
+    ...entryDoc.data(),
+  }));
+}
+
 async function loadPendingRoomTasks() {
   const pendingTasksQuery = query(
     collection(state.db, "rooms", state.roomId, "tasks"),
@@ -1424,6 +1666,19 @@ async function postTaskMessage(text) {
   });
 }
 
+async function recordTaskTimeEntry(task, startedAt, stoppedAt, durationMs) {
+  await addDoc(collection(state.db, "rooms", state.roomId, "tasks", task.id, "timeEntries"), {
+    taskId: task.id,
+    taskDescription: task.description,
+    userId: state.profile.id,
+    userName: state.profile.name,
+    startedAt: normalizeTimestampDate(startedAt),
+    stoppedAt,
+    durationMs,
+    createdAt: serverTimestamp(),
+  });
+}
+
 function postLocalTaskMessage(text) {
   state.localMessages.push({
     id: `local-task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -1435,7 +1690,42 @@ function postLocalTaskMessage(text) {
     createdAt: new Date(),
   });
   syncStealthLayout();
+  updatePrivacyIndicator();
   renderMessages();
+}
+
+function scheduleTaskTimerReminder(task) {
+  clearTaskTimerReminder(task.id);
+
+  const elapsedMs = Date.now() - getTimestampMillis(task.startedAt);
+  const delayMs = Math.max(0, TASK_TIMER_REMINDER_MS - elapsedMs);
+  const timeoutId = window.setTimeout(() => {
+    state.taskTimerReminderTimeouts.delete(task.id);
+    postLocalTaskMessage(
+      `Reminder: Task ${formatTaskId(task.id)} has been running for more than ${formatDuration(TASK_TIMER_REMINDER_MS)}: ${task.description}`
+    );
+    setStatus("Task timer reminder.", "success");
+  }, delayMs);
+
+  state.taskTimerReminderTimeouts.set(task.id, timeoutId);
+}
+
+function clearTaskTimerReminder(taskId) {
+  const timeoutId = state.taskTimerReminderTimeouts.get(taskId);
+
+  if (!timeoutId) {
+    return;
+  }
+
+  window.clearTimeout(timeoutId);
+  state.taskTimerReminderTimeouts.delete(taskId);
+}
+
+function clearTaskTimerReminders() {
+  state.taskTimerReminderTimeouts.forEach((timeoutId) => {
+    window.clearTimeout(timeoutId);
+  });
+  state.taskTimerReminderTimeouts.clear();
 }
 
 function compareTasksByCreatedAt(left, right) {
@@ -1451,6 +1741,79 @@ function compareTasksByCreatedAt(left, right) {
 
 function formatTaskId(taskId) {
   return `#${taskId.slice(0, 6)}`;
+}
+
+function formatTaskTimeSummary(task) {
+  const totalTrackedMs = Number.isFinite(task.totalTrackedMs) ? task.totalTrackedMs : 0;
+  const activeMs = task.activeTimerStartedAt
+    ? Math.max(0, Date.now() - getTimestampMillis(task.activeTimerStartedAt))
+    : 0;
+  const totalMs = totalTrackedMs + activeMs;
+  const parts = [];
+
+  if (totalMs > 0) {
+    parts.push(`tracked ${formatDuration(totalMs)}`);
+  }
+
+  if (task.activeTimerStartedAt) {
+    const owner = task.activeTimerStartedByName || "someone";
+    parts.push(`running by ${owner}`);
+  }
+
+  return parts.length > 0 ? ` [${parts.join(", ")}]` : "";
+}
+
+function formatSummaryTimeForTask(task, timeEntriesByTaskId) {
+  const trackedMs = (timeEntriesByTaskId.get(task.id) || []).reduce(
+    (total, entry) => total + (Number.isFinite(entry.durationMs) ? entry.durationMs : 0),
+    0
+  );
+
+  return trackedMs > 0 ? ` (${formatDuration(trackedMs)})` : "";
+}
+
+function formatDuration(durationMs) {
+  const totalMinutes = Math.max(0, Math.round(durationMs / 60000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+
+  if (hours > 0 && minutes > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+
+  if (hours > 0) {
+    return `${hours}h`;
+  }
+
+  return `${minutes}m`;
+}
+
+function getTodayBounds() {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+
+  return { start, end };
+}
+
+function isTimestampWithin(timestamp, start, end) {
+  const time = getTimestampMillis(timestamp);
+  return time >= start.getTime() && time < end.getTime();
+}
+
+function normalizeTimestampDate(timestamp) {
+  if (timestamp instanceof Date) {
+    return timestamp;
+  }
+
+  return timestamp?.toDate?.() || new Date();
+}
+
+function formatSummaryDate(date) {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+  }).format(date);
 }
 
 function extractLabels(value) {
@@ -1678,12 +2041,15 @@ function clearPrivacyPreviewTimer() {
 function updatePrivacyIndicator() {
   const count = getUnreadCount();
   const shouldShowCount = count > 0 && (!state.isPrivacyEnabled || !state.isPrivacyPreviewVisible);
+  const shouldShowComposerCount =
+    state.isPrivacyEnabled &&
+    !(state.isPrivacyEnabled && !state.isPrivacyPreviewVisible && state.localMessages.length > 0);
 
   privacyIndicator.textContent = shouldShowCount ? String(count) : "";
   privacyIndicator.className = shouldShowCount ? "privacy-indicator active" : "privacy-indicator";
-  composerCount.textContent = state.isPrivacyEnabled ? String(count) : "";
+  composerCount.textContent = shouldShowComposerCount ? String(count) : "";
   composerCount.className =
-    state.isPrivacyEnabled ? "composer-count active" : "composer-count";
+    shouldShowComposerCount ? "composer-count active" : "composer-count";
 }
 
 function updateHiddenIncomingCount(nextMessages) {

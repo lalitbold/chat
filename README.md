@@ -70,6 +70,20 @@ rooms/{roomId}/tasks/{taskId}
   completedAt
   completedBy
   completedByName
+  totalTrackedMs
+  activeTimerStartedAt
+  activeTimerStartedBy
+  activeTimerStartedByName
+
+rooms/{roomId}/tasks/{taskId}/timeEntries/{entryId}
+  taskId
+  taskDescription
+  userId
+  userName
+  startedAt
+  stoppedAt
+  durationMs
+  createdAt
 ```
 
 ## Task commands
@@ -77,6 +91,10 @@ rooms/{roomId}/tasks/{taskId}
 - `/task fix that issue #bug #urgent` creates a pending task with optional labels.
 - `/task list` shows the pending task list only to you. Completed tasks are hidden by default.
 - `/task list #bug` shows pending tasks with that label only to you.
+- `/task start <id>` starts a timer on a task and reminds you locally after 25 minutes.
+- `/task stop <id>` stops your running timer and adds the elapsed time to the task.
+- `/task summary` shows your work summary for today only to you.
+- `/task summary share` posts your work summary for today to the group.
 - `/task complete <id>` marks a task complete. The `<id>` can be the short ID shown in the task list, like `#abc123`, or the full Firestore document ID.
 - `/task label <id> #bug` adds a label to an existing task.
 - `/task unlabel <id> #bug` removes a label from an existing task.
