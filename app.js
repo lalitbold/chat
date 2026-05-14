@@ -913,6 +913,19 @@ function renderEmptyState(message) {
 }
 
 function renderPrivacyState() {
+  if (state.localMessages.length > 0) {
+    const renderContext = createRenderContext(state.localMessages);
+    const fragment = document.createDocumentFragment();
+
+    state.localMessages.forEach((message) => {
+      fragment.appendChild(renderMessage(message, renderContext));
+    });
+
+    messagesContainer.replaceChildren(fragment);
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    return;
+  }
+
   const wrapper = document.createElement("div");
   wrapper.className = "privacy-state";
 
@@ -920,21 +933,7 @@ function renderPrivacyState() {
   count.className = "privacy-count";
   count.textContent = String(state.hiddenMessageIds.length);
   wrapper.append(count);
-
-  if (state.localMessages.length === 0) {
-    messagesContainer.replaceChildren(wrapper);
-    return;
-  }
-
-  const fragment = document.createDocumentFragment();
-  fragment.append(wrapper);
-
-  state.localMessages.forEach((message) => {
-    fragment.appendChild(renderMessage(message, createRenderContext(state.localMessages)));
-  });
-
-  messagesContainer.replaceChildren(fragment);
-  messagesContainer.scrollTop = messagesContainer.scrollHeight;
+  messagesContainer.replaceChildren(wrapper);
 }
 
 function setStatus(message, tone = "") {

@@ -439,8 +439,6 @@ button:disabled {
 }
 
 .message.local-only {
-  align-self: stretch;
-  max-width: 100%;
   background: rgba(255, 250, 241, 0.92);
   border-style: dashed;
 }
