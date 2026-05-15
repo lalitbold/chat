@@ -505,7 +505,9 @@ body.stealth-active .chat-header {
 }
 
 body.stealth-active .chat-header > div:first-child,
-body.stealth-active .ghost {
+body.stealth-active .chat-header .ghost,
+body.stealth-active #share-link-panel .ghost,
+body.stealth-active #advanced-settings .ghost {
   display: none;
 }
 
@@ -546,6 +548,15 @@ body.stealth-active .composer {
   min-height: calc(100vh - 76px);
   display: flex;
   justify-content: flex-end;
+}
+
+body.stealth-active .composer-actions {
+  justify-content: space-between;
+}
+
+body.stealth-active .composer-actions .ghost {
+  display: inline-flex;
+  align-items: center;
 }
 
 body.stealth-active.local-tasks-visible .composer {
