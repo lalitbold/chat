@@ -84,6 +84,31 @@ rooms/{roomId}/tasks/{taskId}/timeEntries/{entryId}
   stoppedAt
   durationMs
   createdAt
+
+rooms/{roomId}/workDays/{userId_dateKey}
+  userId
+  userName
+  dateKey
+  startedAt
+  plan
+  endedAt
+  updatedAt
+
+rooms/{roomId}/leaves/{leaveId}
+  userId
+  userName
+  startDateKey
+  endDateKey
+  reason
+  status
+  createdAt
+  canceledAt
+
+rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
+  leaveId
+  dateKey
+  announcedAt
+  announcedBy
 ```
 
 ## Task commands
@@ -98,6 +123,18 @@ rooms/{roomId}/tasks/{taskId}/timeEntries/{entryId}
 - `/task complete <id>` marks a task complete. The `<id>` can be the short ID shown in the task list, like `#abc123`, or the full Firestore document ID.
 - `/task label <id> #bug` adds a label to an existing task.
 - `/task unlabel <id> #bug` removes a label from an existing task.
+
+## Day commands
+
+- `/day start` starts your day and posts attendance to the group.
+- `/day plan Ship feature X` saves and posts your plan to the group.
+- `/day end` ends your day and posts your work summary to the group.
+- `/day leave tomorrow Sick leave` schedules leave and posts it to the group.
+- `/day leave 2026-05-20 to 2026-05-22 PTO` schedules a multi-day leave.
+- `/day leave list` shows your upcoming leaves only to you.
+- `/day leave cancel <id>` cancels one of your leaves and posts the cancellation to the group.
+
+Leave dates support `today`, `tomorrow`, and `YYYY-MM-DD`. Day-of leave announcements are created when a room participant opens the room on that leave date.
 
 ## Hidden chat behavior
 

@@ -75,6 +75,7 @@ const DEFAULT_REVEAL_ALIASES = new Set(["whatisit", "whatitis"]);
 const ADVANCED_SETTINGS_COMMANDS = new Set(["advancesetting", "advancedsetting"]);
 const GET_LINK_COMMAND = "getlink";
 const TASK_COMMAND = "/task";
+const DAY_COMMAND = "/day";
 const TASK_LIST_LIMIT = 50;
 const TASK_TIMER_REMINDER_MS = 25 * 60 * 1000;
 const SLASH_COMMANDS = [
@@ -112,6 +113,36 @@ const SLASH_COMMANDS = [
     label: "/task summary share",
     insertText: "/task summary share",
     hint: "Share summary",
+  },
+  {
+    label: "/day start",
+    insertText: "/day start",
+    hint: "Start day",
+  },
+  {
+    label: "/day plan <plan>",
+    insertText: "/day plan ",
+    hint: "Save plan",
+  },
+  {
+    label: "/day end",
+    insertText: "/day end",
+    hint: "End day",
+  },
+  {
+    label: "/day leave tomorrow <reason>",
+    insertText: "/day leave tomorrow ",
+    hint: "Schedule leave",
+  },
+  {
+    label: "/day leave list",
+    insertText: "/day leave list",
+    hint: "Your leaves",
+  },
+  {
+    label: "/day leave cancel <id>",
+    insertText: "/day leave cancel ",
+    hint: "Cancel leave",
   },
   {
     label: "/task label <id> #label",
@@ -681,6 +712,7 @@ async function connectToRoom(roomId, roomPasscode = "", roomData = null) {
   subscribeToReadReceipts(roomId);
   subscribeToLatestMessages(roomId);
   queueReadReceiptSync();
+  void announceTodaysLeaves();
 }
 
 async function loadInitialMessages(roomId) {
@@ -1024,6 +1056,11 @@ async function sendSubmittedText(text) {
       return;
     }
 
+    if (isDayCommand(text)) {
+      await handleDayCommand(text);
+      return;
+    }
+
     await addDoc(collection(state.db, "rooms", state.roomId, "messages"), {
       text,
       senderId: state.profile.id,
@@ -1039,6 +1076,8 @@ async function sendSubmittedText(text) {
     setStatus(
       isTaskCommand(text)
         ? "Task command failed. Check the command and Firestore permissions."
+        : isDayCommand(text)
+          ? "Day command failed. Check the command and Firestore permissions."
         : "Message send failed. Check Firestore permissions.",
       "error"
     );
@@ -1238,6 +1277,11 @@ function isTaskCommand(text) {
   return normalized === TASK_COMMAND || normalized.startsWith(`${TASK_COMMAND} `);
 }
 
+function isDayCommand(text) {
+  const normalized = text.trim().toLowerCase();
+  return normalized === DAY_COMMAND || normalized.startsWith(`${DAY_COMMAND} `);
+}
+
 async function handleTaskCommand(text) {
   const rawCommand = text.trim();
   const payload = rawCommand.slice(TASK_COMMAND.length).trim();
@@ -1246,7 +1290,7 @@ async function handleTaskCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     await postTaskMessage(
-      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task start <id>\n/task stop <id>\n/task summary\n/task summary share\n/task complete <id>\n/task label <id> #bug\n/task unlabel <id> #bug"
+      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task start <id>\n/task stop <id>\n/task summary\n/task summary share\n/task complete <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nUse /day for attendance and leave commands."
     );
     return;
   }
@@ -1279,6 +1323,11 @@ async function handleTaskCommand(text) {
     return;
   }
 
+  if (normalizedAction === "day") {
+    postLocalDayMessage("Day commands moved to /day.\nUse /day start, /day plan <plan>, or /day end.");
+    return;
+  }
+
   if (normalizedAction === "label") {
     await updateTaskLabels(rest.join(" "), "add");
     return;
@@ -1290,6 +1339,42 @@ async function handleTaskCommand(text) {
   }
 
   await createTask(payload);
+}
+
+async function handleDayCommand(text) {
+  const rawCommand = text.trim();
+  const payload = rawCommand.slice(DAY_COMMAND.length).trim();
+  const [action = "", ...rest] = payload.split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+
+  if (!payload || normalizedAction === "help") {
+    postLocalDayMessage(
+      "Day commands:\n/day start\n/day plan <plan>\n/day end\n/day leave <date-or-range> <reason>\n/day leave list\n/day leave cancel <id>"
+    );
+    return;
+  }
+
+  if (normalizedAction === "start") {
+    await startWorkDay();
+    return;
+  }
+
+  if (normalizedAction === "plan") {
+    await saveWorkDayPlan(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "end") {
+    await endWorkDay();
+    return;
+  }
+
+  if (normalizedAction === "leave") {
+    await handleLeaveCommand(rest.join(" "));
+    return;
+  }
+
+  postLocalDayMessage(`Unknown day command: /day ${payload}`);
 }
 
 async function createTask(description) {
@@ -1540,9 +1625,229 @@ async function postTaskSummary(input = "") {
   setStatus("Task summary ready.", "success");
 }
 
-async function buildDailyTaskSummary() {
+async function startWorkDay() {
+  const existingDay = await getWorkDay();
+
+  await setDoc(
+    getWorkDayRef(),
+    {
+      userId: state.profile.id,
+      userName: state.profile.name,
+      dateKey: getTodayKey(),
+      startedAt: existingDay?.startedAt || serverTimestamp(),
+      endedAt: null,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  await postDayMessage(
+    `${state.profile.name} started the day.\nPlan can be shared with /day plan <plan>.`
+  );
+  setStatus("Day started.", "success");
+}
+
+async function saveWorkDayPlan(planInput) {
+  const plan = planInput.trim();
+
+  if (!plan) {
+    postLocalDayMessage("Use /day plan <your plan> to save today's plan.");
+    return;
+  }
+
+  await setDoc(
+    getWorkDayRef(),
+    {
+      userId: state.profile.id,
+      userName: state.profile.name,
+      dateKey: getTodayKey(),
+      plan,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  await postDayMessage(`${state.profile.name}'s plan for today:\n${plan}`);
+  setStatus("Day plan saved.", "success");
+}
+
+async function endWorkDay() {
+  await setDoc(
+    getWorkDayRef(),
+    {
+      userId: state.profile.id,
+      userName: state.profile.name,
+      dateKey: getTodayKey(),
+      endedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  const summary = await buildDailyTaskSummary({ includePlan: true });
+  await postDayMessage(summary);
+  setStatus("Day ended and summary shared.", "success");
+}
+
+async function handleLeaveCommand(input = "") {
+  const trimmedInput = input.trim();
+  const [action = "", ...rest] = trimmedInput.split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+
+  if (!trimmedInput) {
+    postLocalDayMessage("Use /day leave <date-or-range> <reason>.");
+    return;
+  }
+
+  if (normalizedAction === "list") {
+    await postLeaveList();
+    return;
+  }
+
+  if (normalizedAction === "cancel") {
+    await cancelLeave(rest.join(" "));
+    return;
+  }
+
+  await scheduleLeave(trimmedInput);
+}
+
+async function scheduleLeave(input) {
+  const parsedLeave = parseLeaveInput(input);
+
+  if (!parsedLeave) {
+    postLocalDayMessage("Use /day leave tomorrow Sick leave or /day leave 2026-05-20 to 2026-05-22 PTO.");
+    return;
+  }
+
+  const leaveRef = await addDoc(collection(state.db, "rooms", state.roomId, "leaves"), {
+    userId: state.profile.id,
+    userName: state.profile.name,
+    startDateKey: parsedLeave.startDateKey,
+    endDateKey: parsedLeave.endDateKey,
+    reason: parsedLeave.reason,
+    status: "scheduled",
+    createdAt: serverTimestamp(),
+    canceledAt: null,
+  });
+
+  await postDayMessage(
+    `${state.profile.name} scheduled leave ${formatDateRange(parsedLeave.startDateKey, parsedLeave.endDateKey)}: ${parsedLeave.reason} (${formatLeaveId(leaveRef.id)})`
+  );
+  setStatus("Leave scheduled.", "success");
+}
+
+async function postLeaveList() {
+  const leaves = (await loadRoomLeaves())
+    .filter(
+      (leave) =>
+        leave.userId === state.profile.id &&
+        leave.status !== "canceled" &&
+        leave.endDateKey >= getTodayKey()
+    )
+    .sort(compareLeavesByStartDate);
+
+  if (leaves.length === 0) {
+    postLocalDayMessage("No upcoming leaves scheduled.");
+    setStatus("No upcoming leaves.", "success");
+    return;
+  }
+
+  const lines = leaves.map(
+    (leave) =>
+      `${formatLeaveId(leave.id)} - ${formatDateRange(leave.startDateKey, leave.endDateKey)}: ${leave.reason}`
+  );
+  postLocalDayMessage(`Upcoming leaves:\n${lines.join("\n")}`);
+  setStatus(`${leaves.length} leave${leaves.length === 1 ? "" : "s"} listed.`, "success");
+}
+
+async function cancelLeave(leaveIdInput) {
+  const leaveId = leaveIdInput.trim();
+
+  if (!leaveId) {
+    postLocalDayMessage("Use /day leave cancel <id>.");
+    return;
+  }
+
+  const leave = await findLeaveById(leaveId);
+
+  if (!leave) {
+    postLocalDayMessage(`Leave ${leaveId} was not found.`);
+    setStatus("Leave not found.", "error");
+    return;
+  }
+
+  if (leave.userId !== state.profile.id) {
+    postLocalDayMessage(`Leave ${formatLeaveId(leave.id)} belongs to ${leave.userName || "another user"}.`);
+    setStatus("Leave belongs to another user.", "error");
+    return;
+  }
+
+  if (leave.status === "canceled") {
+    postLocalDayMessage(`Leave ${formatLeaveId(leave.id)} is already canceled.`);
+    return;
+  }
+
+  await updateDoc(doc(state.db, "rooms", state.roomId, "leaves", leave.id), {
+    status: "canceled",
+    canceledAt: serverTimestamp(),
+    userId: state.profile.id,
+  });
+
+  await postDayMessage(
+    `${state.profile.name} canceled leave ${formatDateRange(leave.startDateKey, leave.endDateKey)}: ${leave.reason} (${formatLeaveId(leave.id)})`
+  );
+  setStatus("Leave canceled.", "success");
+}
+
+async function announceTodaysLeaves() {
+  if (!state.db || !state.roomId || !state.profile) {
+    return;
+  }
+
+  try {
+    const todayKey = getTodayKey();
+    const leaves = (await loadRoomLeaves()).filter(
+      (leave) =>
+        leave.status !== "canceled" &&
+        leave.startDateKey <= todayKey &&
+        leave.endDateKey >= todayKey
+    );
+
+    for (const leave of leaves) {
+      const announcementId = `${todayKey}_${leave.id}`;
+      const announcementRef = doc(
+        state.db,
+        "rooms",
+        state.roomId,
+        "leaveAnnouncements",
+        announcementId
+      );
+      const announcementSnapshot = await getDoc(announcementRef);
+
+      if (announcementSnapshot.exists()) {
+        continue;
+      }
+
+      await postDayMessage(
+        `${leave.userName || "Someone"} is on leave today (${formatDateRange(leave.startDateKey, leave.endDateKey)}): ${leave.reason}`
+      );
+      await setDoc(announcementRef, {
+        leaveId: leave.id,
+        dateKey: todayKey,
+        announcedAt: serverTimestamp(),
+        announcedBy: state.profile.id,
+      });
+    }
+  } catch (error) {
+    console.error("Leave announcement check failed:", error);
+  }
+}
+
+async function buildDailyTaskSummary(options = {}) {
   const tasks = await loadRoomTasks();
   const { start, end } = getTodayBounds();
+  const workDay = await getWorkDay();
   const timeEntriesByTaskId = new Map();
 
   await Promise.all(
@@ -1573,9 +1878,14 @@ async function buildDailyTaskSummary() {
     .reduce((total, entry) => total + (Number.isFinite(entry.durationMs) ? entry.durationMs : 0), 0);
   const lines = [
     `Work summary for ${formatSummaryDate(start)}`,
-    `Time tracked: ${formatDuration(trackedMs)}`,
-    `Completed: ${completedToday.length}`,
   ];
+
+  if (options.includePlan && workDay?.plan) {
+    lines.push(`Plan: ${workDay.plan}`);
+  }
+
+  lines.push(`Time tracked: ${formatDuration(trackedMs)}`);
+  lines.push(`Completed: ${completedToday.length}`);
 
   completedToday.slice(0, 10).forEach((task) => {
     lines.push(`- ${task.description}${formatTaskLabels(task.labels)}${formatSummaryTimeForTask(task, timeEntriesByTaskId)}`);
@@ -1643,6 +1953,47 @@ async function loadTaskTimeEntries(taskId) {
   }));
 }
 
+async function getWorkDay() {
+  const snapshot = await getDoc(getWorkDayRef());
+  return snapshot.exists() ? snapshot.data() : null;
+}
+
+function getWorkDayRef() {
+  return doc(state.db, "rooms", state.roomId, "workDays", `${state.profile.id}_${getTodayKey()}`);
+}
+
+async function loadRoomLeaves() {
+  const leavesSnapshot = await getDocs(collection(state.db, "rooms", state.roomId, "leaves"));
+
+  return leavesSnapshot.docs.map((leaveDoc) => ({
+    id: leaveDoc.id,
+    ...leaveDoc.data(),
+  }));
+}
+
+async function findLeaveById(leaveIdInput) {
+  const normalizedId = leaveIdInput.trim().replace(/^#/, "");
+
+  if (!normalizedId) {
+    return null;
+  }
+
+  const directSnapshot = await getDoc(doc(state.db, "rooms", state.roomId, "leaves", normalizedId));
+
+  if (directSnapshot.exists()) {
+    return {
+      id: directSnapshot.id,
+      ...directSnapshot.data(),
+    };
+  }
+
+  const leaves = await loadRoomLeaves();
+  const normalizedPrefix = normalizedId.toLowerCase();
+  const matches = leaves.filter((leave) => leave.id.toLowerCase().startsWith(normalizedPrefix));
+
+  return matches.length === 1 ? matches[0] : null;
+}
+
 async function loadPendingRoomTasks() {
   const pendingTasksQuery = query(
     collection(state.db, "rooms", state.roomId, "tasks"),
@@ -1666,6 +2017,16 @@ async function postTaskMessage(text) {
   });
 }
 
+async function postDayMessage(text) {
+  await addDoc(collection(state.db, "rooms", state.roomId, "messages"), {
+    text,
+    senderId: state.profile.id,
+    senderName: "Day",
+    type: "day",
+    createdAt: serverTimestamp(),
+  });
+}
+
 async function recordTaskTimeEntry(task, startedAt, stoppedAt, durationMs) {
   await addDoc(collection(state.db, "rooms", state.roomId, "tasks", task.id, "timeEntries"), {
     taskId: task.id,
@@ -1680,12 +2041,20 @@ async function recordTaskTimeEntry(task, startedAt, stoppedAt, durationMs) {
 }
 
 function postLocalTaskMessage(text) {
+  postLocalMessage(text, "Tasks (only you)", "task");
+}
+
+function postLocalDayMessage(text) {
+  postLocalMessage(text, "Day (only you)", "day");
+}
+
+function postLocalMessage(text, senderName, type) {
   state.localMessages.push({
-    id: `local-task-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id: `local-${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     text,
     senderId: null,
-    senderName: "Tasks (only you)",
-    type: "task",
+    senderName,
+    type,
     isLocalOnly: true,
     createdAt: new Date(),
   });
@@ -1795,6 +2164,87 @@ function getTodayBounds() {
   end.setDate(end.getDate() + 1);
 
   return { start, end };
+}
+
+function getTodayKey() {
+  const { start } = getTodayBounds();
+  const year = start.getFullYear();
+  const month = String(start.getMonth() + 1).padStart(2, "0");
+  const day = String(start.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
+function parseLeaveInput(input) {
+  const trimmedInput = input.trim();
+  const rangeMatch = trimmedInput.match(/^(\S+)(?:\s+to\s+(\S+))?\s+(.+)$/i);
+
+  if (!rangeMatch) {
+    return null;
+  }
+
+  const startDateKey = parseDateKey(rangeMatch[1]);
+  const endDateKey = parseDateKey(rangeMatch[2] || rangeMatch[1]);
+  const reason = rangeMatch[3].trim();
+
+  if (!startDateKey || !endDateKey || !reason || startDateKey > endDateKey) {
+    return null;
+  }
+
+  return {
+    startDateKey,
+    endDateKey,
+    reason,
+  };
+}
+
+function parseDateKey(value) {
+  const normalizedValue = String(value || "").trim().toLowerCase();
+
+  if (normalizedValue === "today") {
+    return getTodayKey();
+  }
+
+  if (normalizedValue === "tomorrow") {
+    const tomorrow = new Date();
+    tomorrow.setHours(0, 0, 0, 0);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return formatDateKey(tomorrow);
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalizedValue)) {
+    const date = new Date(`${normalizedValue}T00:00:00`);
+
+    if (!Number.isNaN(date.getTime()) && formatDateKey(date) === normalizedValue) {
+      return normalizedValue;
+    }
+  }
+
+  return null;
+}
+
+function formatDateKey(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
+function formatDateRange(startDateKey, endDateKey) {
+  return startDateKey === endDateKey ? startDateKey : `${startDateKey} to ${endDateKey}`;
+}
+
+function formatLeaveId(leaveId) {
+  return `#${leaveId.slice(0, 6)}`;
+}
+
+function compareLeavesByStartDate(left, right) {
+  if (left.startDateKey !== right.startDateKey) {
+    return left.startDateKey.localeCompare(right.startDateKey);
+  }
+
+  return left.id.localeCompare(right.id);
 }
 
 function isTimestampWithin(timestamp, start, end) {
