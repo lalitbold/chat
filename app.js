@@ -191,6 +191,8 @@ const state = {
   areAdvancedCommandsVisible: false,
   pendingInvitePrivacyMode: false,
   isMessageInputMasked: false,
+  messageMaskRevealIndex: null,
+  messageMaskRevealTimeoutId: null,
   messages: [],
   localMessages: [],
   hasHydratedRoom: false,
@@ -702,6 +704,11 @@ async function connectToRoom(roomId, roomPasscode = "", roomData = null) {
   activeRoom.textContent = roomId;
   leaveRoomButton.disabled = false;
   setComposerState(true);
+  if (state.isPrivacyEnabled) {
+    setMessageInputMasked(true);
+  } else {
+    syncMessageInputMask();
+  }
   setStatus(`Connected to room "${roomId}".`, "success");
   hideShareLinkPanel();
   renderEmptyState("No messages yet. Say hello.");
@@ -844,6 +851,7 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   clearReadReceiptTimer();
   clearSessionPersistTimer();
   clearTaskTimerReminders();
+  clearMessageMaskRevealTimer();
   clearPrivacyPreviewTimer();
   state.roomId = null;
   state.roomPasscode = "";
@@ -1008,18 +1016,27 @@ function setComposerState(enabled) {
 }
 
 function toggleMessageInputMask() {
-  state.isMessageInputMasked = !state.isMessageInputMasked;
+  setMessageInputMasked(!state.isMessageInputMasked);
+}
+
+function setMessageInputMasked(masked) {
+  state.isMessageInputMasked = masked;
+  if (!masked) {
+    clearMessageMaskRevealTimer();
+  }
   syncMessageInputMask();
 }
 
 function syncMessageInputMask() {
   messageInput.classList.toggle("masked", state.isMessageInputMasked);
-  toggleMessageMaskButton.textContent = state.isMessageInputMasked ? "Show text" : "Mask text";
+  toggleMessageMaskButton.textContent =
+    state.isMessageInputMasked && state.isPrivacyEnabled ? "Normal text" :
+      state.isMessageInputMasked ? "Show text" : "Mask text";
   syncMessageMaskOverlay();
 }
 
 function syncMessageMaskOverlay() {
-  messageMaskOverlay.textContent = messageInput.value.replace(/[^\n]/g, "*");
+  messageMaskOverlay.textContent = getMaskedOverlayText();
   syncMessageMaskOverlayScroll();
 }
 
@@ -1028,9 +1045,67 @@ function syncMessageMaskOverlayScroll() {
   messageMaskOverlay.scrollLeft = messageInput.scrollLeft;
 }
 
-function handleMessageInputChange() {
+function getMaskedOverlayText() {
+  const characters = Array.from(messageInput.value);
+
+  return characters
+    .map((character, index) => {
+      if (character === "\n") {
+        return "\n";
+      }
+
+      if (index === state.messageMaskRevealIndex) {
+        return character;
+      }
+
+      return "*";
+    })
+    .join("");
+}
+
+function handleMessageInputChange(event) {
+  maybeRevealLatestMaskedCharacter(event);
   syncMessageMaskOverlay();
   updateCommandAutocomplete();
+}
+
+function maybeRevealLatestMaskedCharacter(event) {
+  if (!state.isMessageInputMasked || !state.isPrivacyEnabled) {
+    clearMessageMaskRevealTimer();
+    return;
+  }
+
+  if (!event?.inputType?.startsWith("insert")) {
+    clearMessageMaskRevealTimer();
+    return;
+  }
+
+  const revealIndex = (messageInput.selectionStart ?? 0) - 1;
+  const insertedCharacter = messageInput.value[revealIndex];
+
+  if (revealIndex < 0 || !insertedCharacter || insertedCharacter === "\n") {
+    clearMessageMaskRevealTimer();
+    return;
+  }
+
+  state.messageMaskRevealIndex = revealIndex;
+  clearMessageMaskRevealTimer(false);
+  state.messageMaskRevealTimeoutId = window.setTimeout(() => {
+    state.messageMaskRevealTimeoutId = null;
+    state.messageMaskRevealIndex = null;
+    syncMessageMaskOverlay();
+  }, 350);
+}
+
+function clearMessageMaskRevealTimer(resetRevealIndex = true) {
+  if (state.messageMaskRevealTimeoutId) {
+    window.clearTimeout(state.messageMaskRevealTimeoutId);
+    state.messageMaskRevealTimeoutId = null;
+  }
+
+  if (resetRevealIndex) {
+    state.messageMaskRevealIndex = null;
+  }
 }
 
 function handleMessageInputKeydown(event) {
@@ -2328,6 +2403,7 @@ function enablePrivacyMode() {
   clearPrivacyPreviewTimer();
   state.hiddenMessageIds = [];
   state.previewMessageIds = [];
+  setMessageInputMasked(true);
   syncStealthLayout();
   updatePrivacyIndicator();
   updateDocumentTitle();
@@ -2346,6 +2422,7 @@ function disablePrivacyMode(messageLimit = null) {
   state.previewMessageIds = [];
   state.seenMessageIds = new Set(state.messages.map((message) => message.id));
   clearPrivacyPreviewTimer();
+  syncMessageInputMask();
   syncStealthLayout();
   updatePrivacyIndicator();
   updateDocumentTitle();

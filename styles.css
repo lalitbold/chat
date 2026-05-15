@@ -520,8 +520,8 @@ body.stealth-active .messages {
 
 body.stealth-active.local-tasks-visible .messages {
   display: flex;
-  min-height: calc(100vh - 180px);
-  max-height: calc(100vh - 180px);
+  min-height: 0;
+  max-height: min(520px, calc(100vh - 180px));
   border-radius: 18px;
 }
 
@@ -546,6 +546,10 @@ body.stealth-active .composer {
   min-height: calc(100vh - 76px);
   display: flex;
   justify-content: flex-end;
+}
+
+body.stealth-active.local-tasks-visible .composer {
+  min-height: auto;
 }
 
 body.stealth-active #message-input {
@@ -598,8 +602,8 @@ body.stealth-active .composer-count.active {
 
   body.stealth-active.local-tasks-visible .messages {
     display: flex;
-    min-height: calc(100vh - 180px);
-    max-height: calc(100vh - 180px);
+    min-height: 0;
+    max-height: min(420px, calc(100vh - 180px));
   }
 
   body.preview-active .messages {
@@ -609,5 +613,9 @@ body.stealth-active .composer-count.active {
 
   body.stealth-active .composer {
     min-height: calc(100vh - 68px);
+  }
+
+  body.stealth-active.local-tasks-visible .composer {
+    min-height: auto;
   }
 }
