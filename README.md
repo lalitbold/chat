@@ -116,17 +116,37 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 - `/task fix that issue #bug #urgent` creates a pending task with optional labels.
 - `/task list` shows the pending task list only to you. Completed tasks are hidden by default.
 - `/task list #bug` shows pending tasks with that label only to you.
-- `/task start <id>` starts a timer on a task and reminds you locally after 25 minutes.
+- `/task start <id>` starts a timer on a task and reminds you locally after 25 minutes, then every 5 minutes until you continue, complete, or stop it.
 - `/task stop <id>` stops your running timer and adds the elapsed time to the task.
+- `/task continue <id>` keeps the running timer active and resets the next reminder to 25 minutes.
 - `/task summary` shows your work summary for today only to you.
 - `/task summary share` posts your work summary for today to the group.
 - `/task complete <id>` marks a task complete. The `<id>` can be the short ID shown in the task list, like `#abc123`, or the full Firestore document ID.
 - `/task label <id> #bug` adds a label to an existing task.
 - `/task unlabel <id> #bug` removes a label from an existing task.
 
+## Codex pending task export
+
+Codex can fetch pending room tasks from Firestore as Markdown:
+
+```powershell
+npm run tasks:pending -- --room testroom
+```
+
+Useful filters:
+
+```powershell
+npm run tasks:pending -- --room testroom --label bug
+npm run tasks:pending -- --room testroom --created-by-name Lalit --limit 10
+npm run tasks:pending -- --room testroom --json
+```
+
+The script signs in anonymously with the Firebase web app config and reads pending tasks using the same Firestore rules as the chat app.
+
 ## Day commands
 
 - `/day start` starts your day and posts attendance to the group.
+- When your day is started and no task timer is running, the app reminds you locally every 5 minutes.
 - `/day plan Ship feature X` saves and posts your plan to the group.
 - `/day end` ends your day and posts your work summary to the group.
 - `/day leave tomorrow Sick leave` schedules leave and posts it to the group.

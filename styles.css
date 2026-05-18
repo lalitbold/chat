@@ -460,6 +460,37 @@ button:disabled {
   line-height: 1.45;
 }
 
+.message-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.message-action {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid rgba(15, 118, 110, 0.28);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.86rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.message-action:hover:not(:disabled),
+.message-action:focus-visible {
+  background: var(--accent-soft);
+  outline: none;
+}
+
+.message-action:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
 .message-read-receipt {
   margin-top: 8px;
   color: var(--muted);

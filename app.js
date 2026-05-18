@@ -78,7 +78,9 @@ const TASK_COMMAND = "/task";
 const DAY_COMMAND = "/day";
 const TASK_LIST_LIMIT = 50;
 const TASK_TIMER_REMINDER_MS = 25 * 60 * 1000;
-const SLASH_COMMANDS = [
+const TASK_TIMER_REPEAT_REMINDER_MS = 5 * 60 * 1000;
+const DAY_IDLE_TASK_REMINDER_MS = 5 * 60 * 1000;
+const BASE_SLASH_COMMANDS = [
   {
     label: "/task <description> #label",
     insertText: "/task ",
@@ -103,6 +105,11 @@ const SLASH_COMMANDS = [
     label: "/task stop <id>",
     insertText: "/task stop ",
     hint: "Stop timer",
+  },
+  {
+    label: "/task continue <id>",
+    insertText: "/task continue ",
+    hint: "Continue timer",
   },
   {
     label: "/task summary",
@@ -155,6 +162,7 @@ const SLASH_COMMANDS = [
     hint: "Remove label",
   },
 ];
+const PRIVACY_INVITE_COMMAND = "/privacy invite";
 const PRIVACY_PREVIEW_MS = 10000;
 const SESSION_KEY = "firestore-chat-session";
 const MESSAGES_PAGE_SIZE = 25;
@@ -190,6 +198,8 @@ const state = {
   isAdvancedSettingsVisible: false,
   areAdvancedCommandsVisible: false,
   pendingInvitePrivacyMode: false,
+  canUsePrivacyFeature: false,
+  isClaimingPrivacyFeatureInvite: false,
   isMessageInputMasked: false,
   messageMaskRevealIndex: null,
   messageMaskRevealTimeoutId: null,
@@ -208,6 +218,7 @@ const state = {
   isPrivacyPreviewVisible: false,
   privacyPreviewTimeoutId: null,
   unsubscribeMessages: null,
+  unsubscribeRoom: null,
   unsubscribeReadReceipts: null,
   readReceipts: [],
   lastSyncedReadMessageId: null,
@@ -219,6 +230,7 @@ const state = {
   commandSuggestionMatches: [],
   selectedCommandSuggestionIndex: 0,
   taskTimerReminderTimeouts: new Map(),
+  dayIdleTaskReminderTimeoutId: null,
 };
 
 boot();
@@ -231,7 +243,7 @@ async function boot() {
 
   try {
     validateFirebaseConfig(firebaseConfig);
-    const app = initializeApp(firebaseConfig);
+    const app = initializeApp(getRuntimeFirebaseConfig(firebaseConfig));
     state.db = getFirestore(app);
     state.auth = getAuth(app);
     state.authReady = initializeAuthSession();
@@ -279,6 +291,7 @@ function wireEvents() {
   messageInput.addEventListener("scroll", syncMessageMaskOverlayScroll);
   messageInput.addEventListener("blur", scheduleCommandAutocompleteHide);
   commandSuggestions.addEventListener("mousedown", handleCommandSuggestionMouseDown);
+  messagesContainer.addEventListener("click", handleMessageActionClick);
   messagesContainer.addEventListener("scroll", handleMessageListScroll);
   toggleMessageMaskButton.addEventListener("click", toggleMessageInputMask);
   saveAdvancedSettingsButton.addEventListener("click", saveAdvancedSettings);
@@ -517,13 +530,13 @@ async function linkGoogleAccount() {
 
 async function startGoogleRedirectLink(provider = new GoogleAuthProvider()) {
   sessionStorage.setItem("firestore-chat-google-redirect-mode", "link");
-  setStatus("Popup was blocked. Redirecting to Google sign-in...", "success");
+  setStatus("Opening Google sign-in...", "success");
   await linkWithRedirect(state.authUser, provider);
 }
 
 async function startGoogleRedirectSignIn(provider = new GoogleAuthProvider()) {
   sessionStorage.setItem("firestore-chat-google-redirect-mode", "signin");
-  setStatus("Popup was blocked. Redirecting to Google sign-in...", "success");
+  setStatus("Opening Google sign-in...", "success");
   await signInWithRedirect(state.auth, provider);
 }
 
@@ -540,7 +553,8 @@ async function handleGoogleRedirectResult() {
     const result = await getRedirectResult(state.auth);
 
     if (!result?.user) {
-      return false;
+      setStatus("Google sign-in did not complete. Try Link Google again.", "error");
+      return true;
     }
 
     applyAuthUser(result.user);
@@ -637,12 +651,20 @@ function getGoogleAuthErrorMessage(error) {
     return "Google linking was cancelled.";
   }
 
+  if (error?.code === "auth/redirect-cancelled-by-user") {
+    return "Google sign-in was cancelled before it completed.";
+  }
+
   if (error?.code === "auth/unauthorized-domain") {
     return "Add this domain to Firebase Auth authorized domains.";
   }
 
   if (error?.code === "auth/operation-not-allowed") {
     return "Enable the Google provider in Firebase Authentication.";
+  }
+
+  if (error?.code === "auth/network-request-failed") {
+    return "Google sign-in could not connect. Check your connection and try again.";
   }
 
   if (isFirebaseAuthSetupError(error)) {
@@ -663,6 +685,8 @@ async function ensureRoomAccess(roomId, roomPasscode) {
       hasPasscode: Boolean(roomPasscode),
       passcode: roomPasscode || null,
       commands: {},
+      privacyFeatureMembers: [state.profile.id],
+      privacyFeatureInvites: [],
     };
     await setDoc(roomRef, roomData);
     return roomData;
@@ -692,8 +716,7 @@ async function connectToRoom(roomId, roomPasscode = "", roomData = null) {
   state.pendingInvitePrivacyMode = pendingInvitePrivacyMode;
   state.roomId = roomId;
   state.roomPasscode = roomPasscode;
-  state.groupRoomCommands = loadGroupRoomCommands(roomData);
-  state.roomCommands = getEffectiveRoomCommands(roomId, state.groupRoomCommands);
+  applyRoomData(roomData);
   state.isAdvancedSettingsVisible = false;
   state.hasHydratedRoom = false;
   state.messages = [];
@@ -716,9 +739,11 @@ async function connectToRoom(roomId, roomPasscode = "", roomData = null) {
   setAdvancedSettingsVisibility(false);
 
   await loadInitialMessages(roomId);
+  subscribeToRoom(roomId);
   subscribeToReadReceipts(roomId);
   subscribeToLatestMessages(roomId);
   queueReadReceiptSync();
+  scheduleDayIdleTaskReminder();
   void announceTodaysLeaves();
 }
 
@@ -747,6 +772,111 @@ async function loadInitialMessages(roomId) {
   );
 
   renderMessages();
+}
+
+function subscribeToRoom(roomId) {
+  const roomRef = doc(state.db, "rooms", roomId);
+
+  state.unsubscribeRoom = onSnapshot(
+    roomRef,
+    (snapshot) => {
+      if (!snapshot.exists()) {
+        return;
+      }
+
+      applyRoomData(snapshot.data());
+    },
+    (error) => {
+      console.error(error);
+      setStatus("Room settings stopped updating. Verify your Firestore rules.", "error");
+    }
+  );
+}
+
+function applyRoomData(roomData = {}) {
+  state.groupRoomCommands = loadGroupRoomCommands(roomData);
+  state.roomCommands = getEffectiveRoomCommands(state.roomId, state.groupRoomCommands);
+  updatePrivacyFeatureAccess(roomData);
+}
+
+function updatePrivacyFeatureAccess(roomData = {}) {
+  const hadAccess = state.canUsePrivacyFeature;
+  const memberIds = Array.isArray(roomData.privacyFeatureMembers) ? roomData.privacyFeatureMembers : [];
+  const invitedNames = Array.isArray(roomData.privacyFeatureInvites) ? roomData.privacyFeatureInvites : [];
+  const normalizedProfileName = normalizeProfileName(state.profile?.name);
+  const isCreator = roomData.createdBy === state.profile?.id;
+  const isMember = Boolean(state.profile?.id && memberIds.includes(state.profile.id));
+  const isInvitedByName = Boolean(normalizedProfileName && invitedNames.includes(normalizedProfileName));
+
+  state.canUsePrivacyFeature = isCreator || isMember || isInvitedByName;
+
+  if (isInvitedByName && !isMember && !isCreator) {
+    void claimPrivacyFeatureInvite(normalizedProfileName);
+  }
+
+  if (!state.canUsePrivacyFeature && state.isPrivacyEnabled) {
+    disablePrivacyMode();
+  }
+
+  if (state.canUsePrivacyFeature !== hadAccess && messageInput.value.trimStart().startsWith("/")) {
+    updateCommandAutocomplete();
+  }
+}
+
+async function claimPrivacyFeatureInvite(normalizedProfileName) {
+  if (
+    !state.db ||
+    !state.roomId ||
+    !state.profile?.id ||
+    !normalizedProfileName ||
+    state.isClaimingPrivacyFeatureInvite
+  ) {
+    return;
+  }
+
+  state.isClaimingPrivacyFeatureInvite = true;
+
+  try {
+    const roomRef = doc(state.db, "rooms", state.roomId);
+    await updateDoc(roomRef, {
+      privacyFeatureMembers: arrayUnion(state.profile.id),
+      privacyFeatureInvites: arrayRemove(normalizedProfileName),
+    });
+  } catch (error) {
+    console.error(error);
+  } finally {
+    state.isClaimingPrivacyFeatureInvite = false;
+  }
+}
+
+async function invitePrivacyFeatureUser(rawName) {
+  if (!state.db || !state.roomId) {
+    return;
+  }
+
+  if (!state.canUsePrivacyFeature) {
+    setStatus("Privacy mode needs to be unlocked for you before you can invite others.", "error");
+    return;
+  }
+
+  const normalizedName = normalizeProfileName(rawName);
+
+  if (!normalizedName) {
+    setStatus("Use /privacy invite <name>.", "error");
+    return;
+  }
+
+  const roomRef = doc(state.db, "rooms", state.roomId);
+
+  try {
+    await updateDoc(roomRef, {
+      privacyFeatureInvites: arrayUnion(normalizedName),
+    });
+    setStatus(`Privacy mode invited for "${rawName.trim()}".`, "success");
+  } catch (error) {
+    console.error(error);
+    setStatus("Privacy invite could not be saved.", "error");
+  }
 }
 
 function subscribeToLatestMessages(roomId) {
@@ -838,6 +968,11 @@ async function loadOlderMessages() {
 }
 
 function disconnectFromRoom(clearSession = true, resetStealthState = true) {
+  if (state.unsubscribeRoom) {
+    state.unsubscribeRoom();
+    state.unsubscribeRoom = null;
+  }
+
   if (state.unsubscribeMessages) {
     state.unsubscribeMessages();
     state.unsubscribeMessages = null;
@@ -851,6 +986,7 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   clearReadReceiptTimer();
   clearSessionPersistTimer();
   clearTaskTimerReminders();
+  clearDayIdleTaskReminder();
   clearMessageMaskRevealTimer();
   clearPrivacyPreviewTimer();
   state.roomId = null;
@@ -859,6 +995,8 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   state.groupRoomCommands = {};
   state.isAdvancedSettingsVisible = false;
   state.pendingInvitePrivacyMode = false;
+  state.canUsePrivacyFeature = false;
+  state.isClaimingPrivacyFeatureInvite = false;
   state.hasHydratedRoom = false;
   state.messages = [];
   state.localMessages = [];
@@ -924,6 +1062,27 @@ function renderMessage(message, context = {}) {
   meta.append(sender, timestamp);
   wrapper.append(meta, body);
 
+  if (message.isLocalOnly && Array.isArray(message.actions) && message.actions.length > 0) {
+    const actions = document.createElement("div");
+    actions.className = "message-actions";
+
+    message.actions.forEach((action) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "message-action";
+      button.textContent = action.label;
+      button.dataset.action = action.action;
+
+      if (action.taskId) {
+        button.dataset.taskId = action.taskId;
+      }
+
+      actions.append(button);
+    });
+
+    wrapper.append(actions);
+  }
+
   if (!message.isLocalOnly && message.senderId === state.profile?.id) {
     const readBy = getMessageReadByNames(message);
 
@@ -967,6 +1126,24 @@ function renderMessages(options = {}) {
   }
 
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function handleMessageActionClick(event) {
+  const actionButton = event.target.closest("[data-action]");
+
+  if (!actionButton || !messagesContainer.contains(actionButton)) {
+    return;
+  }
+
+  if (actionButton.dataset.action === "task-continue") {
+    actionButton.disabled = true;
+    void continueTaskTimer(actionButton.dataset.taskId || "");
+  }
+
+  if (actionButton.dataset.action === "task-complete") {
+    actionButton.disabled = true;
+    void completeTask(actionButton.dataset.taskId || "");
+  }
 }
 
 function renderEmptyState(message) {
@@ -1180,11 +1357,43 @@ function getCommandAutocompleteMatches(value) {
     return [];
   }
 
-  return SLASH_COMMANDS.filter((command) => {
+  return getAvailableSlashCommands().filter((command) => {
     const label = command.label.toLowerCase();
     const insertText = command.insertText.toLowerCase();
     return label.startsWith(query) || insertText.startsWith(query);
   }).slice(0, 5);
+}
+
+function getAvailableSlashCommands() {
+  const commands = [...BASE_SLASH_COMMANDS];
+
+  if (state.canUsePrivacyFeature) {
+    const roomCommands = getEffectiveRoomCommands(state.roomId, state.groupRoomCommands);
+    commands.unshift(
+      {
+        label: `${PRIVACY_INVITE_COMMAND} <name>`,
+        insertText: `${PRIVACY_INVITE_COMMAND} `,
+        hint: "Grant privacy",
+      },
+      {
+        label: `/${roomCommands.enable}`,
+        insertText: `/${roomCommands.enable}`,
+        hint: "Enable privacy",
+      },
+      {
+        label: `/${roomCommands.reveal}`,
+        insertText: `/${roomCommands.reveal}`,
+        hint: "Show hidden",
+      },
+      {
+        label: `/${roomCommands.disable}`,
+        insertText: `/${roomCommands.disable}`,
+        hint: "Exit privacy",
+      }
+    );
+  }
+
+  return commands;
 }
 
 function renderCommandAutocomplete() {
@@ -1306,18 +1515,33 @@ function handleMessageListScroll() {
 
 function handleLocalCommand(text) {
   const normalized = text.trim().toLowerCase();
+  const normalizedWithoutSlash = normalized.startsWith("/") ? normalized.slice(1) : normalized;
   const roomCommands = getEffectiveRoomCommands(state.roomId, state.groupRoomCommands);
   state.roomCommands = roomCommands;
   const disableMatch = matchCommandWithOptionalCount(normalized, [
     DEFAULT_ROOM_COMMANDS.disable,
     roomCommands.disable,
+    `/${DEFAULT_ROOM_COMMANDS.disable}`,
+    `/${roomCommands.disable}`,
   ]);
   const revealMatch = matchCommandWithOptionalCount(normalized, [
     ...DEFAULT_REVEAL_ALIASES,
     roomCommands.reveal,
+    ...Array.from(DEFAULT_REVEAL_ALIASES, (command) => `/${command}`),
+    `/${roomCommands.reveal}`,
   ]);
 
-  if (matchesCommand(normalized, DEFAULT_ROOM_COMMANDS.enable, roomCommands.enable)) {
+  if (normalized === PRIVACY_INVITE_COMMAND || normalized.startsWith(`${PRIVACY_INVITE_COMMAND} `)) {
+    void invitePrivacyFeatureUser(text.trim().slice(PRIVACY_INVITE_COMMAND.length).trim());
+    return true;
+  }
+
+  if (matchesCommand(normalizedWithoutSlash, DEFAULT_ROOM_COMMANDS.enable, roomCommands.enable)) {
+    if (!state.canUsePrivacyFeature) {
+      setStatus("Privacy mode needs to be invited for this account before it can be used here.", "error");
+      return true;
+    }
+
     enablePrivacyMode();
     return true;
   }
@@ -1333,12 +1557,22 @@ function handleLocalCommand(text) {
   }
 
   if (disableMatch) {
+    if (!state.canUsePrivacyFeature) {
+      setStatus("Privacy mode needs to be invited for this account before it can be used here.", "error");
+      return true;
+    }
+
     const requestedCount = disableMatch[1] ? Number.parseInt(disableMatch[1], 10) : null;
     disablePrivacyMode(requestedCount);
     return true;
   }
 
   if (revealMatch) {
+    if (!state.canUsePrivacyFeature) {
+      setStatus("Privacy mode needs to be invited for this account before it can be used here.", "error");
+      return true;
+    }
+
     const requestedCount = revealMatch[1] ? Number.parseInt(revealMatch[1], 10) : null;
     revealPrivacyTemporarily(requestedCount);
     return true;
@@ -1365,7 +1599,7 @@ async function handleTaskCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     await postTaskMessage(
-      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task start <id>\n/task stop <id>\n/task summary\n/task summary share\n/task complete <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nUse /day for attendance and leave commands."
+      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task start <id>\n/task stop <id>\n/task continue <id>\n/task summary\n/task summary share\n/task complete <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nUse /day for attendance and leave commands."
     );
     return;
   }
@@ -1390,6 +1624,12 @@ async function handleTaskCommand(text) {
   if (normalizedAction === "stop") {
     const taskId = rest.join(" ").trim();
     await stopTaskTimer(taskId);
+    return;
+  }
+
+  if (normalizedAction === "continue") {
+    const taskId = rest.join(" ").trim();
+    await continueTaskTimer(taskId);
     return;
   }
 
@@ -1562,6 +1802,7 @@ async function completeTask(taskIdInput) {
   await postTaskMessage(
     `Task ${formatTaskId(task.id)} completed${timerElapsedMs > 0 ? ` and timer stopped after ${formatDuration(timerElapsedMs)}` : ""}: ${task.description}`
   );
+  scheduleDayIdleTaskReminder();
   setStatus("Task completed.", "success");
 }
 
@@ -1607,6 +1848,7 @@ async function startTaskTimer(taskIdInput) {
     description: task.description,
     startedAt,
   });
+  clearDayIdleTaskReminder();
   await postTaskMessage(`Task ${formatTaskId(task.id)} timer started: ${task.description}`);
   setStatus("Task timer started.", "success");
 }
@@ -1652,10 +1894,57 @@ async function stopTaskTimer(taskIdInput) {
 
   await recordTaskTimeEntry(task, task.activeTimerStartedAt, stoppedAt, elapsedMs);
   clearTaskTimerReminder(task.id);
+  scheduleDayIdleTaskReminder();
   await postTaskMessage(
     `Task ${formatTaskId(task.id)} timer stopped after ${formatDuration(elapsedMs)}: ${task.description}`
   );
   setStatus("Task timer stopped.", "success");
+}
+
+async function continueTaskTimer(taskIdInput) {
+  const taskId = taskIdInput.trim();
+
+  if (!taskId) {
+    await postTaskMessage("Use /task continue <id> to keep tracking time and reset the reminder.");
+    return;
+  }
+
+  const task = await findTaskById(taskId);
+
+  if (!task) {
+    await postTaskMessage(`Task ${taskId} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  if (task.status === "complete") {
+    await postTaskMessage(`Task ${formatTaskId(task.id)} is already complete.`);
+    setStatus("Task is already complete.", "error");
+    return;
+  }
+
+  if (!task.activeTimerStartedAt) {
+    await postTaskMessage(`Task ${formatTaskId(task.id)} does not have a running timer.`);
+    setStatus("Task timer is not running.", "error");
+    return;
+  }
+
+  if (task.activeTimerStartedBy && task.activeTimerStartedBy !== state.profile.id) {
+    const owner = task.activeTimerStartedByName || "another user";
+    await postTaskMessage(`Task ${formatTaskId(task.id)} timer is running by ${owner}.`);
+    setStatus("Task timer belongs to another user.", "error");
+    return;
+  }
+
+  scheduleTaskTimerReminder({
+    id: task.id,
+    description: task.description,
+    startedAt: new Date(),
+  });
+  postLocalTaskMessage(
+    `Continuing Task ${formatTaskId(task.id)}. I will remind you again in ${formatDuration(TASK_TIMER_REMINDER_MS)} if it is still running.`
+  );
+  setStatus("Task timer continued.", "success");
 }
 
 async function updateTaskLabels(input, mode) {
@@ -1719,6 +2008,7 @@ async function startWorkDay() {
   await postDayMessage(
     `${state.profile.name} started the day.\nPlan can be shared with /day plan <plan>.`
   );
+  scheduleDayIdleTaskReminder();
   setStatus("Day started.", "success");
 }
 
@@ -1761,6 +2051,7 @@ async function endWorkDay() {
 
   const summary = await buildDailyTaskSummary({ includePlan: true });
   await postDayMessage(summary);
+  clearDayIdleTaskReminder();
   setStatus("Day ended and summary shared.", "success");
 }
 
@@ -2115,15 +2406,15 @@ async function recordTaskTimeEntry(task, startedAt, stoppedAt, durationMs) {
   });
 }
 
-function postLocalTaskMessage(text) {
-  postLocalMessage(text, "Tasks (only you)", "task");
+function postLocalTaskMessage(text, actions = []) {
+  postLocalMessage(text, "Tasks (only you)", "task", actions);
 }
 
 function postLocalDayMessage(text) {
   postLocalMessage(text, "Day (only you)", "day");
 }
 
-function postLocalMessage(text, senderName, type) {
+function postLocalMessage(text, senderName, type, actions = []) {
   state.localMessages.push({
     id: `local-${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     text,
@@ -2131,6 +2422,7 @@ function postLocalMessage(text, senderName, type) {
     senderName,
     type,
     isLocalOnly: true,
+    actions,
     createdAt: new Date(),
   });
   syncStealthLayout();
@@ -2144,14 +2436,72 @@ function scheduleTaskTimerReminder(task) {
   const elapsedMs = Date.now() - getTimestampMillis(task.startedAt);
   const delayMs = Math.max(0, TASK_TIMER_REMINDER_MS - elapsedMs);
   const timeoutId = window.setTimeout(() => {
-    state.taskTimerReminderTimeouts.delete(task.id);
-    postLocalTaskMessage(
-      `Reminder: Task ${formatTaskId(task.id)} has been running for more than ${formatDuration(TASK_TIMER_REMINDER_MS)}: ${task.description}`
-    );
-    setStatus("Task timer reminder.", "success");
+    void handleTaskTimerReminder(task);
   }, delayMs);
 
   state.taskTimerReminderTimeouts.set(task.id, timeoutId);
+}
+
+function scheduleTaskTimerFollowUpReminder(task) {
+  clearTaskTimerReminder(task.id);
+
+  const timeoutId = window.setTimeout(() => {
+    void handleTaskTimerReminder(task, true);
+  }, TASK_TIMER_REPEAT_REMINDER_MS);
+
+  state.taskTimerReminderTimeouts.set(task.id, timeoutId);
+}
+
+async function handleTaskTimerReminder(task, isFollowUp = false) {
+  state.taskTimerReminderTimeouts.delete(task.id);
+
+  const latestTask = await getActiveTaskForLocalReminder(task);
+
+  if (!latestTask) {
+    return;
+  }
+
+  postLocalTaskMessage(
+    `Reminder: Task ${formatTaskId(latestTask.id)} has been running for more than ${formatDuration(TASK_TIMER_REMINDER_MS)}: ${latestTask.description}\nContinue with /task continue ${formatTaskId(latestTask.id)}, complete with /task complete ${formatTaskId(latestTask.id)}, or stop with /task stop ${formatTaskId(latestTask.id)}.`,
+    [
+      {
+        label: "Continue",
+        action: "task-continue",
+        taskId: latestTask.id,
+      },
+      {
+        label: "Complete",
+        action: "task-complete",
+        taskId: latestTask.id,
+      },
+    ]
+  );
+  scheduleTaskTimerFollowUpReminder(latestTask);
+  setStatus(isFollowUp ? "Task timer reminder repeated." : "Task timer reminder.", "success");
+}
+
+async function getActiveTaskForLocalReminder(task) {
+  try {
+    const latestTask = await findTaskById(task.id);
+
+    if (
+      !latestTask ||
+      latestTask.status === "complete" ||
+      !latestTask.activeTimerStartedAt ||
+      (latestTask.activeTimerStartedBy && latestTask.activeTimerStartedBy !== state.profile?.id)
+    ) {
+      return null;
+    }
+
+    return {
+      id: latestTask.id,
+      description: latestTask.description || task.description,
+      startedAt: latestTask.activeTimerStartedAt || task.startedAt,
+    };
+  } catch (error) {
+    console.error("Task reminder check failed:", error);
+    return task;
+  }
 }
 
 function clearTaskTimerReminder(taskId) {
@@ -2170,6 +2520,61 @@ function clearTaskTimerReminders() {
     window.clearTimeout(timeoutId);
   });
   state.taskTimerReminderTimeouts.clear();
+}
+
+function scheduleDayIdleTaskReminder() {
+  clearDayIdleTaskReminder();
+
+  if (!state.db || !state.roomId || !state.profile) {
+    return;
+  }
+
+  state.dayIdleTaskReminderTimeoutId = window.setTimeout(() => {
+    void handleDayIdleTaskReminder();
+  }, DAY_IDLE_TASK_REMINDER_MS);
+}
+
+async function handleDayIdleTaskReminder() {
+  state.dayIdleTaskReminderTimeoutId = null;
+
+  const shouldRemind = await shouldRemindForIdleWorkDay();
+
+  if (!shouldRemind) {
+    return;
+  }
+
+  postLocalDayMessage(
+    `Reminder: Your day is started, but no task timer is running.\nStart a task with /task start <id> or create one with /task <description>.`
+  );
+  scheduleDayIdleTaskReminder();
+  setStatus("No task running reminder.", "success");
+}
+
+async function shouldRemindForIdleWorkDay() {
+  try {
+    const workDay = await getWorkDay();
+
+    if (!workDay?.startedAt || workDay.endedAt) {
+      return false;
+    }
+
+    const tasks = await loadRoomTasks();
+    return !tasks.some(
+      (task) => task.activeTimerStartedBy === state.profile.id && task.activeTimerStartedAt
+    );
+  } catch (error) {
+    console.error("Idle task reminder check failed:", error);
+    return false;
+  }
+}
+
+function clearDayIdleTaskReminder() {
+  if (!state.dayIdleTaskReminderTimeoutId) {
+    return;
+  }
+
+  window.clearTimeout(state.dayIdleTaskReminderTimeoutId);
+  state.dayIdleTaskReminderTimeoutId = null;
 }
 
 function compareTasksByCreatedAt(left, right) {
@@ -2396,6 +2801,11 @@ function formatTaskTimestamp(timestamp) {
 }
 
 function enablePrivacyMode() {
+  if (!state.canUsePrivacyFeature) {
+    setStatus("Privacy mode needs to be invited for this account before it can be used here.", "error");
+    return;
+  }
+
   state.isPrivacyEnabled = true;
   state.isPrivacyPreviewVisible = false;
   state.visibleMessageLimit = null;
@@ -2998,6 +3408,21 @@ function validateFirebaseConfig(config) {
   }
 }
 
+function getRuntimeFirebaseConfig(config) {
+  const hostname = window.location.hostname;
+  const isFirebaseHostingDomain =
+    hostname.endsWith(".web.app") || hostname.endsWith(".firebaseapp.com");
+
+  if (!isFirebaseHostingDomain || hostname === config.authDomain) {
+    return config;
+  }
+
+  return {
+    ...config,
+    authDomain: hostname,
+  };
+}
+
 function generateRoomId() {
   return `room-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -3019,6 +3444,12 @@ function normalizeRoomCommands(commands = DEFAULT_ROOM_COMMANDS) {
 }
 
 function normalizeCommandPhrase(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
+function normalizeProfileName(value) {
   return String(value || "")
     .trim()
     .toLowerCase();

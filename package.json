@@ -1,0 +1,9 @@
+{
+  "name": "firestore-chat-system",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "tasks:pending": "node tools/pending-tasks.mjs"
+  }
+}
