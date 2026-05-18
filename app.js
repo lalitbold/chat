@@ -173,6 +173,8 @@ const SHARE_QUERY_KEY = "c";
 const SHARE_SECRET = "firestore-chat-share-v1";
 const READ_RECEIPT_SYNC_DELAY_MS = 1200;
 const SESSION_PERSIST_DELAY_MS = 250;
+const PRIVACY_FEATURE_CONFIG_COLLECTION = "appSettings";
+const PRIVACY_FEATURE_CONFIG_ID = "privacyMode";
 
 if (!commandSuggestions) {
   commandSuggestions = document.createElement("div");
@@ -200,6 +202,8 @@ const state = {
   pendingInvitePrivacyMode: false,
   canUsePrivacyFeature: false,
   isClaimingPrivacyFeatureInvite: false,
+  privacyFeatureMembers: [],
+  privacyFeatureInvites: [],
   isMessageInputMasked: false,
   messageMaskRevealIndex: null,
   messageMaskRevealTimeoutId: null,
@@ -218,6 +222,7 @@ const state = {
   isPrivacyPreviewVisible: false,
   privacyPreviewTimeoutId: null,
   unsubscribeMessages: null,
+  unsubscribePrivacyFeatureConfig: null,
   unsubscribeRoom: null,
   unsubscribeReadReceipts: null,
   readReceipts: [],
@@ -250,6 +255,7 @@ async function boot() {
     await state.authReady;
     const handledGoogleRedirect = await handleGoogleRedirectResult();
     await ensureAnonymousAuthSession();
+    subscribeToPrivacyFeatureConfig();
 
     if (!handledGoogleRedirect) {
       setStatus("Firebase connected. Create or join a room.", "success");
@@ -467,6 +473,8 @@ function applyAuthUser(user) {
     };
   }
 
+  updatePrivacyFeatureAccess();
+
   if (previousProfileId && previousProfileId !== user.uid) {
     state.lastSyncedReadMessageId = null;
     state.pendingReadMessageId = null;
@@ -674,6 +682,54 @@ function getGoogleAuthErrorMessage(error) {
   return `Google linking failed${error?.code ? ` (${error.code})` : ""}.`;
 }
 
+function getPrivacyFeatureConfigRef() {
+  return doc(state.db, PRIVACY_FEATURE_CONFIG_COLLECTION, PRIVACY_FEATURE_CONFIG_ID);
+}
+
+function subscribeToPrivacyFeatureConfig() {
+  if (!state.db) {
+    return;
+  }
+
+  if (state.unsubscribePrivacyFeatureConfig) {
+    state.unsubscribePrivacyFeatureConfig();
+  }
+
+  state.unsubscribePrivacyFeatureConfig = onSnapshot(
+    getPrivacyFeatureConfigRef(),
+    async (snapshot) => {
+      if (!snapshot.exists()) {
+        try {
+          await setDoc(
+            getPrivacyFeatureConfigRef(),
+            {
+              privacyFeatureMembers: [],
+              privacyFeatureInvites: [],
+            },
+            { merge: true }
+          );
+        } catch (error) {
+          console.error(error);
+        }
+
+        state.privacyFeatureMembers = [];
+        state.privacyFeatureInvites = [];
+        updatePrivacyFeatureAccess();
+        return;
+      }
+
+      const data = snapshot.data();
+      state.privacyFeatureMembers = Array.isArray(data.privacyFeatureMembers) ? data.privacyFeatureMembers : [];
+      state.privacyFeatureInvites = Array.isArray(data.privacyFeatureInvites) ? data.privacyFeatureInvites : [];
+      updatePrivacyFeatureAccess();
+    },
+    (error) => {
+      console.error(error);
+      setStatus("Privacy feature settings stopped updating. Verify your Firestore rules.", "error");
+    }
+  );
+}
+
 async function ensureRoomAccess(roomId, roomPasscode) {
   const roomRef = doc(state.db, "rooms", roomId);
   const roomSnapshot = await getDoc(roomRef);
@@ -685,8 +741,6 @@ async function ensureRoomAccess(roomId, roomPasscode) {
       hasPasscode: Boolean(roomPasscode),
       passcode: roomPasscode || null,
       commands: {},
-      privacyFeatureMembers: [state.profile.id],
-      privacyFeatureInvites: [],
     };
     await setDoc(roomRef, roomData);
     return roomData;
@@ -796,22 +850,20 @@ function subscribeToRoom(roomId) {
 function applyRoomData(roomData = {}) {
   state.groupRoomCommands = loadGroupRoomCommands(roomData);
   state.roomCommands = getEffectiveRoomCommands(state.roomId, state.groupRoomCommands);
-  updatePrivacyFeatureAccess(roomData);
+  updatePrivacyFeatureAccess();
 }
 
-function updatePrivacyFeatureAccess(roomData = {}) {
+function updatePrivacyFeatureAccess() {
   const hadAccess = state.canUsePrivacyFeature;
-  const memberIds = Array.isArray(roomData.privacyFeatureMembers) ? roomData.privacyFeatureMembers : [];
-  const invitedNames = Array.isArray(roomData.privacyFeatureInvites) ? roomData.privacyFeatureInvites : [];
-  const normalizedProfileName = normalizeProfileName(state.profile?.name);
-  const isCreator = roomData.createdBy === state.profile?.id;
-  const isMember = Boolean(state.profile?.id && memberIds.includes(state.profile.id));
-  const isInvitedByName = Boolean(normalizedProfileName && invitedNames.includes(normalizedProfileName));
+  const profileIdentifiers = getPrivacyFeatureIdentifiers();
+  const isMember = Boolean(state.profile?.id && state.privacyFeatureMembers.includes(state.profile.id));
+  const invitedIdentifier =
+    profileIdentifiers.find((identifier) => state.privacyFeatureInvites.includes(identifier)) || null;
 
-  state.canUsePrivacyFeature = isCreator || isMember || isInvitedByName;
+  state.canUsePrivacyFeature = isMember || Boolean(invitedIdentifier);
 
-  if (isInvitedByName && !isMember && !isCreator) {
-    void claimPrivacyFeatureInvite(normalizedProfileName);
+  if (invitedIdentifier && !isMember) {
+    void claimPrivacyFeatureInvite(invitedIdentifier);
   }
 
   if (!state.canUsePrivacyFeature && state.isPrivacyEnabled) {
@@ -823,12 +875,11 @@ function updatePrivacyFeatureAccess(roomData = {}) {
   }
 }
 
-async function claimPrivacyFeatureInvite(normalizedProfileName) {
+async function claimPrivacyFeatureInvite(invitedIdentifier) {
   if (
     !state.db ||
-    !state.roomId ||
     !state.profile?.id ||
-    !normalizedProfileName ||
+    !invitedIdentifier ||
     state.isClaimingPrivacyFeatureInvite
   ) {
     return;
@@ -837,11 +888,10 @@ async function claimPrivacyFeatureInvite(normalizedProfileName) {
   state.isClaimingPrivacyFeatureInvite = true;
 
   try {
-    const roomRef = doc(state.db, "rooms", state.roomId);
-    await updateDoc(roomRef, {
+    await setDoc(getPrivacyFeatureConfigRef(), {
       privacyFeatureMembers: arrayUnion(state.profile.id),
-      privacyFeatureInvites: arrayRemove(normalizedProfileName),
-    });
+      privacyFeatureInvites: arrayRemove(invitedIdentifier),
+    }, { merge: true });
   } catch (error) {
     console.error(error);
   } finally {
@@ -849,8 +899,8 @@ async function claimPrivacyFeatureInvite(normalizedProfileName) {
   }
 }
 
-async function invitePrivacyFeatureUser(rawName) {
-  if (!state.db || !state.roomId) {
+async function invitePrivacyFeatureUser(rawIdentifier) {
+  if (!state.db) {
     return;
   }
 
@@ -859,20 +909,18 @@ async function invitePrivacyFeatureUser(rawName) {
     return;
   }
 
-  const normalizedName = normalizeProfileName(rawName);
+  const normalizedIdentifier = normalizeProfileName(rawIdentifier);
 
-  if (!normalizedName) {
-    setStatus("Use /privacy invite <name>.", "error");
+  if (!normalizedIdentifier) {
+    setStatus("Use /privacy invite <name-or-email>.", "error");
     return;
   }
 
-  const roomRef = doc(state.db, "rooms", state.roomId);
-
   try {
-    await updateDoc(roomRef, {
-      privacyFeatureInvites: arrayUnion(normalizedName),
-    });
-    setStatus(`Privacy mode invited for "${rawName.trim()}".`, "success");
+    await setDoc(getPrivacyFeatureConfigRef(), {
+      privacyFeatureInvites: arrayUnion(normalizedIdentifier),
+    }, { merge: true });
+    setStatus(`Privacy mode invited for "${rawIdentifier.trim()}".`, "success");
   } catch (error) {
     console.error(error);
     setStatus("Privacy invite could not be saved.", "error");
@@ -995,7 +1043,6 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   state.groupRoomCommands = {};
   state.isAdvancedSettingsVisible = false;
   state.pendingInvitePrivacyMode = false;
-  state.canUsePrivacyFeature = false;
   state.isClaimingPrivacyFeatureInvite = false;
   state.hasHydratedRoom = false;
   state.messages = [];
@@ -1369,27 +1416,27 @@ function getAvailableSlashCommands() {
 
   if (state.canUsePrivacyFeature) {
     const roomCommands = getEffectiveRoomCommands(state.roomId, state.groupRoomCommands);
-    commands.unshift(
-      {
-        label: `${PRIVACY_INVITE_COMMAND} <name>`,
-        insertText: `${PRIVACY_INVITE_COMMAND} `,
-        hint: "Grant privacy",
-      },
+    const privacyCommands = [
       {
         label: `/${roomCommands.enable}`,
         insertText: `/${roomCommands.enable}`,
         hint: "Enable privacy",
       },
       {
-        label: `/${roomCommands.reveal}`,
-        insertText: `/${roomCommands.reveal}`,
-        hint: "Show hidden",
+        label: `${PRIVACY_INVITE_COMMAND} <name-or-email>`,
+        insertText: `${PRIVACY_INVITE_COMMAND} `,
+        hint: "Grant privacy",
       },
-      {
-        label: `/${roomCommands.disable}`,
-        insertText: `/${roomCommands.disable}`,
-        hint: "Exit privacy",
-      }
+    ];
+
+    commands.unshift(
+      ...privacyCommands.filter((command) => {
+        if (command.insertText === `/${roomCommands.enable}`) {
+          return !state.isPrivacyEnabled;
+        }
+
+        return true;
+      })
     );
   }
 
@@ -3453,6 +3500,15 @@ function normalizeProfileName(value) {
   return String(value || "")
     .trim()
     .toLowerCase();
+}
+
+function getPrivacyFeatureIdentifiers() {
+  const identifiers = [
+    normalizeProfileName(state.profile?.name),
+    normalizeProfileName(state.authUser?.email),
+  ].filter(Boolean);
+
+  return [...new Set(identifiers)];
 }
 
 function applyRoomCommandsToInputs(commands) {
