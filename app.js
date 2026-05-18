@@ -2566,6 +2566,7 @@ function clearPrivacyPreviewTimer() {
 }
 
 function updatePrivacyIndicator() {
+  reconcileUnreadState();
   const count = getUnreadCount();
   const shouldShowCount = count > 0 && (!state.isPrivacyEnabled || !state.isPrivacyPreviewVisible);
   const shouldShowComposerCount =
@@ -2580,6 +2581,7 @@ function updatePrivacyIndicator() {
 }
 
 function updateHiddenIncomingCount(nextMessages) {
+  reconcileUnreadState(nextMessages);
   const nextIds = new Set(nextMessages.map((message) => message.id));
   const hiddenIds = new Set(state.hiddenMessageIds);
   const unreadIds = new Set(state.unreadMessageIds);
@@ -2631,6 +2633,21 @@ function updateHiddenIncomingCount(nextMessages) {
   updateDocumentTitle();
   updateAppBadge();
   persistSession();
+}
+
+function reconcileUnreadState(messages = state.messages) {
+  const validMessageIds = new Set(messages.map((message) => message.id));
+
+  state.hiddenMessageIds = state.hiddenMessageIds.filter((id) => validMessageIds.has(id));
+  state.unreadMessageIds = state.unreadMessageIds.filter((id) => validMessageIds.has(id));
+
+  if (shouldAutoMarkAsRead()) {
+    state.unreadMessageIds = [];
+  }
+
+  if (!state.isPrivacyEnabled || state.isPrivacyPreviewVisible) {
+    state.hiddenMessageIds = [];
+  }
 }
 
 function compareMessagesByTime(left, right) {
@@ -2744,6 +2761,7 @@ function haveReadReceiptsChanged(previousReceipts, nextReceipts) {
 }
 
 function updateDocumentTitle() {
+  reconcileUnreadState();
   const count = getUnreadCount();
   document.title = count > 0 ? `(${count}) ${DEFAULT_TITLE}` : DEFAULT_TITLE;
 }
@@ -2808,6 +2826,7 @@ async function showIncomingNotification(message) {
 }
 
 function updateAppBadge() {
+  reconcileUnreadState();
   const count = getUnreadCount();
 
   if (typeof navigator === "undefined") {
@@ -2950,7 +2969,13 @@ function shouldAutoMarkAsRead() {
 }
 
 function handleAttentionChange() {
-  if (!shouldAutoMarkAsRead() || !state.roomId) {
+  if (!state.roomId) {
+    updateDocumentTitle();
+    updateAppBadge();
+    return;
+  }
+
+  if (!shouldAutoMarkAsRead()) {
     return;
   }
 
@@ -3328,6 +3353,7 @@ async function restoreSession() {
         : null;
     state.unreadMessageIds = Array.isArray(saved.unreadMessageIds) ? saved.unreadMessageIds : [];
     state.hiddenMessageIds = Array.isArray(saved.hiddenMessageIds) ? saved.hiddenMessageIds : [];
+    reconcileUnreadState([]);
     syncStealthLayout();
     updatePrivacyIndicator();
     updateDocumentTitle();
