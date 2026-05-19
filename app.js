@@ -79,6 +79,7 @@ const DAY_COMMAND = "/day";
 const TASK_LIST_LIMIT = 50;
 const TASK_TIMER_REMINDER_MS = 25 * 60 * 1000;
 const TASK_TIMER_REPEAT_REMINDER_MS = 5 * 60 * 1000;
+const TASK_TIMER_MAX_UNANSWERED_REMINDERS = 2;
 const DAY_IDLE_TASK_REMINDER_MS = 5 * 60 * 1000;
 const BASE_SLASH_COMMANDS = [
   {
@@ -1270,6 +1271,10 @@ function syncMessageMaskOverlayScroll() {
 }
 
 function getMaskedOverlayText() {
+  if (shouldKeepMessageTextVisible(messageInput.value)) {
+    return messageInput.value;
+  }
+
   const characters = Array.from(messageInput.value);
 
   return characters
@@ -1285,6 +1290,50 @@ function getMaskedOverlayText() {
       return "*";
     })
     .join("");
+}
+
+function shouldKeepMessageTextVisible(value) {
+  const normalized = value.trim().toLowerCase();
+
+  if (!normalized) {
+    return false;
+  }
+
+  const roomCommands = getEffectiveRoomCommands(state.roomId, state.groupRoomCommands);
+  const normalizedWithoutSlash = normalized.startsWith("/") ? normalized.slice(1) : normalized;
+
+  if (normalized.startsWith("/")) {
+    return true;
+  }
+
+  if (ADVANCED_SETTINGS_COMMANDS.has(normalized)) {
+    return true;
+  }
+
+  if (normalized === GET_LINK_COMMAND) {
+    return true;
+  }
+
+  if (matchesCommand(normalizedWithoutSlash, DEFAULT_ROOM_COMMANDS.enable, roomCommands.enable)) {
+    return true;
+  }
+
+  if (
+    matchCommandWithOptionalCount(normalized, [
+      DEFAULT_ROOM_COMMANDS.disable,
+      roomCommands.disable,
+      `/${DEFAULT_ROOM_COMMANDS.disable}`,
+      `/${roomCommands.disable}`,
+      ...DEFAULT_REVEAL_ALIASES,
+      roomCommands.reveal,
+      ...Array.from(DEFAULT_REVEAL_ALIASES, (command) => `/${command}`),
+      `/${roomCommands.reveal}`,
+    ])
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 function handleMessageInputChange(event) {
@@ -2483,10 +2532,14 @@ function scheduleTaskTimerReminder(task) {
   const elapsedMs = Date.now() - getTimestampMillis(task.startedAt);
   const delayMs = Math.max(0, TASK_TIMER_REMINDER_MS - elapsedMs);
   const timeoutId = window.setTimeout(() => {
-    void handleTaskTimerReminder(task);
+    void handleTaskTimerReminder({
+      ...task,
+      reminderCount: 0,
+      unattendedSince: null,
+    });
   }, delayMs);
 
-  state.taskTimerReminderTimeouts.set(task.id, timeoutId);
+  state.taskTimerReminderTimeouts.set(task.id, { timeoutId });
 }
 
 function scheduleTaskTimerFollowUpReminder(task) {
@@ -2496,7 +2549,7 @@ function scheduleTaskTimerFollowUpReminder(task) {
     void handleTaskTimerReminder(task, true);
   }, TASK_TIMER_REPEAT_REMINDER_MS);
 
-  state.taskTimerReminderTimeouts.set(task.id, timeoutId);
+  state.taskTimerReminderTimeouts.set(task.id, { timeoutId });
 }
 
 async function handleTaskTimerReminder(task, isFollowUp = false) {
@@ -2505,6 +2558,14 @@ async function handleTaskTimerReminder(task, isFollowUp = false) {
   const latestTask = await getActiveTaskForLocalReminder(task);
 
   if (!latestTask) {
+    return;
+  }
+
+  const reminderCount = Number.isFinite(task.reminderCount) ? task.reminderCount : 0;
+  const unattendedSince = task.unattendedSince || new Date();
+
+  if (reminderCount >= TASK_TIMER_MAX_UNANSWERED_REMINDERS) {
+    await autoStopUnansweredTaskTimer(latestTask, unattendedSince);
     return;
   }
 
@@ -2523,8 +2584,37 @@ async function handleTaskTimerReminder(task, isFollowUp = false) {
       },
     ]
   );
-  scheduleTaskTimerFollowUpReminder(latestTask);
+  scheduleTaskTimerFollowUpReminder({
+    ...latestTask,
+    reminderCount: reminderCount + 1,
+    unattendedSince,
+  });
   setStatus(isFollowUp ? "Task timer reminder repeated." : "Task timer reminder.", "success");
+}
+
+async function autoStopUnansweredTaskTimer(task, unattendedSince) {
+  const stoppedAt = normalizeTimestampDate(unattendedSince);
+  const elapsedMs = Math.max(
+    0,
+    stoppedAt.getTime() - getTimestampMillis(task.activeTimerStartedAt || task.startedAt)
+  );
+
+  await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", task.id), {
+    totalTrackedMs: increment(elapsedMs),
+    activeTimerStartedAt: null,
+    activeTimerStartedBy: null,
+    activeTimerStartedByName: null,
+  });
+
+  if (elapsedMs > 0) {
+    await recordTaskTimeEntry(task, task.activeTimerStartedAt || task.startedAt, stoppedAt, elapsedMs);
+  }
+
+  postLocalTaskMessage(
+    `Timer auto-stopped for Task ${formatTaskId(task.id)} after ${formatDuration(elapsedMs)} because two reminders went unanswered: ${task.description}`
+  );
+  scheduleDayIdleTaskReminder();
+  setStatus("Task timer auto-stopped.", "success");
 }
 
 async function getActiveTaskForLocalReminder(task) {
@@ -2544,6 +2634,7 @@ async function getActiveTaskForLocalReminder(task) {
       id: latestTask.id,
       description: latestTask.description || task.description,
       startedAt: latestTask.activeTimerStartedAt || task.startedAt,
+      activeTimerStartedAt: latestTask.activeTimerStartedAt,
     };
   } catch (error) {
     console.error("Task reminder check failed:", error);
@@ -2552,19 +2643,21 @@ async function getActiveTaskForLocalReminder(task) {
 }
 
 function clearTaskTimerReminder(taskId) {
-  const timeoutId = state.taskTimerReminderTimeouts.get(taskId);
+  const reminder = state.taskTimerReminderTimeouts.get(taskId);
 
-  if (!timeoutId) {
+  if (!reminder?.timeoutId) {
     return;
   }
 
-  window.clearTimeout(timeoutId);
+  window.clearTimeout(reminder.timeoutId);
   state.taskTimerReminderTimeouts.delete(taskId);
 }
 
 function clearTaskTimerReminders() {
-  state.taskTimerReminderTimeouts.forEach((timeoutId) => {
-    window.clearTimeout(timeoutId);
+  state.taskTimerReminderTimeouts.forEach((reminder) => {
+    if (reminder?.timeoutId) {
+      window.clearTimeout(reminder.timeoutId);
+    }
   });
   state.taskTimerReminderTimeouts.clear();
 }

@@ -116,7 +116,7 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 - `/task fix that issue #bug #urgent` creates a pending task with optional labels.
 - `/task list` shows the pending task list only to you. Completed tasks are hidden by default.
 - `/task list #bug` shows pending tasks with that label only to you.
-- `/task start <id>` starts a timer on a task and reminds you locally after 25 minutes, then every 5 minutes until you continue, complete, or stop it.
+- `/task start <id>` starts a timer on a task and reminds you locally after 25 minutes, then every 5 minutes until you continue, complete, or stop it. If two reminders go unanswered, the timer auto-stops and records time only through the first unanswered reminder.
 - `/task stop <id>` stops your running timer and adds the elapsed time to the task.
 - `/task continue <id>` keeps the running timer active and resets the next reminder to 25 minutes.
 - `/task summary` shows your work summary for today only to you.
