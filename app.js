@@ -1090,6 +1090,10 @@ function renderMessage(message, context = {}) {
     wrapper.classList.add("local-only");
   }
 
+  if (message.type) {
+    wrapper.classList.add(`message-${message.type}`);
+  }
+
   if (!message.isLocalOnly && message.senderId === state.profile?.id) {
     wrapper.classList.add("own");
   }
@@ -1103,12 +1107,17 @@ function renderMessage(message, context = {}) {
   const timestamp = document.createElement("span");
   timestamp.textContent = formatTimestamp(message.createdAt);
 
-  const body = document.createElement("p");
-  body.className = "message-text";
-  body.textContent = message.text;
-
   meta.append(sender, timestamp);
-  wrapper.append(meta, body);
+  wrapper.append(meta);
+
+  if (message.type === "task-list" && Array.isArray(message.tasks)) {
+    wrapper.append(renderTaskListMessage(message));
+  } else {
+    const body = document.createElement("p");
+    body.className = "message-text";
+    body.textContent = message.text;
+    wrapper.append(body);
+  }
 
   if (message.isLocalOnly && Array.isArray(message.actions) && message.actions.length > 0) {
     const actions = document.createElement("div");
@@ -1174,6 +1183,102 @@ function renderMessages(options = {}) {
   }
 
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function renderTaskListMessage(message) {
+  const container = document.createElement("div");
+  container.className = "task-list-message";
+
+  const header = document.createElement("div");
+  header.className = "task-list-header";
+
+  const title = document.createElement("strong");
+  title.textContent = message.heading || "Pending tasks";
+
+  const count = document.createElement("span");
+  count.className = "task-list-count";
+  count.textContent = `${message.tasks.length} task${message.tasks.length === 1 ? "" : "s"}`;
+
+  header.append(title, count);
+  container.append(header);
+
+  const list = document.createElement("ol");
+  list.className = "task-list";
+
+  message.tasks.forEach((task) => {
+    list.append(renderTaskListItem(task));
+  });
+
+  container.append(list);
+  return container;
+}
+
+function renderTaskListItem(task) {
+  const item = document.createElement("li");
+  item.className = "task-list-item";
+
+  const main = document.createElement("div");
+  main.className = "task-list-main";
+
+  const id = document.createElement("span");
+  id.className = "task-list-id";
+  id.textContent = formatTaskId(task.id);
+  id.title = task.id;
+
+  const title = document.createElement("span");
+  title.className = "task-list-title";
+  title.textContent = task.description || "Untitled task";
+
+  main.append(id, title);
+
+  const meta = document.createElement("div");
+  meta.className = "task-list-item-meta";
+
+  const creator = document.createElement("span");
+  creator.textContent = task.createdByName || "Unknown";
+  meta.append(creator);
+
+  const createdAt = document.createElement("span");
+  createdAt.textContent = formatTaskTimestamp(task.createdAt);
+  meta.append(createdAt);
+
+  const totalTrackedMs = Number.isFinite(task.totalTrackedMs) ? task.totalTrackedMs : 0;
+  const activeMs = task.activeTimerStartedAt
+    ? Math.max(0, Date.now() - getTimestampMillis(task.activeTimerStartedAt))
+    : 0;
+  const totalMs = totalTrackedMs + activeMs;
+
+  if (totalMs > 0) {
+    const tracked = document.createElement("span");
+    tracked.className = "task-list-badge";
+    tracked.textContent = `Tracked ${formatDuration(totalMs)}`;
+    meta.append(tracked);
+  }
+
+  if (task.activeTimerStartedAt) {
+    const running = document.createElement("span");
+    running.className = "task-list-badge running";
+    running.textContent = `Running by ${task.activeTimerStartedByName || "someone"}`;
+    meta.append(running);
+  }
+
+  item.append(main, meta);
+
+  if (Array.isArray(task.labels) && task.labels.length > 0) {
+    const labels = document.createElement("div");
+    labels.className = "task-list-labels";
+
+    task.labels.forEach((label) => {
+      const chip = document.createElement("span");
+      chip.className = "task-label";
+      chip.textContent = `#${label}`;
+      labels.append(chip);
+    });
+
+    item.append(labels);
+  }
+
+  return item;
 }
 
 function handleMessageActionClick(event) {
@@ -1845,7 +1950,7 @@ async function postTaskList(filterText = "") {
     requestedLabels.length > 0
       ? `Pending tasks ${formatTaskLabels(requestedLabels).trim()}:`
       : "Pending tasks:";
-  postLocalTaskMessage(`${heading}\n${taskLines.join("\n")}`);
+  postLocalTaskListMessage(heading.replace(/:$/, ""), pendingTasks, `${heading}\n${taskLines.join("\n")}`);
   setStatus(`${pendingTasks.length} pending task${pendingTasks.length === 1 ? "" : "s"} listed.`, "success");
 }
 
@@ -2506,11 +2611,18 @@ function postLocalTaskMessage(text, actions = []) {
   postLocalMessage(text, "Tasks (only you)", "task", actions);
 }
 
+function postLocalTaskListMessage(heading, tasks, fallbackText) {
+  postLocalMessage(fallbackText, "Tasks (only you)", "task-list", [], {
+    heading,
+    tasks,
+  });
+}
+
 function postLocalDayMessage(text) {
   postLocalMessage(text, "Day (only you)", "day");
 }
 
-function postLocalMessage(text, senderName, type, actions = []) {
+function postLocalMessage(text, senderName, type, actions = [], extra = {}) {
   state.localMessages.push({
     id: `local-${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     text,
@@ -2520,6 +2632,7 @@ function postLocalMessage(text, senderName, type, actions = []) {
     isLocalOnly: true,
     actions,
     createdAt: new Date(),
+    ...extra,
   });
   syncStealthLayout();
   updatePrivacyIndicator();
