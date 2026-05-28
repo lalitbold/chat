@@ -1210,6 +1210,12 @@ function renderTaskListMessage(message) {
   });
 
   container.append(list);
+
+  const footer = document.createElement("div");
+  footer.className = "task-list-footer";
+  footer.textContent = `Total: ${message.tasks.length} task${message.tasks.length === 1 ? "" : "s"}`;
+  container.append(footer);
+
   return container;
 }
 
@@ -1964,7 +1970,12 @@ async function postTaskList(filterText = "") {
     requestedLabels.length > 0
       ? `Pending tasks ${formatTaskLabels(requestedLabels).trim()}:`
       : "Pending tasks:";
-  postLocalTaskListMessage(heading.replace(/:$/, ""), pendingTasks, `${heading}\n${taskLines.join("\n")}`);
+  const totalLine = `Total: ${pendingTasks.length} task${pendingTasks.length === 1 ? "" : "s"}`;
+  postLocalTaskListMessage(
+    heading.replace(/:$/, ""),
+    pendingTasks,
+    `${heading}\n${taskLines.join("\n")}\n${totalLine}`
+  );
   setStatus(`${pendingTasks.length} pending task${pendingTasks.length === 1 ? "" : "s"} listed.`, "success");
 }
 
