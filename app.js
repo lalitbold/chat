@@ -1206,14 +1206,15 @@ function renderTaskListMessage(message) {
   list.className = "task-list";
 
   message.tasks.forEach((task) => {
-    list.append(renderTaskListItem(task));
+    list.append(renderTaskListItem(task, { maskIdentity: Boolean(message.maskIdentity) }));
   });
 
   container.append(list);
   return container;
 }
 
-function renderTaskListItem(task) {
+function renderTaskListItem(task, options = {}) {
+  const maskIdentity = Boolean(options.maskIdentity);
   const item = document.createElement("li");
   item.className = "task-list-item";
 
@@ -1234,12 +1235,16 @@ function renderTaskListItem(task) {
   const meta = document.createElement("div");
   meta.className = "task-list-item-meta";
 
-  const creator = document.createElement("span");
-  creator.textContent = task.createdByName || "Unknown";
-  meta.append(creator);
+  if (!maskIdentity) {
+    const creator = document.createElement("span");
+    creator.textContent = task.createdByName || "Unknown";
+    meta.append(creator);
+  }
 
   const createdAt = document.createElement("span");
-  createdAt.textContent = formatTaskTimestamp(task.createdAt);
+  createdAt.textContent = maskIdentity
+    ? `Created ${formatTaskTimestamp(task.createdAt)}`
+    : formatTaskTimestamp(task.createdAt);
   meta.append(createdAt);
 
   const totalTrackedMs = Number.isFinite(task.totalTrackedMs) ? task.totalTrackedMs : 0;
@@ -1258,7 +1263,9 @@ function renderTaskListItem(task) {
   if (task.activeTimerStartedAt) {
     const running = document.createElement("span");
     running.className = "task-list-badge running";
-    running.textContent = `Running by ${task.activeTimerStartedByName || "someone"}`;
+    running.textContent = maskIdentity
+      ? "Running"
+      : `Running by ${task.activeTimerStartedByName || "someone"}`;
     meta.append(running);
   }
 
@@ -1296,6 +1303,11 @@ function handleMessageActionClick(event) {
   if (actionButton.dataset.action === "task-complete") {
     actionButton.disabled = true;
     void completeTask(actionButton.dataset.taskId || "");
+  }
+
+  if (actionButton.dataset.action === "task-stop") {
+    actionButton.disabled = true;
+    void stopTaskTimer(actionButton.dataset.taskId || "");
   }
 }
 
@@ -1940,10 +1952,12 @@ async function postTaskList(filterText = "") {
     return;
   }
 
+  const maskIdentity = isPrivacyModeActive();
   const taskLines = pendingTasks.map((task) => {
-    const creator = task.createdByName || "Unknown";
     const createdAt = formatTaskTimestamp(task.createdAt);
-    return `${formatTaskId(task.id)} - ${task.description}${formatTaskLabels(task.labels)}${formatTaskTimeSummary(task)} (${creator}, ${createdAt})`;
+    const createdBy = task.createdByName || "Unknown";
+    const metadata = maskIdentity ? `created ${createdAt}` : `${createdBy}, ${createdAt}`;
+    return `${formatTaskId(task.id)} - ${task.description}${formatTaskLabels(task.labels)}${formatTaskTimeSummary(task, { maskIdentity })} (${metadata})`;
   });
 
   const heading =
@@ -2076,8 +2090,8 @@ async function stopTaskTimer(taskIdInput) {
     return;
   }
 
-  if (task.activeTimerStartedBy && task.activeTimerStartedBy !== state.profile.id) {
-    const owner = task.activeTimerStartedByName || "another user";
+  if (!isCurrentUserTaskTimerOwner(task)) {
+    const owner = getTaskTimerOwnerName(task);
     await postTaskMessage(`Task ${formatTaskId(task.id)} timer is running by ${owner}.`);
     setStatus("Task timer belongs to another user.", "error");
     return;
@@ -2130,8 +2144,8 @@ async function continueTaskTimer(taskIdInput) {
     return;
   }
 
-  if (task.activeTimerStartedBy && task.activeTimerStartedBy !== state.profile.id) {
-    const owner = task.activeTimerStartedByName || "another user";
+  if (!isCurrentUserTaskTimerOwner(task)) {
+    const owner = getTaskTimerOwnerName(task);
     await postTaskMessage(`Task ${formatTaskId(task.id)} timer is running by ${owner}.`);
     setStatus("Task timer belongs to another user.", "error");
     return;
@@ -2437,9 +2451,7 @@ async function buildDailyTaskSummary(options = {}) {
   const completedToday = tasks.filter(
     (task) => task.completedBy === state.profile.id && isTimestampWithin(task.completedAt, start, end)
   );
-  const activeTimers = tasks.filter(
-    (task) => task.activeTimerStartedBy === state.profile.id && task.activeTimerStartedAt
-  );
+  const activeTimers = tasks.filter((task) => task.activeTimerStartedAt && isCurrentUserTaskTimerOwner(task));
   const trackedMs = [...timeEntriesByTaskId.values()]
     .flat()
     .reduce((total, entry) => total + (Number.isFinite(entry.durationMs) ? entry.durationMs : 0), 0);
@@ -2615,6 +2627,7 @@ function postLocalTaskListMessage(heading, tasks, fallbackText) {
   postLocalMessage(fallbackText, "Tasks (only you)", "task-list", [], {
     heading,
     tasks,
+    maskIdentity: isPrivacyModeActive(),
   });
 }
 
@@ -2695,6 +2708,11 @@ async function handleTaskTimerReminder(task, isFollowUp = false) {
         action: "task-complete",
         taskId: latestTask.id,
       },
+      {
+        label: "Stop",
+        action: "task-stop",
+        taskId: latestTask.id,
+      },
     ]
   );
   scheduleTaskTimerFollowUpReminder({
@@ -2738,7 +2756,7 @@ async function getActiveTaskForLocalReminder(task) {
       !latestTask ||
       latestTask.status === "complete" ||
       !latestTask.activeTimerStartedAt ||
-      (latestTask.activeTimerStartedBy && latestTask.activeTimerStartedBy !== state.profile?.id)
+      !isCurrentUserTaskTimerOwner(latestTask)
     ) {
       return null;
     }
@@ -2812,9 +2830,7 @@ async function shouldRemindForIdleWorkDay() {
     }
 
     const tasks = await loadRoomTasks();
-    return !tasks.some(
-      (task) => task.activeTimerStartedBy === state.profile.id && task.activeTimerStartedAt
-    );
+    return !tasks.some((task) => task.activeTimerStartedAt && isCurrentUserTaskTimerOwner(task));
   } catch (error) {
     console.error("Idle task reminder check failed:", error);
     return false;
@@ -2845,7 +2861,8 @@ function formatTaskId(taskId) {
   return `#${taskId.slice(0, 6)}`;
 }
 
-function formatTaskTimeSummary(task) {
+function formatTaskTimeSummary(task, options = {}) {
+  const maskIdentity = Boolean(options.maskIdentity);
   const totalTrackedMs = Number.isFinite(task.totalTrackedMs) ? task.totalTrackedMs : 0;
   const activeMs = task.activeTimerStartedAt
     ? Math.max(0, Date.now() - getTimestampMillis(task.activeTimerStartedAt))
@@ -2858,11 +2875,37 @@ function formatTaskTimeSummary(task) {
   }
 
   if (task.activeTimerStartedAt) {
-    const owner = task.activeTimerStartedByName || "someone";
-    parts.push(`running by ${owner}`);
+    if (maskIdentity) {
+      parts.push("running");
+    } else {
+      const owner = task.activeTimerStartedByName || "someone";
+      parts.push(`running by ${owner}`);
+    }
   }
 
   return parts.length > 0 ? ` [${parts.join(", ")}]` : "";
+}
+
+function isPrivacyModeActive() {
+  return Boolean(state.isPrivacyEnabled);
+}
+
+function isCurrentUserTaskTimerOwner(task) {
+  if (!task.activeTimerStartedBy) {
+    return true;
+  }
+
+  if (task.activeTimerStartedBy === state.profile?.id) {
+    return true;
+  }
+
+  const ownerName = normalizeProfileName(task.activeTimerStartedByName);
+  const profileName = normalizeProfileName(state.profile?.name);
+  return Boolean(ownerName && profileName && ownerName === profileName);
+}
+
+function getTaskTimerOwnerName(task) {
+  return task.activeTimerStartedByName || "another user";
 }
 
 function formatSummaryTimeForTask(task, timeEntriesByTaskId) {
