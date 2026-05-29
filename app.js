@@ -98,17 +98,17 @@ const BASE_SLASH_COMMANDS = [
     hint: "Complete task",
   },
   {
-    label: "/task start <id>",
+    label: "/task start [id]",
     insertText: "/task start ",
     hint: "Start timer",
   },
   {
-    label: "/task stop <id>",
+    label: "/task stop [id]",
     insertText: "/task stop ",
     hint: "Stop timer",
   },
   {
-    label: "/task continue <id>",
+    label: "/task continue [id]",
     insertText: "/task continue ",
     hint: "Continue timer",
   },
@@ -1315,6 +1315,16 @@ function handleMessageActionClick(event) {
     actionButton.disabled = true;
     void stopTaskTimer(actionButton.dataset.taskId || "");
   }
+
+  if (actionButton.dataset.action === "general-timer-continue") {
+    actionButton.disabled = true;
+    void continueGeneralTimer();
+  }
+
+  if (actionButton.dataset.action === "general-timer-stop") {
+    actionButton.disabled = true;
+    void stopGeneralTimer();
+  }
 }
 
 function renderEmptyState(message) {
@@ -1818,7 +1828,7 @@ async function handleTaskCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     await postTaskMessage(
-      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task start <id>\n/task stop <id>\n/task continue <id>\n/task summary\n/task summary share\n/task complete <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nUse /day for attendance and leave commands."
+      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task start\n/task start <id>\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task summary\n/task summary share\n/task complete <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nUse /day for attendance and leave commands."
     );
     return;
   }
@@ -2036,7 +2046,7 @@ async function startTaskTimer(taskIdInput) {
   const taskId = taskIdInput.trim();
 
   if (!taskId) {
-    await postTaskMessage("Use /task start <id> to start tracking time.");
+    await startGeneralTimer();
     return;
   }
 
@@ -2083,7 +2093,7 @@ async function stopTaskTimer(taskIdInput) {
   const taskId = taskIdInput.trim();
 
   if (!taskId) {
-    await postTaskMessage("Use /task stop <id> to stop tracking time.");
+    await stopGeneralTimer();
     return;
   }
 
@@ -2127,11 +2137,100 @@ async function stopTaskTimer(taskIdInput) {
   setStatus("Task timer stopped.", "success");
 }
 
+async function startGeneralTimer() {
+  const activeTimer = await findActiveGeneralTimer();
+
+  if (activeTimer) {
+    await postTaskMessage("A general timer is already running.");
+    setStatus("General timer is already running.", "error");
+    return;
+  }
+
+  const startedAt = new Date();
+
+  await setDoc(
+    getWorkDayRef(),
+    {
+      userId: state.profile.id,
+      userName: state.profile.name,
+      dateKey: getTodayKey(),
+      activeTimerStartedAt: startedAt,
+      activeTimerStartedBy: state.profile.id,
+      activeTimerStartedByName: state.profile.name,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  scheduleTaskTimerReminder({
+    id: getGeneralTimerReminderId(),
+    description: "General work",
+    startedAt,
+    isGeneralTimer: true,
+  });
+  clearDayIdleTaskReminder();
+  await postTaskMessage("General timer started.");
+  setStatus("General timer started.", "success");
+}
+
+async function stopGeneralTimer() {
+  const activeTimer = await findActiveGeneralTimer();
+
+  if (!activeTimer?.data?.activeTimerStartedAt) {
+    await postTaskMessage("No general timer is running.");
+    setStatus("General timer is not running.", "error");
+    return;
+  }
+
+  const elapsedMs = Math.max(0, Date.now() - getTimestampMillis(activeTimer.data.activeTimerStartedAt));
+  const stoppedAt = new Date();
+
+  await setDoc(
+    activeTimer.ref,
+    {
+    activeTimerStartedAt: null,
+    activeTimerStartedBy: null,
+    activeTimerStartedByName: null,
+    userId: state.profile.id,
+    userName: state.profile.name,
+    updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  await recordGeneralTimeEntry(activeTimer.data.activeTimerStartedAt, stoppedAt, elapsedMs);
+  clearGeneralTimerReminders();
+  scheduleDayIdleTaskReminder();
+  await postTaskMessage(`General timer stopped after ${formatDuration(elapsedMs)}.`);
+  setStatus("General timer stopped.", "success");
+}
+
+async function continueGeneralTimer() {
+  const activeTimer = await findActiveGeneralTimer();
+
+  if (!activeTimer?.data?.activeTimerStartedAt) {
+    await postTaskMessage("No general timer is running.");
+    setStatus("General timer is not running.", "error");
+    return;
+  }
+
+  scheduleTaskTimerReminder({
+    id: getGeneralTimerReminderId(),
+    description: "General work",
+    startedAt: new Date(),
+    isGeneralTimer: true,
+  });
+  postLocalTaskMessage(
+    `Continuing general timer. I will remind you again in ${formatDuration(TASK_TIMER_REMINDER_MS)} if it is still running.`
+  );
+  setStatus("General timer continued.", "success");
+}
+
 async function continueTaskTimer(taskIdInput) {
   const taskId = taskIdInput.trim();
 
   if (!taskId) {
-    await postTaskMessage("Use /task continue <id> to keep tracking time and reset the reminder.");
+    await continueGeneralTimer();
     return;
   }
 
@@ -2440,6 +2539,12 @@ async function buildDailyTaskSummary(options = {}) {
   const tasks = await loadRoomTasks();
   const { start, end } = getTodayBounds();
   const workDay = await getWorkDay();
+  const activeGeneralTimer = await findActiveGeneralTimer();
+  const generalTimeEntries = (await loadWorkDayTimeEntries()).filter(
+    (entry) =>
+      entry.userId === state.profile.id &&
+      isTimestampWithin(entry.stoppedAt, start, end)
+  );
   const timeEntriesByTaskId = new Map();
 
   await Promise.all(
@@ -2463,9 +2568,14 @@ async function buildDailyTaskSummary(options = {}) {
     (task) => task.completedBy === state.profile.id && isTimestampWithin(task.completedAt, start, end)
   );
   const activeTimers = tasks.filter((task) => task.activeTimerStartedAt && isCurrentUserTaskTimerOwner(task));
-  const trackedMs = [...timeEntriesByTaskId.values()]
+  const taskTrackedMs = [...timeEntriesByTaskId.values()]
     .flat()
     .reduce((total, entry) => total + (Number.isFinite(entry.durationMs) ? entry.durationMs : 0), 0);
+  const generalTrackedMs = generalTimeEntries.reduce(
+    (total, entry) => total + (Number.isFinite(entry.durationMs) ? entry.durationMs : 0),
+    0
+  );
+  const trackedMs = taskTrackedMs + generalTrackedMs;
   const lines = [
     `Work summary for ${formatSummaryDate(start)}`,
   ];
@@ -2475,6 +2585,9 @@ async function buildDailyTaskSummary(options = {}) {
   }
 
   lines.push(`Time tracked: ${formatDuration(trackedMs)}`);
+  if (generalTrackedMs > 0) {
+    lines.push(`General time: ${formatDuration(generalTrackedMs)}`);
+  }
   lines.push(`Completed: ${completedToday.length}`);
 
   completedToday.slice(0, 10).forEach((task) => {
@@ -2486,6 +2599,12 @@ async function buildDailyTaskSummary(options = {}) {
     lines.push(`- ${task.description}${formatTaskLabels(task.labels)}`);
   });
 
+  if (activeGeneralTimer?.data?.activeTimerStartedAt) {
+    lines.push(
+      `General timer running: ${formatDuration(Date.now() - getTimestampMillis(activeGeneralTimer.data.activeTimerStartedAt))}`
+    );
+  }
+
   if (activeTimers.length > 0) {
     lines.push(`Running timers: ${activeTimers.length}`);
     activeTimers.slice(0, 10).forEach((task) => {
@@ -2493,7 +2612,13 @@ async function buildDailyTaskSummary(options = {}) {
     });
   }
 
-  if (trackedMs === 0 && completedToday.length === 0 && createdToday.length === 0 && activeTimers.length === 0) {
+  if (
+    trackedMs === 0 &&
+    completedToday.length === 0 &&
+    createdToday.length === 0 &&
+    activeTimers.length === 0 &&
+    !activeGeneralTimer?.data?.activeTimerStartedAt
+  ) {
     lines.push("No task activity recorded today.");
   }
 
@@ -2532,10 +2657,29 @@ async function loadRoomTasks() {
   }));
 }
 
+async function loadRoomWorkDays() {
+  const workDaysSnapshot = await getDocs(collection(state.db, "rooms", state.roomId, "workDays"));
+
+  return workDaysSnapshot.docs.map((workDayDoc) => ({
+    id: workDayDoc.id,
+    ref: workDayDoc.ref,
+    ...workDayDoc.data(),
+  }));
+}
+
 async function loadTaskTimeEntries(taskId) {
   const entriesSnapshot = await getDocs(
     collection(state.db, "rooms", state.roomId, "tasks", taskId, "timeEntries")
   );
+
+  return entriesSnapshot.docs.map((entryDoc) => ({
+    id: entryDoc.id,
+    ...entryDoc.data(),
+  }));
+}
+
+async function loadWorkDayTimeEntries() {
+  const entriesSnapshot = await getDocs(collection(getWorkDayRef(), "timeEntries"));
 
   return entriesSnapshot.docs.map((entryDoc) => ({
     id: entryDoc.id,
@@ -2548,8 +2692,45 @@ async function getWorkDay() {
   return snapshot.exists() ? snapshot.data() : null;
 }
 
+async function findActiveGeneralTimer() {
+  const todaySnapshot = await getDoc(getWorkDayRef());
+
+  if (todaySnapshot.exists() && todaySnapshot.data()?.activeTimerStartedAt) {
+    return {
+      id: todaySnapshot.id,
+      ref: todaySnapshot.ref,
+      data: todaySnapshot.data(),
+    };
+  }
+
+  const activeTimers = (await loadRoomWorkDays())
+    .filter((workDay) => isCurrentUserWorkDay(workDay) && workDay.activeTimerStartedAt)
+    .sort((left, right) => getTimestampMillis(left.activeTimerStartedAt) - getTimestampMillis(right.activeTimerStartedAt));
+
+  if (activeTimers.length === 0) {
+    return null;
+  }
+
+  const [activeTimer] = activeTimers;
+  return {
+    id: activeTimer.id,
+    ref: activeTimer.ref,
+    data: activeTimer,
+  };
+}
+
 function getWorkDayRef() {
   return doc(state.db, "rooms", state.roomId, "workDays", `${state.profile.id}_${getTodayKey()}`);
+}
+
+function isCurrentUserWorkDay(workDay) {
+  if (workDay.userId === state.profile?.id) {
+    return true;
+  }
+
+  const workDayUserName = normalizeProfileName(workDay.userName);
+  const profileName = normalizeProfileName(state.profile?.name);
+  return Boolean(workDayUserName && profileName && workDayUserName === profileName);
 }
 
 async function loadRoomLeaves() {
@@ -2630,6 +2811,18 @@ async function recordTaskTimeEntry(task, startedAt, stoppedAt, durationMs) {
   });
 }
 
+async function recordGeneralTimeEntry(startedAt, stoppedAt, durationMs) {
+  await addDoc(collection(getWorkDayRef(), "timeEntries"), {
+    description: "General work",
+    userId: state.profile.id,
+    userName: state.profile.name,
+    startedAt: normalizeTimestampDate(startedAt),
+    stoppedAt,
+    durationMs,
+    createdAt: serverTimestamp(),
+  });
+}
+
 function postLocalTaskMessage(text, actions = []) {
   postLocalMessage(text, "Tasks (only you)", "task", actions);
 }
@@ -2692,6 +2885,11 @@ function scheduleTaskTimerFollowUpReminder(task) {
 async function handleTaskTimerReminder(task, isFollowUp = false) {
   state.taskTimerReminderTimeouts.delete(task.id);
 
+  if (task.isGeneralTimer) {
+    await handleGeneralTimerReminder(task, isFollowUp);
+    return;
+  }
+
   const latestTask = await getActiveTaskForLocalReminder(task);
 
   if (!latestTask) {
@@ -2734,6 +2932,42 @@ async function handleTaskTimerReminder(task, isFollowUp = false) {
   setStatus(isFollowUp ? "Task timer reminder repeated." : "Task timer reminder.", "success");
 }
 
+async function handleGeneralTimerReminder(timer, isFollowUp = false) {
+  const latestTimer = await getActiveGeneralTimerForLocalReminder(timer);
+
+  if (!latestTimer) {
+    return;
+  }
+
+  const reminderCount = Number.isFinite(timer.reminderCount) ? timer.reminderCount : 0;
+  const unattendedSince = timer.unattendedSince || new Date();
+
+  if (reminderCount >= TASK_TIMER_MAX_UNANSWERED_REMINDERS) {
+    await autoStopUnansweredGeneralTimer(latestTimer, unattendedSince);
+    return;
+  }
+
+  postLocalTaskMessage(
+    `Reminder: General timer has been running for more than ${formatDuration(TASK_TIMER_REMINDER_MS)}.\nContinue with /task continue or stop with /task stop.`,
+    [
+      {
+        label: "Continue",
+        action: "general-timer-continue",
+      },
+      {
+        label: "Stop",
+        action: "general-timer-stop",
+      },
+    ]
+  );
+  scheduleTaskTimerFollowUpReminder({
+    ...latestTimer,
+    reminderCount: reminderCount + 1,
+    unattendedSince,
+  });
+  setStatus(isFollowUp ? "General timer reminder repeated." : "General timer reminder.", "success");
+}
+
 async function autoStopUnansweredTaskTimer(task, unattendedSince) {
   const stoppedAt = normalizeTimestampDate(unattendedSince);
   const elapsedMs = Math.max(
@@ -2757,6 +2991,34 @@ async function autoStopUnansweredTaskTimer(task, unattendedSince) {
   );
   scheduleDayIdleTaskReminder();
   setStatus("Task timer auto-stopped.", "success");
+}
+
+async function autoStopUnansweredGeneralTimer(timer, unattendedSince) {
+  const stoppedAt = normalizeTimestampDate(unattendedSince);
+  const elapsedMs = Math.max(0, stoppedAt.getTime() - getTimestampMillis(timer.activeTimerStartedAt || timer.startedAt));
+
+  await setDoc(
+    timer.ref || getWorkDayRef(),
+    {
+      activeTimerStartedAt: null,
+      activeTimerStartedBy: null,
+      activeTimerStartedByName: null,
+      userId: state.profile.id,
+      userName: state.profile.name,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  if (elapsedMs > 0) {
+    await recordGeneralTimeEntry(timer.activeTimerStartedAt || timer.startedAt, stoppedAt, elapsedMs);
+  }
+
+  postLocalTaskMessage(
+    `General timer auto-stopped after ${formatDuration(elapsedMs)} because two reminders went unanswered.`
+  );
+  scheduleDayIdleTaskReminder();
+  setStatus("General timer auto-stopped.", "success");
 }
 
 async function getActiveTaskForLocalReminder(task) {
@@ -2784,6 +3046,28 @@ async function getActiveTaskForLocalReminder(task) {
   }
 }
 
+async function getActiveGeneralTimerForLocalReminder(timer) {
+  try {
+    const activeTimer = await findActiveGeneralTimer();
+
+    if (!activeTimer?.data?.activeTimerStartedAt) {
+      return null;
+    }
+
+    return {
+      id: getGeneralTimerReminderId(),
+      description: "General work",
+      startedAt: activeTimer.data.activeTimerStartedAt || timer.startedAt,
+      activeTimerStartedAt: activeTimer.data.activeTimerStartedAt,
+      isGeneralTimer: true,
+      ref: activeTimer.ref,
+    };
+  } catch (error) {
+    console.error("General timer reminder check failed:", error);
+    return timer;
+  }
+}
+
 function clearTaskTimerReminder(taskId) {
   const reminder = state.taskTimerReminderTimeouts.get(taskId);
 
@@ -2802,6 +3086,12 @@ function clearTaskTimerReminders() {
     }
   });
   state.taskTimerReminderTimeouts.clear();
+}
+
+function clearGeneralTimerReminders() {
+  [...state.taskTimerReminderTimeouts.keys()]
+    .filter((taskId) => taskId.startsWith("general:"))
+    .forEach((taskId) => clearTaskTimerReminder(taskId));
 }
 
 function scheduleDayIdleTaskReminder() {
@@ -2826,7 +3116,7 @@ async function handleDayIdleTaskReminder() {
   }
 
   postLocalDayMessage(
-    `Reminder: Your day is started, but no task timer is running.\nStart a task with /task start <id> or create one with /task <description>.`
+    `Reminder: Your day is started, but no timer is running.\nStart a general timer with /task start, start a task with /task start <id>, or create one with /task <description>.`
   );
   scheduleDayIdleTaskReminder();
   setStatus("No task running reminder.", "success");
@@ -2837,6 +3127,10 @@ async function shouldRemindForIdleWorkDay() {
     const workDay = await getWorkDay();
 
     if (!workDay?.startedAt || workDay.endedAt) {
+      return false;
+    }
+
+    if (await findActiveGeneralTimer()) {
       return false;
     }
 
@@ -2855,6 +3149,10 @@ function clearDayIdleTaskReminder() {
 
   window.clearTimeout(state.dayIdleTaskReminderTimeoutId);
   state.dayIdleTaskReminderTimeoutId = null;
+}
+
+function getGeneralTimerReminderId() {
+  return `general:${getTodayKey()}`;
 }
 
 function compareTasksByCreatedAt(left, right) {
