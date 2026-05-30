@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Firestore Chat</title>
+    <title>OpenBox</title>
     <meta name="theme-color" content="#16221f" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -15,11 +15,9 @@
   <body>
     <main class="app-shell">
       <section class="hero-panel">
-        <p class="eyebrow">Realtime Firestore Demo</p>
-        <h1>Chat with shared rooms and live updates.</h1>
+        <h1>OpenBox</h1>
         <p class="hero-copy">
-          Create a room, invite people with the room code, and chat instantly
-          through Firebase Firestore.
+          Create a room, invite people with the room code, and chat instantly.
         </p>
 
         <form id="join-form" class="card form-stack" autocomplete="off">
@@ -87,6 +85,15 @@
           </div>
           <div class="header-actions">
             <div id="privacy-indicator" class="privacy-indicator" aria-live="polite"></div>
+            <button
+              id="open-settings"
+              class="ghost icon-button"
+              type="button"
+              aria-label="Settings"
+              title="Settings"
+            >
+              ⚙
+            </button>
             <button id="leave-room" class="ghost" type="button" disabled>
               Leave
             </button>
@@ -94,7 +101,7 @@
         </div>
 
         <div id="status-banner" class="status-banner">
-          Add your Firebase config to start chatting.
+          Add your app config to start chatting.
         </div>
 
         <section id="share-link-panel" class="share-link-panel card" hidden>
@@ -194,6 +201,12 @@
             />
           </label>
           <div class="settings-actions">
+            <button id="test-notification" class="ghost" type="button">
+              Test notification
+            </button>
+            <button id="logout-account" class="ghost danger-button" type="button">
+              Logout
+            </button>
             <button id="toggle-command-visibility" class="ghost" type="button">
               Show text
             </button>

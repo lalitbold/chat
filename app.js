@@ -6,6 +6,7 @@ import {
   linkWithPopup,
   linkWithRedirect,
   onAuthStateChanged,
+  signOut,
   signInAnonymously,
   signInWithPopup,
   signInWithRedirect,
@@ -45,6 +46,7 @@ const revealCommandInput = document.getElementById("reveal-command");
 const disableCommandInput = document.getElementById("disable-command");
 const toggleCommandVisibilityButton = document.getElementById("toggle-command-visibility");
 const createRoomButton = document.getElementById("create-room");
+const openSettingsButton = document.getElementById("open-settings");
 const leaveRoomButton = document.getElementById("leave-room");
 const activeRoom = document.getElementById("active-room");
 const privacyIndicator = document.getElementById("privacy-indicator");
@@ -64,7 +66,9 @@ const toggleMessageMaskButton = document.getElementById("toggle-message-mask");
 const sendButton = document.getElementById("send-button");
 const saveAdvancedSettingsButton = document.getElementById("save-advanced-settings");
 const closeAdvancedSettingsButton = document.getElementById("close-advanced-settings");
-const DEFAULT_TITLE = "Firestore Chat";
+const testNotificationButton = document.getElementById("test-notification");
+const logoutButton = document.getElementById("logout-account");
+const DEFAULT_TITLE = "OpenBox";
 
 const DEFAULT_ROOM_COMMANDS = {
   enable: "enableprivacy",
@@ -259,7 +263,7 @@ async function boot() {
     subscribeToPrivacyFeatureConfig();
 
     if (!handledGoogleRedirect) {
-      setStatus("Firebase connected. Create or join a room.", "success");
+      setStatus("Connected. Create or join a room.", "success");
     }
   } catch (error) {
     console.error(error);
@@ -269,12 +273,12 @@ async function boot() {
       state.authError = error;
       updateAuthUi();
       setStatus(
-        "Firebase Auth is not enabled yet. Enable Authentication and the Anonymous provider in Firebase.",
+        "Guest sign-in is not enabled yet. Enable Authentication and the Anonymous provider.",
         "error"
       );
     } else {
       setStatus(
-        "Firebase is not configured yet. Copy firebase-config.example.js to firebase-config.js and add your Firebase project keys.",
+        "The app is not configured yet. Copy the example config to the local config file and add your project keys.",
         "error"
       );
     }
@@ -301,8 +305,11 @@ function wireEvents() {
   messagesContainer.addEventListener("click", handleMessageActionClick);
   messagesContainer.addEventListener("scroll", handleMessageListScroll);
   toggleMessageMaskButton.addEventListener("click", toggleMessageInputMask);
+  openSettingsButton.addEventListener("click", () => setAdvancedSettingsVisibility(true));
   saveAdvancedSettingsButton.addEventListener("click", saveAdvancedSettings);
   closeAdvancedSettingsButton.addEventListener("click", () => setAdvancedSettingsVisibility(false));
+  testNotificationButton.addEventListener("click", testNotification);
+  logoutButton.addEventListener("click", logoutAccount);
   commandScopeInput.addEventListener("change", handleCommandScopeChange);
   toggleCommandVisibilityButton.addEventListener("click", toggleAdvancedCommandVisibility);
   copyShareLinkButton.addEventListener("click", copyShareLink);
@@ -318,7 +325,7 @@ function wireEvents() {
     event.preventDefault();
 
     if (!state.db || !state.auth) {
-      setStatus("Add your Firebase config before joining a room.", "error");
+      setStatus("Add your app config before joining a room.", "error");
       return;
     }
 
@@ -369,7 +376,7 @@ function wireEvents() {
       } else if (error?.message === "ROOM_PASSCODE_INVALID") {
         setStatus("That passcode is incorrect for this room.", "error");
       } else {
-        setStatus("We couldn't join that room. Check Firestore rules and try again.", "error");
+        setStatus("We couldn't join that room. Check access rules and try again.", "error");
       }
     }
   });
@@ -609,15 +616,15 @@ function updateAuthUi() {
   }
 
   if (!state.auth) {
-    authStatus.textContent = "Firebase Auth is not configured.";
+    authStatus.textContent = "Guest sign-in is not configured.";
     linkGoogleButton.disabled = true;
     return;
   }
 
   if (state.authError) {
     authStatus.textContent = isFirebaseAuthSetupError(state.authError)
-      ? "Enable Firebase Auth and Anonymous sign-in."
-      : "Firebase Auth could not start.";
+      ? "Enable Authentication and Anonymous sign-in."
+      : "Guest sign-in could not start.";
     linkGoogleButton.disabled = true;
     return;
   }
@@ -665,11 +672,11 @@ function getGoogleAuthErrorMessage(error) {
   }
 
   if (error?.code === "auth/unauthorized-domain") {
-    return "Add this domain to Firebase Auth authorized domains.";
+    return "Add this domain to the authorized domains.";
   }
 
   if (error?.code === "auth/operation-not-allowed") {
-    return "Enable the Google provider in Firebase Authentication.";
+    return "Enable the Google sign-in provider.";
   }
 
   if (error?.code === "auth/network-request-failed") {
@@ -677,7 +684,7 @@ function getGoogleAuthErrorMessage(error) {
   }
 
   if (isFirebaseAuthSetupError(error)) {
-    return "Enable Firebase Auth, Anonymous sign-in, and Google sign-in.";
+    return "Enable Authentication, Anonymous sign-in, and Google sign-in.";
   }
 
   return `Google linking failed${error?.code ? ` (${error.code})` : ""}.`;
@@ -726,7 +733,7 @@ function subscribeToPrivacyFeatureConfig() {
     },
     (error) => {
       console.error(error);
-      setStatus("Privacy feature settings stopped updating. Verify your Firestore rules.", "error");
+      setStatus("Privacy feature settings stopped updating. Verify your access rules.", "error");
     }
   );
 }
@@ -843,7 +850,7 @@ function subscribeToRoom(roomId) {
     },
     (error) => {
       console.error(error);
-      setStatus("Room settings stopped updating. Verify your Firestore rules.", "error");
+      setStatus("Room settings stopped updating. Verify your access rules.", "error");
     }
   );
 }
@@ -962,7 +969,7 @@ function subscribeToLatestMessages(roomId) {
     },
     (error) => {
       console.error(error);
-      setStatus("Realtime updates stopped. Verify your Firestore indexes and rules.", "error");
+      setStatus("Live updates stopped. Verify your indexes and access rules.", "error");
     }
   );
 }
@@ -1556,10 +1563,10 @@ async function sendSubmittedText(text) {
     console.error(error);
     setStatus(
       isTaskCommand(text)
-        ? "Task command failed. Check the command and Firestore permissions."
+        ? "Task command failed. Check the command and room permissions."
         : isDayCommand(text)
-          ? "Day command failed. Check the command and Firestore permissions."
-        : "Message send failed. Check Firestore permissions.",
+          ? "Day command failed. Check the command and room permissions."
+        : "Message send failed. Check room permissions.",
       "error"
     );
   }
@@ -3514,7 +3521,7 @@ function subscribeToReadReceipts(roomId) {
     },
     (error) => {
       console.error(error);
-      setStatus("Read notifications stopped. Verify your Firestore rules.", "error");
+      setStatus("Read notifications stopped. Verify your access rules.", "error");
     }
   );
 }
@@ -3837,6 +3844,90 @@ async function showIncomingNotification(message) {
     new Notification(title, options);
   } catch (error) {
     console.error("Notification display failed:", error);
+  }
+}
+
+async function testNotification() {
+  if (typeof Notification === "undefined") {
+    setStatus("This browser does not support notifications.", "error");
+    return;
+  }
+
+  await ensureNotificationPermission();
+
+  if (Notification.permission !== "granted") {
+    setStatus("Notifications are blocked. Enable them in browser settings.", "error");
+    return;
+  }
+
+  try {
+    await showBrowserNotification("OpenBox", {
+      body: "Notifications are working.",
+      tag: "chat-test-notification",
+      renotify: false,
+      badge: "./icons/icon-192.png",
+      icon: "./icons/icon-192.png",
+    });
+    setStatus("Test notification sent.", "success");
+  } catch (error) {
+    console.error(error);
+    setStatus("Test notification could not be sent.", "error");
+  }
+}
+
+async function showBrowserNotification(title, options) {
+  if ("serviceWorker" in navigator) {
+    const registration = await getReadyServiceWorkerRegistration();
+
+    if (registration) {
+      await registration.showNotification(title, options);
+      return;
+    }
+  }
+
+  new Notification(title, options);
+}
+
+async function getReadyServiceWorkerRegistration() {
+  try {
+    return await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise((resolve) => {
+        window.setTimeout(() => resolve(null), 1200);
+      }),
+    ]);
+  } catch (error) {
+    console.error("Service worker was not ready for notifications:", error);
+    return null;
+  }
+}
+
+async function logoutAccount() {
+  if (!state.auth) {
+    setStatus("Auth is not ready yet.", "error");
+    return;
+  }
+
+  logoutButton.disabled = true;
+
+  try {
+    disconnectFromRoom(true, true);
+    state.profile = null;
+    state.authUser = null;
+    state.authError = null;
+    displayNameInput.value = "";
+    roomIdInput.value = "";
+    roomPasscodeInput.value = "";
+    sessionStorage.removeItem("firestore-chat-google-redirect-mode");
+    await signOut(state.auth);
+    await ensureAnonymousAuthSession();
+    updateAuthUi();
+    setStatus("Logged out. A fresh guest session is ready.", "success");
+  } catch (error) {
+    console.error(error);
+    setStatus("Logout failed. Try again.", "error");
+  } finally {
+    logoutButton.disabled = false;
   }
 }
 
@@ -4233,6 +4324,7 @@ function stripEmptyCommandFields(commands) {
 function setAdvancedSettingsVisibility(visible) {
   state.isAdvancedSettingsVisible = visible;
   advancedSettingsPanel.hidden = !visible;
+  document.body.classList.toggle("settings-active", visible);
 
   if (visible) {
     setAdvancedCommandVisibility(false);
