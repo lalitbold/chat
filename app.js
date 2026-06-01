@@ -66,6 +66,9 @@ const toggleMessageMaskButton = document.getElementById("toggle-message-mask");
 const sendButton = document.getElementById("send-button");
 const saveAdvancedSettingsButton = document.getElementById("save-advanced-settings");
 const closeAdvancedSettingsButton = document.getElementById("close-advanced-settings");
+const notificationStatus = document.getElementById("notification-status");
+const checkNotificationsButton = document.getElementById("check-notifications");
+const toggleNotificationsButton = document.getElementById("toggle-notifications");
 const testNotificationButton = document.getElementById("test-notification");
 const logoutButton = document.getElementById("logout-account");
 const DEFAULT_TITLE = "OpenBox";
@@ -100,6 +103,11 @@ const BASE_SLASH_COMMANDS = [
     label: "/task complete <id>",
     insertText: "/task complete ",
     hint: "Complete task",
+  },
+  {
+    label: "/task edit <id> <description> #label",
+    insertText: "/task edit ",
+    hint: "Edit task",
   },
   {
     label: "/task start [id]",
@@ -180,6 +188,7 @@ const READ_RECEIPT_SYNC_DELAY_MS = 1200;
 const SESSION_PERSIST_DELAY_MS = 250;
 const PRIVACY_FEATURE_CONFIG_COLLECTION = "appSettings";
 const PRIVACY_FEATURE_CONFIG_ID = "privacyMode";
+const NOTIFICATIONS_ENABLED_KEY = "openbox-notifications-enabled";
 
 if (!commandSuggestions) {
   commandSuggestions = document.createElement("div");
@@ -241,6 +250,7 @@ const state = {
   selectedCommandSuggestionIndex: 0,
   taskTimerReminderTimeouts: new Map(),
   dayIdleTaskReminderTimeoutId: null,
+  isNotificationsEnabled: loadNotificationsEnabled(),
 };
 
 boot();
@@ -250,6 +260,7 @@ async function boot() {
   updateDocumentTitle();
   updateAppBadge();
   clearRoomCommandInputs();
+  updateNotificationSettingsUi();
 
   try {
     validateFirebaseConfig(firebaseConfig);
@@ -308,6 +319,8 @@ function wireEvents() {
   openSettingsButton.addEventListener("click", () => setAdvancedSettingsVisibility(true));
   saveAdvancedSettingsButton.addEventListener("click", saveAdvancedSettings);
   closeAdvancedSettingsButton.addEventListener("click", () => setAdvancedSettingsVisibility(false));
+  checkNotificationsButton.addEventListener("click", checkNotificationStatus);
+  toggleNotificationsButton.addEventListener("click", toggleNotifications);
   testNotificationButton.addEventListener("click", testNotification);
   logoutButton.addEventListener("click", logoutAccount);
   commandScopeInput.addEventListener("change", handleCommandScopeChange);
@@ -1243,7 +1256,15 @@ function renderTaskListItem(task, options = {}) {
   title.className = "task-list-title";
   title.textContent = task.description || "Untitled task";
 
-  main.append(id, title);
+  const editButton = document.createElement("button");
+  editButton.type = "button";
+  editButton.className = "task-list-edit";
+  editButton.textContent = "Edit";
+  editButton.dataset.action = "task-edit-draft";
+  editButton.dataset.taskId = task.id;
+  editButton.dataset.taskDescription = task.description || "";
+
+  main.append(id, title, editButton);
 
   const meta = document.createElement("div");
   meta.className = "task-list-item-meta";
@@ -1316,6 +1337,10 @@ function handleMessageActionClick(event) {
   if (actionButton.dataset.action === "task-complete") {
     actionButton.disabled = true;
     void completeTask(actionButton.dataset.taskId || "");
+  }
+
+  if (actionButton.dataset.action === "task-edit-draft") {
+    draftTaskEdit(actionButton.dataset.taskId || "", actionButton.dataset.taskDescription || "");
   }
 
   if (actionButton.dataset.action === "task-stop") {
@@ -1835,7 +1860,7 @@ async function handleTaskCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     await postTaskMessage(
-      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task start\n/task start <id>\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task summary\n/task summary share\n/task complete <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nUse /day for attendance and leave commands."
+      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task edit <id> <description> #label\n/task start\n/task start <id>\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task summary\n/task summary share\n/task complete <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nUse /day for attendance and leave commands."
     );
     return;
   }
@@ -1848,6 +1873,11 @@ async function handleTaskCommand(text) {
   if (normalizedAction === "complete") {
     const taskId = rest.join(" ").trim();
     await completeTask(taskId);
+    return;
+  }
+
+  if (normalizedAction === "edit") {
+    await editTask(rest.join(" "));
     return;
   }
 
@@ -2047,6 +2077,49 @@ async function completeTask(taskIdInput) {
   );
   scheduleDayIdleTaskReminder();
   setStatus("Task completed.", "success");
+}
+
+async function editTask(input) {
+  const [taskId = "", ...descriptionParts] = input.trim().split(/\s+/);
+  const descriptionInput = descriptionParts.join(" ");
+
+  if (!taskId || !descriptionInput.trim()) {
+    await postTaskMessage("Use /task edit <id> <description> #label.");
+    return;
+  }
+
+  const task = await findTaskById(taskId);
+
+  if (!task) {
+    await postTaskMessage(`Task ${taskId} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  const { text: trimmedDescription, labels } = extractLabels(descriptionInput);
+
+  if (!trimmedDescription) {
+    await postTaskMessage("Add a task description after the task id.");
+    return;
+  }
+
+  const taskUpdate = {
+    description: trimmedDescription,
+    updatedAt: serverTimestamp(),
+    updatedBy: state.profile.id,
+    updatedByName: state.profile.name,
+  };
+
+  if (labels.length > 0) {
+    taskUpdate.labels = labels;
+  }
+
+  await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", task.id), taskUpdate);
+
+  await postTaskMessage(
+    `Task ${formatTaskId(task.id)} updated: ${trimmedDescription}${labels.length > 0 ? formatTaskLabels(labels) : ""}`
+  );
+  setStatus("Task updated.", "success");
 }
 
 async function startTaskTimer(taskIdInput) {
@@ -3173,6 +3246,18 @@ function compareTasksByCreatedAt(left, right) {
   return left.id.localeCompare(right.id);
 }
 
+function draftTaskEdit(taskId, description) {
+  if (!taskId) {
+    return;
+  }
+
+  messageInput.value = `/task edit ${formatTaskId(taskId)} ${description}`.trimEnd();
+  messageInput.focus();
+  messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+  handleMessageInputChange();
+  setStatus("Edit the task and send when ready.", "success");
+}
+
 function formatTaskId(taskId) {
   return `#${taskId.slice(0, 6)}`;
 }
@@ -3806,6 +3891,7 @@ async function ensureNotificationPermission() {
 
 function maybeNotifyIncomingMessages(incomingMessages) {
   if (
+    !state.isNotificationsEnabled ||
     !state.hasHydratedRoom ||
     state.isPrivacyEnabled ||
     shouldAutoMarkAsRead() ||
@@ -3835,21 +3921,22 @@ async function showIncomingNotification(message) {
   };
 
   try {
-    if ("serviceWorker" in navigator) {
-      const registration = await navigator.serviceWorker.ready;
-      await registration.showNotification(title, options);
-      return;
-    }
-
-    new Notification(title, options);
+    await showBrowserNotification(title, options);
   } catch (error) {
     console.error("Notification display failed:", error);
   }
 }
 
 async function testNotification() {
+  if (!state.isNotificationsEnabled) {
+    setStatus("Notifications are disabled in settings.", "error");
+    updateNotificationSettingsUi();
+    return;
+  }
+
   if (typeof Notification === "undefined") {
     setStatus("This browser does not support notifications.", "error");
+    updateNotificationSettingsUi();
     return;
   }
 
@@ -3857,22 +3944,106 @@ async function testNotification() {
 
   if (Notification.permission !== "granted") {
     setStatus("Notifications are blocked. Enable them in browser settings.", "error");
+    updateNotificationSettingsUi();
     return;
   }
 
   try {
-    await showBrowserNotification("OpenBox", {
+    const deliveryMethod = await showBrowserNotification("OpenBox", {
       body: "Notifications are working.",
-      tag: "chat-test-notification",
-      renotify: false,
+      tag: `chat-test-notification-${Date.now()}`,
+      renotify: true,
+      requireInteraction: true,
+      silent: false,
       badge: "./icons/icon-192.png",
       icon: "./icons/icon-192.png",
+      data: {
+        notificationType: "test",
+      },
     });
-    setStatus("Test notification sent.", "success");
+    setStatus(`Test notification sent (${deliveryMethod}). ${getMacNotificationHint()}`, "success");
   } catch (error) {
     console.error(error);
     setStatus("Test notification could not be sent.", "error");
   }
+
+  updateNotificationSettingsUi();
+}
+
+function checkNotificationStatus() {
+  updateNotificationSettingsUi();
+  setStatus(getNotificationStatusText(), state.isNotificationsEnabled ? "success" : "");
+}
+
+async function toggleNotifications() {
+  if (state.isNotificationsEnabled) {
+    state.isNotificationsEnabled = false;
+    saveNotificationsEnabled(false);
+    updateNotificationSettingsUi();
+    setStatus("Notifications disabled.", "success");
+    return;
+  }
+
+  if (typeof Notification === "undefined") {
+    setStatus("This browser does not support notifications.", "error");
+    updateNotificationSettingsUi();
+    return;
+  }
+
+  await ensureNotificationPermission();
+
+  if (Notification.permission !== "granted") {
+    state.isNotificationsEnabled = false;
+    saveNotificationsEnabled(false);
+    updateNotificationSettingsUi();
+    setStatus("Notifications are blocked. Enable them in browser settings.", "error");
+    return;
+  }
+
+  state.isNotificationsEnabled = true;
+  saveNotificationsEnabled(true);
+  updateNotificationSettingsUi();
+  setStatus("Notifications enabled.", "success");
+}
+
+function updateNotificationSettingsUi() {
+  if (!notificationStatus || !toggleNotificationsButton) {
+    return;
+  }
+
+  notificationStatus.textContent = getNotificationStatusText();
+  toggleNotificationsButton.textContent = state.isNotificationsEnabled
+    ? "Disable notifications"
+    : "Enable notifications";
+  testNotificationButton.disabled = !state.isNotificationsEnabled;
+}
+
+function getNotificationStatusText() {
+  if (typeof Notification === "undefined") {
+    return "Notifications are not supported in this browser.";
+  }
+
+  if (!state.isNotificationsEnabled) {
+    return "Notifications are disabled in OpenBox.";
+  }
+
+  if (Notification.permission === "granted") {
+    return `Notifications are enabled and allowed by this browser. ${getMacNotificationHint()}`;
+  }
+
+  if (Notification.permission === "denied") {
+    return "Notifications are enabled in OpenBox, but blocked by this browser.";
+  }
+
+  return "Notifications are enabled in OpenBox, but browser permission has not been granted yet.";
+}
+
+function loadNotificationsEnabled() {
+  return localStorage.getItem(NOTIFICATIONS_ENABLED_KEY) === "true";
+}
+
+function saveNotificationsEnabled(enabled) {
+  localStorage.setItem(NOTIFICATIONS_ENABLED_KEY, enabled ? "true" : "false");
 }
 
 async function showBrowserNotification(title, options) {
@@ -3881,11 +4052,22 @@ async function showBrowserNotification(title, options) {
 
     if (registration) {
       await registration.showNotification(title, options);
-      return;
+      return "service worker";
     }
   }
 
   new Notification(title, options);
+  return "browser";
+}
+
+function getMacNotificationHint() {
+  const isMac = navigator.platform?.toLowerCase().includes("mac");
+
+  if (!isMac) {
+    return "";
+  }
+
+  return "If no banner appears, check macOS System Settings > Notifications for this browser or OpenBox, and make sure Focus is off.";
 }
 
 async function getReadyServiceWorkerRegistration() {
@@ -4327,6 +4509,7 @@ function setAdvancedSettingsVisibility(visible) {
   document.body.classList.toggle("settings-active", visible);
 
   if (visible) {
+    updateNotificationSettingsUi();
     setAdvancedCommandVisibility(false);
     const localCommands = loadRawLocalRoomCommands(state.roomId);
     const groupCommands = state.groupRoomCommands;

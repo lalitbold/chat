@@ -200,10 +200,26 @@
               autocomplete="off"
             />
           </label>
+          <section class="settings-subsection">
+            <div>
+              <p class="label">Notifications</p>
+              <p id="notification-status" class="settings-status" aria-live="polite">
+                Checking notification status...
+              </p>
+            </div>
+            <div class="notification-actions">
+              <button id="check-notifications" class="ghost" type="button">
+                Check status
+              </button>
+              <button id="toggle-notifications" class="secondary" type="button">
+                Enable notifications
+              </button>
+              <button id="test-notification" class="ghost" type="button">
+                Test notification
+              </button>
+            </div>
+          </section>
           <div class="settings-actions">
-            <button id="test-notification" class="ghost" type="button">
-              Test notification
-            </button>
             <button id="logout-account" class="ghost danger-button" type="button">
               Logout
             </button>

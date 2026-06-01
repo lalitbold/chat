@@ -1,4 +1,4 @@
-const CACHE_NAME = "firestore-chat-v3";
+const CACHE_NAME = "openbox-v4";
 const APP_SHELL = [
   "./",
   "./index.html",

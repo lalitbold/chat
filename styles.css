@@ -169,6 +169,28 @@ h2 {
   display: none;
 }
 
+.settings-subsection {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: rgba(255, 250, 241, 0.72);
+}
+
+.settings-status {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
+.notification-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 body.settings-active .app-shell {
   width: min(760px, calc(100% - 32px));
   grid-template-columns: 1fr;
@@ -548,7 +570,7 @@ button:disabled {
 
 .task-list-main {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto 1fr auto;
   gap: 10px;
   align-items: start;
 }
@@ -572,6 +594,25 @@ button:disabled {
   color: var(--ink);
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+.task-list-edit {
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid rgba(15, 118, 110, 0.24);
+  border-radius: 7px;
+  background: #ffffff;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.task-list-edit:hover,
+.task-list-edit:focus-visible {
+  background: var(--accent-soft);
+  outline: none;
 }
 
 .task-list-item-meta,
@@ -804,7 +845,8 @@ body.stealth-active .composer-count.active {
     gap: 6px;
   }
 
-  .task-list-id {
+  .task-list-id,
+  .task-list-edit {
     width: fit-content;
   }
 
