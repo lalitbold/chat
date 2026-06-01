@@ -394,8 +394,14 @@ button:disabled {
 
 .header-actions {
   display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
   gap: 12px;
+}
+
+#clear-local-messages {
+  min-height: 40px;
 }
 
 .privacy-indicator {

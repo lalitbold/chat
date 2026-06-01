@@ -48,6 +48,7 @@ const toggleCommandVisibilityButton = document.getElementById("toggle-command-vi
 const createRoomButton = document.getElementById("create-room");
 const openSettingsButton = document.getElementById("open-settings");
 const leaveRoomButton = document.getElementById("leave-room");
+const clearLocalMessagesButton = document.getElementById("clear-local-messages");
 const activeRoom = document.getElementById("active-room");
 const privacyIndicator = document.getElementById("privacy-indicator");
 const statusBanner = document.getElementById("status-banner");
@@ -261,6 +262,7 @@ async function boot() {
   updateAppBadge();
   clearRoomCommandInputs();
   updateNotificationSettingsUi();
+  updateLocalMessagesUi();
 
   try {
     validateFirebaseConfig(firebaseConfig);
@@ -323,6 +325,7 @@ function wireEvents() {
   toggleNotificationsButton.addEventListener("click", toggleNotifications);
   testNotificationButton.addEventListener("click", testNotification);
   logoutButton.addEventListener("click", logoutAccount);
+  clearLocalMessagesButton.addEventListener("click", clearLocalMessages);
   commandScopeInput.addEventListener("change", handleCommandScopeChange);
   toggleCommandVisibilityButton.addEventListener("click", toggleAdvancedCommandVisibility);
   copyShareLinkButton.addEventListener("click", copyShareLink);
@@ -1088,6 +1091,7 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   setAdvancedSettingsVisibility(false);
   syncStealthLayout();
   updatePrivacyIndicator();
+  updateLocalMessagesUi();
   updateDocumentTitle();
   updateAppBadge();
   renderEmptyState("Join a room to start chatting.");
@@ -1175,6 +1179,8 @@ function renderMessage(message, context = {}) {
 }
 
 function renderMessages(options = {}) {
+  updateLocalMessagesUi();
+
   if (state.isPrivacyEnabled && !state.isPrivacyPreviewVisible) {
     renderPrivacyState();
     return;
@@ -1367,6 +1373,8 @@ function renderEmptyState(message) {
 }
 
 function renderPrivacyState() {
+  updateLocalMessagesUi();
+
   if (state.localMessages.length > 0) {
     const renderContext = createRenderContext(state.localMessages);
     const fragment = document.createDocumentFragment();
@@ -2933,7 +2941,31 @@ function postLocalMessage(text, senderName, type, actions = [], extra = {}) {
   });
   syncStealthLayout();
   updatePrivacyIndicator();
+  updateLocalMessagesUi();
   renderMessages();
+}
+
+function clearLocalMessages() {
+  if (state.localMessages.length === 0) {
+    return;
+  }
+
+  state.localMessages = [];
+  syncStealthLayout();
+  updatePrivacyIndicator();
+  updateLocalMessagesUi();
+  renderMessages();
+  setStatus("Only me messages cleared.", "success");
+}
+
+function updateLocalMessagesUi() {
+  if (!clearLocalMessagesButton) {
+    return;
+  }
+
+  const hasLocalMessages = state.localMessages.length > 0;
+  clearLocalMessagesButton.hidden = !hasLocalMessages;
+  clearLocalMessagesButton.disabled = !hasLocalMessages;
 }
 
 function scheduleTaskTimerReminder(task) {
