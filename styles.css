@@ -593,6 +593,23 @@ button:disabled {
   gap: 12px;
 }
 
+.task-process-message {
+  display: grid;
+  gap: 12px;
+}
+
+.task-process-message .task-list-item {
+  border-color: rgba(15, 118, 110, 0.24);
+  background: rgba(215, 243, 238, 0.24);
+}
+
+.task-process-hint {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.4;
+}
+
 .task-list-header {
   display: flex;
   align-items: center;
