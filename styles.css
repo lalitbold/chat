@@ -34,6 +34,10 @@ textarea {
   font: inherit;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 .app-shell {
   width: min(1160px, calc(100% - 32px));
   margin: 32px auto;
@@ -93,6 +97,62 @@ h2 {
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.join-toggle {
+  width: 100%;
+}
+
+.available-groups {
+  padding: 18px;
+  display: grid;
+  gap: 14px;
+}
+
+.available-groups-status {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
+.available-groups-list {
+  display: grid;
+  gap: 8px;
+}
+
+.available-group {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid rgba(214, 208, 194, 0.9);
+  border-radius: 8px;
+  background: rgba(255, 250, 241, 0.76);
+  color: var(--ink);
+  text-align: left;
+}
+
+.available-group:hover,
+.available-group:focus-visible {
+  background: var(--accent-soft);
+  outline: none;
+}
+
+.available-group-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.available-group-meta {
+  color: var(--accent-strong);
+  font-size: 0.82rem;
+  font-weight: 700;
 }
 
 .composer-count {
@@ -619,6 +679,13 @@ button:disabled {
 .task-list-edit:focus-visible {
   background: var(--accent-soft);
   outline: none;
+}
+
+.task-list-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 .task-list-item-meta,

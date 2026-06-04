@@ -20,6 +20,10 @@
           Create a room, invite people with the room code, and chat instantly.
         </p>
 
+        <button id="show-join-form" class="secondary join-toggle" type="button" hidden>
+          Join another group
+        </button>
+
         <form id="join-form" class="card form-stack" autocomplete="off">
           <label class="field">
             <span>Your name</span>
@@ -75,6 +79,16 @@
 
           <button class="primary" type="submit">Enter chat</button>
         </form>
+
+        <section id="available-groups-panel" class="card available-groups" aria-live="polite">
+          <div>
+            <p class="label">Groups</p>
+            <p id="available-groups-status" class="available-groups-status">
+              Enter a passcode to see matching groups.
+            </p>
+          </div>
+          <div id="available-groups-list" class="available-groups-list"></div>
+        </section>
       </section>
 
       <section class="chat-panel">

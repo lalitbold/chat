@@ -85,6 +85,13 @@ rooms/{roomId}/tasks/{taskId}/timeEntries/{entryId}
   durationMs
   createdAt
 
+rooms/{roomId}/tasks/{taskId}/comments/{commentId}
+  taskId
+  text
+  createdAt
+  createdBy
+  createdByName
+
 rooms/{roomId}/workDays/{userId_dateKey}
   userId
   userName
@@ -129,6 +136,8 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 - `/task list` shows the pending task list only to you. Completed tasks are hidden by default.
 - `/task list #bug` shows pending tasks with that label only to you.
 - `/task edit <id> <description> #bug` updates a task description. Labels are replaced only when new labels are included.
+- `/task comment <id> <comment>` adds a comment to a task.
+- `/task comments <id>` shows task comments only to you.
 - `/task start` starts a general timer without linking it to a task.
 - `/task start <id>` starts a timer on a task and reminds you locally after 25 minutes, then every 5 minutes until you continue, complete, or stop it. If two reminders go unanswered, the timer auto-stops and records time only through the first unanswered reminder.
 - `/task stop` stops your general timer and records the elapsed time.

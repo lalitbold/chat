@@ -35,9 +35,12 @@ import {
 import { firebaseConfig } from "./firebase-config.js";
 
 const joinForm = document.getElementById("join-form");
+const showJoinFormButton = document.getElementById("show-join-form");
 const displayNameInput = document.getElementById("display-name");
 const roomIdInput = document.getElementById("room-id");
 const roomPasscodeInput = document.getElementById("room-passcode");
+const availableGroupsStatus = document.getElementById("available-groups-status");
+const availableGroupsList = document.getElementById("available-groups-list");
 const authStatus = document.getElementById("auth-status");
 const linkGoogleButton = document.getElementById("link-google");
 const commandScopeInput = document.getElementById("command-scope");
@@ -109,6 +112,16 @@ const BASE_SLASH_COMMANDS = [
     label: "/task edit <id> <description> #label",
     insertText: "/task edit ",
     hint: "Edit task",
+  },
+  {
+    label: "/task comment <id> <comment>",
+    insertText: "/task comment ",
+    hint: "Add comment",
+  },
+  {
+    label: "/task comments <id>",
+    insertText: "/task comments ",
+    hint: "View comments",
   },
   {
     label: "/task start [id]",
@@ -252,6 +265,11 @@ const state = {
   taskTimerReminderTimeouts: new Map(),
   dayIdleTaskReminderTimeoutId: null,
   isNotificationsEnabled: loadNotificationsEnabled(),
+  availableGroups: [],
+  availableGroupsRequestId: 0,
+  availableGroupsDebounceId: null,
+  hasJoinedRoomOnce: false,
+  isJoinFormExpanded: true,
 };
 
 boot();
@@ -331,6 +349,9 @@ function wireEvents() {
   copyShareLinkButton.addEventListener("click", copyShareLink);
   closeShareLinkButton.addEventListener("click", hideShareLinkPanel);
   linkGoogleButton.addEventListener("click", linkGoogleAccount);
+  showJoinFormButton.addEventListener("click", () => setJoinFormExpanded(true));
+  roomPasscodeInput.addEventListener("input", scheduleAvailableGroupsRefresh);
+  availableGroupsList.addEventListener("click", handleAvailableGroupClick);
 
   createRoomButton.addEventListener("click", () => {
     roomIdInput.value = generateRoomId();
@@ -339,6 +360,45 @@ function wireEvents() {
 
   joinForm.addEventListener("submit", async (event) => {
     event.preventDefault();
+    await joinRoomFromForm();
+  });
+
+  messageForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+
+    const text = messageInput.value.trim();
+    if (!text || !state.roomId || !state.db || !state.profile) {
+      return;
+    }
+
+    if (handleLocalCommand(text)) {
+      messageInput.value = "";
+      syncMessageMaskOverlay();
+      messageInput.focus();
+      return;
+    }
+
+    messageInput.value = "";
+    syncMessageMaskOverlay();
+    hideCommandAutocomplete();
+    messageInput.focus();
+    void sendSubmittedText(text);
+  });
+
+  leaveRoomButton.addEventListener("click", disconnectFromRoom);
+}
+
+async function joinRoomFromForm() {
+  const displayName = displayNameInput.value.trim();
+  const roomId = sanitizeRoomId(roomIdInput.value);
+  const roomPasscode = normalizePasscode(roomPasscodeInput.value);
+  await joinRoom(roomId, roomPasscode, displayName);
+}
+
+async function joinRoom(roomId, roomPasscode, displayName = displayNameInput.value.trim()) {
+  try {
+    roomId = sanitizeRoomId(roomId);
+    roomPasscode = normalizePasscode(roomPasscode);
 
     if (!state.db || !state.auth) {
       setStatus("Add your app config before joining a room.", "error");
@@ -352,17 +412,17 @@ function wireEvents() {
       return;
     }
 
-    const displayName = displayNameInput.value.trim();
-    const roomId = sanitizeRoomId(roomIdInput.value);
-    const roomPasscode = normalizePasscode(roomPasscodeInput.value);
-
     if (!displayName) {
       setStatus("Enter a name before joining.", "error");
+      setJoinFormExpanded(true);
+      displayNameInput.focus();
       return;
     }
 
     if (!roomId) {
       setStatus("Enter a room code or generate one.", "error");
+      setJoinFormExpanded(true);
+      roomIdInput.focus();
       return;
     }
 
@@ -395,31 +455,116 @@ function wireEvents() {
         setStatus("We couldn't join that room. Check access rules and try again.", "error");
       }
     }
-  });
+  } catch (error) {
+    console.error(error);
+    setStatus("We couldn't join that room. Check access rules and try again.", "error");
+  }
+}
 
-  messageForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
+function markRoomJoined() {
+  state.hasJoinedRoomOnce = true;
+  setJoinFormExpanded(false);
+}
 
-    const text = messageInput.value.trim();
-    if (!text || !state.roomId || !state.db || !state.profile) {
+function setJoinFormExpanded(expanded) {
+  state.isJoinFormExpanded = expanded;
+  joinForm.hidden = state.hasJoinedRoomOnce && !expanded;
+  showJoinFormButton.hidden = !state.hasJoinedRoomOnce || expanded;
+}
+
+function scheduleAvailableGroupsRefresh() {
+  if (state.availableGroupsDebounceId) {
+    window.clearTimeout(state.availableGroupsDebounceId);
+  }
+
+  state.availableGroupsDebounceId = window.setTimeout(() => {
+    state.availableGroupsDebounceId = null;
+    void refreshAvailableGroups();
+  }, 250);
+}
+
+async function refreshAvailableGroups() {
+  if (!state.db || !state.authUser) {
+    renderAvailableGroups([], "Groups will appear after the app connects.");
+    return;
+  }
+
+  const passcode = normalizePasscode(roomPasscodeInput.value);
+  if (!passcode) {
+    renderAvailableGroups([], "Enter a passcode to see matching groups.");
+    return;
+  }
+
+  const requestId = ++state.availableGroupsRequestId;
+  renderAvailableGroups(state.availableGroups, "Looking for groups...");
+
+  try {
+    const roomsRef = collection(state.db, "rooms");
+    const roomsQuery = query(roomsRef, where("passcode", "==", passcode));
+    const snapshot = await getDocs(roomsQuery);
+
+    if (requestId !== state.availableGroupsRequestId) {
       return;
     }
 
-    if (handleLocalCommand(text)) {
-      messageInput.value = "";
-      syncMessageMaskOverlay();
-      messageInput.focus();
-      return;
-    }
+    const rooms = snapshot.docs
+      .map((roomDoc) => ({
+        id: roomDoc.id,
+        ...roomDoc.data(),
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id));
 
-    messageInput.value = "";
-    syncMessageMaskOverlay();
-    hideCommandAutocomplete();
-    messageInput.focus();
-    void sendSubmittedText(text);
-  });
+    renderAvailableGroups(
+      rooms,
+      rooms.length > 0
+        ? "Click a group to join it."
+        : "No groups found for this passcode yet."
+    );
+  } catch (error) {
+    console.error(error);
+    renderAvailableGroups([], "Groups could not be loaded. Check access rules.");
+  }
+}
 
-  leaveRoomButton.addEventListener("click", disconnectFromRoom);
+function renderAvailableGroups(rooms, status) {
+  state.availableGroups = rooms;
+  availableGroupsStatus.textContent = status;
+  availableGroupsList.replaceChildren(
+    ...rooms.map((room) => {
+      const button = document.createElement("button");
+      button.className = "available-group";
+      button.type = "button";
+      button.dataset.roomId = room.id;
+      button.disabled = room.id === state.roomId;
+
+      const name = document.createElement("span");
+      name.className = "available-group-name";
+      name.textContent = room.name || room.id;
+
+      const meta = document.createElement("span");
+      meta.className = "available-group-meta";
+      meta.textContent = room.id === state.roomId ? "Current" : "Join";
+
+      button.append(name, meta);
+      return button;
+    })
+  );
+}
+
+function handleAvailableGroupClick(event) {
+  if (!(event.target instanceof Element)) {
+    return;
+  }
+
+  const groupButton = event.target.closest(".available-group");
+  if (!groupButton) {
+    return;
+  }
+
+  const roomId = groupButton.dataset.roomId || "";
+  const roomPasscode = normalizePasscode(roomPasscodeInput.value);
+  roomIdInput.value = roomId;
+  void joinRoom(roomId, roomPasscode);
 }
 
 function initializeAuthSession() {
@@ -811,6 +956,8 @@ async function connectToRoom(roomId, roomPasscode = "", roomData = null) {
     syncMessageInputMask();
   }
   setStatus(`Connected to room "${roomId}".`, "success");
+  markRoomJoined();
+  void refreshAvailableGroups();
   hideShareLinkPanel();
   renderEmptyState("No messages yet. Say hello.");
   applyRoomCommandsToInputs({});
@@ -1262,6 +1409,8 @@ function renderTaskListItem(task, options = {}) {
   title.className = "task-list-title";
   title.textContent = task.description || "Untitled task";
 
+  const commentCount = Number.isFinite(task.commentCount) ? task.commentCount : 0;
+
   const editButton = document.createElement("button");
   editButton.type = "button";
   editButton.className = "task-list-edit";
@@ -1270,7 +1419,25 @@ function renderTaskListItem(task, options = {}) {
   editButton.dataset.taskId = task.id;
   editButton.dataset.taskDescription = task.description || "";
 
-  main.append(id, title, editButton);
+  const commentButton = document.createElement("button");
+  commentButton.type = "button";
+  commentButton.className = "task-list-edit";
+  commentButton.textContent = "Comment";
+  commentButton.dataset.action = "task-comment-draft";
+  commentButton.dataset.taskId = task.id;
+
+  const commentsButton = document.createElement("button");
+  commentsButton.type = "button";
+  commentsButton.className = "task-list-edit";
+  commentsButton.textContent = commentCount > 0 ? `Comments (${commentCount})` : "Comments";
+  commentsButton.dataset.action = "task-comments-list";
+  commentsButton.dataset.taskId = task.id;
+
+  const actions = document.createElement("div");
+  actions.className = "task-list-actions";
+  actions.append(editButton, commentButton, commentsButton);
+
+  main.append(id, title, actions);
 
   const meta = document.createElement("div");
   meta.className = "task-list-item-meta";
@@ -1307,6 +1474,13 @@ function renderTaskListItem(task, options = {}) {
       ? "Running"
       : `Running by ${task.activeTimerStartedByName || "someone"}`;
     meta.append(running);
+  }
+
+  if (commentCount > 0) {
+    const comments = document.createElement("span");
+    comments.className = "task-list-badge";
+    comments.textContent = `${commentCount} comment${commentCount === 1 ? "" : "s"}`;
+    meta.append(comments);
   }
 
   item.append(main, meta);
@@ -1347,6 +1521,17 @@ function handleMessageActionClick(event) {
 
   if (actionButton.dataset.action === "task-edit-draft") {
     draftTaskEdit(actionButton.dataset.taskId || "", actionButton.dataset.taskDescription || "");
+  }
+
+  if (actionButton.dataset.action === "task-comment-draft") {
+    draftTaskComment(actionButton.dataset.taskId || "");
+  }
+
+  if (actionButton.dataset.action === "task-comments-list") {
+    actionButton.disabled = true;
+    void postTaskComments(actionButton.dataset.taskId || "").finally(() => {
+      actionButton.disabled = false;
+    });
   }
 
   if (actionButton.dataset.action === "task-stop") {
@@ -1868,7 +2053,7 @@ async function handleTaskCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     await postTaskMessage(
-      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task edit <id> <description> #label\n/task start\n/task start <id>\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task summary\n/task summary share\n/task complete <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nUse /day for attendance and leave commands."
+      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task edit <id> <description> #label\n/task comment <id> <comment>\n/task comments <id>\n/task start\n/task start <id>\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task summary\n/task summary share\n/task complete <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nUse /day for attendance and leave commands."
     );
     return;
   }
@@ -1886,6 +2071,16 @@ async function handleTaskCommand(text) {
 
   if (normalizedAction === "edit") {
     await editTask(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "comment") {
+    await addTaskComment(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "comments") {
+    await postTaskComments(rest.join(" "));
     return;
   }
 
@@ -1998,10 +2193,11 @@ async function createTask(description) {
 
 async function postTaskList(filterText = "") {
   const requestedLabels = parseLabels(filterText);
-  const pendingTasks = (await loadPendingRoomTasks())
+  const pendingTasks = await Promise.all((await loadPendingRoomTasks())
     .filter((task) => taskHasLabels(task, requestedLabels))
     .sort(compareTasksByCreatedAt)
-    .slice(0, TASK_LIST_LIMIT);
+    .slice(0, TASK_LIST_LIMIT)
+    .map(loadTaskCommentSummary));
 
   if (pendingTasks.length === 0) {
     postLocalTaskMessage(
@@ -2128,6 +2324,70 @@ async function editTask(input) {
     `Task ${formatTaskId(task.id)} updated: ${trimmedDescription}${labels.length > 0 ? formatTaskLabels(labels) : ""}`
   );
   setStatus("Task updated.", "success");
+}
+
+async function addTaskComment(input) {
+  const [taskId = "", ...commentParts] = input.trim().split(/\s+/);
+  const commentText = commentParts.join(" ").trim();
+
+  if (!taskId || !commentText) {
+    await postTaskMessage("Use /task comment <id> <comment>.");
+    return;
+  }
+
+  const task = await findTaskById(taskId);
+
+  if (!task) {
+    await postTaskMessage(`Task ${taskId} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  await addDoc(collection(state.db, "rooms", state.roomId, "tasks", task.id, "comments"), {
+    taskId: task.id,
+    text: commentText,
+    createdAt: serverTimestamp(),
+    createdBy: state.profile.id,
+    createdByName: state.profile.name,
+  });
+
+  await postTaskMessage(`Comment added to Task ${formatTaskId(task.id)}: ${commentText}`);
+  setStatus("Task comment added.", "success");
+}
+
+async function postTaskComments(taskIdInput) {
+  const taskId = taskIdInput.trim();
+
+  if (!taskId) {
+    postLocalTaskMessage("Use /task comments <id> to view task comments.");
+    return;
+  }
+
+  const task = await findTaskById(taskId);
+
+  if (!task) {
+    postLocalTaskMessage(`Task ${taskId} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  const comments = await loadTaskComments(task.id);
+
+  if (comments.length === 0) {
+    postLocalTaskMessage(`Task ${formatTaskId(task.id)} has no comments: ${task.description}`);
+    setStatus("No task comments.", "success");
+    return;
+  }
+
+  const lines = [
+    `Comments for Task ${formatTaskId(task.id)}: ${task.description}`,
+    ...comments.map((comment) => {
+      const author = comment.createdByName || "Unknown";
+      return `- ${author}, ${formatTaskTimestamp(comment.createdAt)}: ${comment.text}`;
+    }),
+  ];
+  postLocalTaskMessage(lines.join("\n"));
+  setStatus(`${comments.length} task comment${comments.length === 1 ? "" : "s"} listed.`, "success");
 }
 
 async function startTaskTimer(taskIdInput) {
@@ -2766,6 +3026,28 @@ async function loadTaskTimeEntries(taskId) {
   }));
 }
 
+async function loadTaskComments(taskId) {
+  const commentsQuery = query(
+    collection(state.db, "rooms", state.roomId, "tasks", taskId, "comments"),
+    orderBy("createdAt", "asc")
+  );
+  const commentsSnapshot = await getDocs(commentsQuery);
+
+  return commentsSnapshot.docs.map((commentDoc) => ({
+    id: commentDoc.id,
+    ...commentDoc.data(),
+  }));
+}
+
+async function loadTaskCommentSummary(task) {
+  const comments = await loadTaskComments(task.id);
+
+  return {
+    ...task,
+    commentCount: comments.length,
+  };
+}
+
 async function loadWorkDayTimeEntries() {
   const entriesSnapshot = await getDocs(collection(getWorkDayRef(), "timeEntries"));
 
@@ -3288,6 +3570,18 @@ function draftTaskEdit(taskId, description) {
   messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
   handleMessageInputChange();
   setStatus("Edit the task and send when ready.", "success");
+}
+
+function draftTaskComment(taskId) {
+  if (!taskId) {
+    return;
+  }
+
+  messageInput.value = `/task comment ${formatTaskId(taskId)} `;
+  messageInput.focus();
+  messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+  handleMessageInputChange();
+  setStatus("Write the task comment and send when ready.", "success");
 }
 
 function formatTaskId(taskId) {
