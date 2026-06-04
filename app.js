@@ -1348,6 +1348,8 @@ function renderMessage(message, context = {}) {
     wrapper.append(renderTaskListMessage(message));
   } else if (message.type === "task-process" && message.task) {
     wrapper.append(renderTaskProcessMessage(message));
+  } else if (message.type === "task-comments" && message.task && Array.isArray(message.comments)) {
+    wrapper.append(renderTaskCommentsMessage(message));
   } else {
     const body = document.createElement("p");
     body.className = "message-text";
@@ -1594,12 +1596,100 @@ function renderTaskProcessMessage(message) {
     })
   );
 
+  container.append(
+    renderTaskCommentsPanel(message.task, message.comments || [], {
+      emptyText: "No comments yet.",
+      title: "Comments",
+    })
+  );
+
   const hint = document.createElement("p");
   hint.className = "task-process-hint";
   hint.textContent = message.hint || "Choose an option below to keep moving through the list.";
   container.append(hint);
 
   return container;
+}
+
+function renderTaskCommentsMessage(message) {
+  const container = document.createElement("div");
+  container.className = "task-comments-message";
+
+  const header = document.createElement("div");
+  header.className = "task-list-header";
+
+  const title = document.createElement("strong");
+  title.textContent = `Comments for ${formatTaskId(message.task.id)}`;
+
+  const count = document.createElement("span");
+  count.className = "task-list-count";
+  count.textContent = `${message.comments.length} comment${message.comments.length === 1 ? "" : "s"}`;
+
+  header.append(title, count);
+  container.append(header);
+
+  const taskTitle = document.createElement("p");
+  taskTitle.className = "task-comments-task";
+  taskTitle.textContent = message.task.description || "Untitled task";
+  container.append(taskTitle);
+
+  container.append(renderTaskCommentsPanel(message.task, message.comments, { title: "Thread" }));
+
+  return container;
+}
+
+function renderTaskCommentsPanel(task, comments, options = {}) {
+  const panel = document.createElement("section");
+  panel.className = "task-comments-panel";
+
+  const heading = document.createElement("div");
+  heading.className = "task-comments-panel-heading";
+
+  const title = document.createElement("strong");
+  title.textContent = options.title || "Comments";
+
+  const count = document.createElement("span");
+  count.textContent = `${comments.length}`;
+
+  heading.append(title, count);
+  panel.append(heading);
+
+  if (comments.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "task-comments-empty";
+    empty.textContent = options.emptyText || `No comments for ${formatTaskId(task.id)}.`;
+    panel.append(empty);
+    return panel;
+  }
+
+  const list = document.createElement("ol");
+  list.className = "task-comments-list";
+
+  comments.forEach((comment) => {
+    const item = document.createElement("li");
+    item.className = "task-comment";
+
+    const meta = document.createElement("div");
+    meta.className = "task-comment-meta";
+
+    const author = document.createElement("strong");
+    author.textContent = comment.createdByName || "Unknown";
+
+    const time = document.createElement("span");
+    time.textContent = formatTaskTimestamp(comment.createdAt);
+
+    meta.append(author, time);
+
+    const text = document.createElement("p");
+    text.className = "task-comment-text";
+    text.textContent = comment.text || "";
+
+    item.append(meta, text);
+    list.append(item);
+  });
+
+  panel.append(list);
+  return panel;
 }
 
 function handleMessageActionClick(event) {
@@ -2410,8 +2500,13 @@ async function postNextTaskProcessItem(options = {}) {
   }
 
   const [task] = pendingTasks;
+  const comments = await loadTaskComments(task.id);
+  const taskWithComments = {
+    ...task,
+    commentCount: comments.length,
+  };
   state.taskProcessSession.currentTaskId = task.id;
-  postLocalTaskProcessMessage(task, pendingTasks.length);
+  postLocalTaskProcessMessage(taskWithComments, pendingTasks.length, comments);
   setStatus(`Task process: ${pendingTasks.length} pending task${pendingTasks.length === 1 ? "" : "s"} left.`, "success");
 }
 
@@ -2605,22 +2700,13 @@ async function postTaskComments(taskIdInput) {
   }
 
   const comments = await loadTaskComments(task.id);
-
-  if (comments.length === 0) {
-    postLocalTaskMessage(`Task ${formatTaskId(task.id)} has no comments: ${task.description}`);
-    setStatus("No task comments.", "success");
-    return;
-  }
-
-  const lines = [
-    `Comments for Task ${formatTaskId(task.id)}: ${task.description}`,
-    ...comments.map((comment) => {
-      const author = comment.createdByName || "Unknown";
-      return `- ${author}, ${formatTaskTimestamp(comment.createdAt)}: ${comment.text}`;
-    }),
-  ];
-  postLocalTaskMessage(lines.join("\n"));
-  setStatus(`${comments.length} task comment${comments.length === 1 ? "" : "s"} listed.`, "success");
+  postLocalTaskCommentsMessage(task, comments);
+  setStatus(
+    comments.length === 0
+      ? "No task comments."
+      : `${comments.length} task comment${comments.length === 1 ? "" : "s"} listed.`,
+    "success"
+  );
 }
 
 async function startTaskTimer(taskIdInput) {
@@ -3438,7 +3524,7 @@ function postLocalTaskListMessage(heading, tasks, fallbackText) {
   });
 }
 
-function postLocalTaskProcessMessage(task, remainingCount) {
+function postLocalTaskProcessMessage(task, remainingCount, comments = []) {
   const taskId = formatTaskId(task.id);
   const actions = [
     {
@@ -3449,11 +3535,6 @@ function postLocalTaskProcessMessage(task, remainingCount) {
     {
       label: "Comment",
       action: "task-comment-draft",
-      taskId: task.id,
-    },
-    {
-      label: "Comments",
-      action: "task-comments-list",
       taskId: task.id,
     },
     {
@@ -3480,9 +3561,29 @@ function postLocalTaskProcessMessage(task, remainingCount) {
     {
       heading: "Next task",
       task,
+      comments,
       remainingCount,
       maskIdentity: isPrivacyModeActive(),
       hint: `Send /task process next to skip this task, or /task process stop to end the process.`,
+    }
+  );
+}
+
+function postLocalTaskCommentsMessage(task, comments) {
+  postLocalMessage(
+    `Comments for ${formatTaskId(task.id)}: ${task.description}`,
+    "Tasks (only you)",
+    "task-comments",
+    [
+      {
+        label: "Add comment",
+        action: "task-comment-draft",
+        taskId: task.id,
+      },
+    ],
+    {
+      task,
+      comments,
     }
   );
 }
