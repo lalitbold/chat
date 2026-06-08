@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "codex:bridge": "node tools/codex-bridge.mjs",
     "tasks:pending": "node tools/pending-tasks.mjs"
   }
 }

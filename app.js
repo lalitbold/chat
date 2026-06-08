@@ -87,6 +87,7 @@ const ADVANCED_SETTINGS_COMMANDS = new Set(["advancesetting", "advancedsetting"]
 const GET_LINK_COMMAND = "getlink";
 const TASK_COMMAND = "/task";
 const DAY_COMMAND = "/day";
+const CODEX_COMMAND = "/codex";
 const TASK_LIST_LIMIT = 50;
 const TASK_TIMER_REMINDER_MS = 25 * 60 * 1000;
 const TASK_TIMER_REPEAT_REMINDER_MS = 5 * 60 * 1000;
@@ -182,6 +183,16 @@ const BASE_SLASH_COMMANDS = [
     label: "/day leave cancel <id>",
     insertText: "/day leave cancel ",
     hint: "Cancel leave",
+  },
+  {
+    label: "/codex <instruction>",
+    insertText: "/codex ",
+    hint: "Send to Codex",
+  },
+  {
+    label: "/codex help",
+    insertText: "/codex help",
+    hint: "Codex bridge help",
   },
   {
     label: "/task label <id> #label",
@@ -1978,6 +1989,11 @@ async function sendSubmittedText(text) {
       return;
     }
 
+    if (isCodexCommand(text)) {
+      await handleCodexCommand(text);
+      return;
+    }
+
     await addDoc(collection(state.db, "rooms", state.roomId, "messages"), {
       text,
       senderId: state.profile.id,
@@ -1995,6 +2011,8 @@ async function sendSubmittedText(text) {
         ? "Task command failed. Check the command and room permissions."
         : isDayCommand(text)
           ? "Day command failed. Check the command and room permissions."
+        : isCodexCommand(text)
+          ? "Codex command failed. Check the command and room permissions."
         : "Message send failed. Check room permissions.",
       "error"
     );
@@ -2256,6 +2274,11 @@ function isDayCommand(text) {
   return normalized === DAY_COMMAND || normalized.startsWith(`${DAY_COMMAND} `);
 }
 
+function isCodexCommand(text) {
+  const normalized = text.trim().toLowerCase();
+  return normalized === CODEX_COMMAND || normalized.startsWith(`${CODEX_COMMAND} `);
+}
+
 async function handleTaskCommand(text) {
   const rawCommand = text.trim();
   const payload = rawCommand.slice(TASK_COMMAND.length).trim();
@@ -2375,6 +2398,36 @@ async function handleDayCommand(text) {
   }
 
   postLocalDayMessage(`Unknown day command: /day ${payload}`);
+}
+
+async function handleCodexCommand(text) {
+  const rawCommand = text.trim();
+  const prompt = rawCommand.slice(CODEX_COMMAND.length).trim();
+
+  if (!prompt || prompt.toLowerCase() === "help") {
+    postLocalCodexMessage(
+      "Codex commands:\n/codex summarize this repo\n/codex review the latest diff\n/codex fix the failing test\nStart the bridge with npm run codex:bridge -- --room <roomId>."
+    );
+    return;
+  }
+
+  const commandRef = await addDoc(collection(state.db, "rooms", state.roomId, "codexCommands"), {
+    prompt,
+    status: "queued",
+    requestedBy: state.profile.id,
+    requestedByName: state.profile.name,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+    startedAt: null,
+    completedAt: null,
+    result: null,
+    error: null,
+  });
+
+  await postCodexMessage(
+    `Queued Codex command ${formatCodexCommandId(commandRef.id)} from ${state.profile.name}.\n${prompt}`
+  );
+  setStatus("Codex command queued.", "success");
 }
 
 async function createTask(description) {
@@ -3487,6 +3540,16 @@ async function postDayMessage(text) {
   });
 }
 
+async function postCodexMessage(text) {
+  await addDoc(collection(state.db, "rooms", state.roomId, "messages"), {
+    text,
+    senderId: state.profile.id,
+    senderName: "Codex",
+    type: "codex",
+    createdAt: serverTimestamp(),
+  });
+}
+
 async function recordTaskTimeEntry(task, startedAt, stoppedAt, durationMs) {
   await addDoc(collection(state.db, "rooms", state.roomId, "tasks", task.id, "timeEntries"), {
     taskId: task.id,
@@ -3590,6 +3653,10 @@ function postLocalTaskCommentsMessage(task, comments) {
 
 function postLocalDayMessage(text) {
   postLocalMessage(text, "Day (only you)", "day");
+}
+
+function postLocalCodexMessage(text) {
+  postLocalMessage(text, "Codex (only you)", "codex");
 }
 
 function postLocalMessage(text, senderName, type, actions = [], extra = {}) {
@@ -3969,6 +4036,10 @@ function draftTaskComment(taskId) {
 
 function formatTaskId(taskId) {
   return `#${taskId.slice(0, 6)}`;
+}
+
+function formatCodexCommandId(commandId) {
+  return `#${String(commandId || "").slice(0, 6)}`;
 }
 
 function formatTaskTimeSummary(task, options = {}) {

@@ -53,6 +53,18 @@ rooms/{roomId}/messages/{messageId}
   senderName
   createdAt
 
+rooms/{roomId}/codexCommands/{commandId}
+  prompt
+  status
+  requestedBy
+  requestedByName
+  createdAt
+  updatedAt
+  startedAt
+  completedAt
+  result
+  error
+
 rooms/{roomId}/readReceipts/{userId}
   userId
   displayName
@@ -149,6 +161,39 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 - `/task complete <id>` marks a task complete. The `<id>` can be the short ID shown in the task list, like `#abc123`, or the full Firestore document ID.
 - `/task label <id> #bug` adds a label to an existing task.
 - `/task unlabel <id> #bug` removes a label from an existing task.
+
+## Codex commands
+
+- `/codex <instruction>` queues an instruction for a trusted Codex bridge process.
+- `/codex help` shows local help for the command.
+
+Start the bridge from the machine where Codex should run:
+
+```powershell
+npm run codex:bridge -- --room testroom
+```
+
+By default, the bridge runs `codex exec` with a read-only sandbox. To allow Codex to edit the current repo, start it with an explicit sandbox and working directory:
+
+```powershell
+npm run codex:bridge -- --room testroom --sandbox workspace-write --cwd C:\work\poc\chat
+```
+
+Useful options:
+
+```powershell
+npm run codex:bridge -- --room testroom --once
+npm run codex:bridge -- --room testroom --poll-ms 2000
+npm run codex:bridge -- --room testroom --timeout-ms 1800000
+```
+
+The browser app only writes queue documents to Firestore. The bridge is the only process that runs Codex, so do not run it for rooms you do not trust.
+
+If `/codex` or the bridge reports missing permissions, deploy the updated Firestore rules first:
+
+```powershell
+firebase deploy --only firestore:rules
+```
 
 ## Codex pending task export
 
