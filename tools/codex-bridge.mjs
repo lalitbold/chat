@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { firebaseConfig } from "../firebase-config.js";
 
 const DEFAULT_POLL_MS = 5000;
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_OUTPUT_CHARS = 12000;
+const DEFAULT_CODEX_BIN_CANDIDATES = [
+  "/Applications/Codex.app/Contents/Resources/codex",
+  "codex",
+];
 
 main().catch((error) => {
   console.error(`Error: ${error.message}`);
@@ -48,6 +53,7 @@ async function main() {
 
 function parseArgs(args) {
   const options = {
+    codexBin: findDefaultCodexBin(),
     cwd: process.cwd(),
     help: false,
     maxOutputChars: DEFAULT_MAX_OUTPUT_CHARS,
@@ -78,6 +84,12 @@ function parseArgs(args) {
 
     if (arg === "--cwd") {
       options.cwd = readValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--codex-bin") {
+      options.codexBin = readValue(args, index, arg);
       index += 1;
       continue;
     }
@@ -139,6 +151,7 @@ function printHelp() {
 Options:
   -r, --room <roomId>          Room id to watch. Can also use ROOM_ID.
       --cwd <path>             Working directory for Codex. Defaults to cwd.
+      --codex-bin <path>       Codex executable. Auto-detects the macOS app binary.
       --sandbox <mode>         Codex sandbox. Defaults to read-only.
                                Common values: read-only, workspace-write, danger-full-access.
       --poll-ms <number>       Queue polling interval. Defaults to ${DEFAULT_POLL_MS}.
@@ -150,6 +163,7 @@ Options:
 Examples:
   npm run codex:bridge -- --room team-standup
   npm run codex:bridge -- --room team-standup --sandbox workspace-write --cwd /Users/lalitj/work/iw/chat
+  npm run codex:bridge -- --room team-standup --codex-bin /Applications/Codex.app/Contents/Resources/codex
 `);
 }
 
@@ -271,7 +285,7 @@ async function processCommand({ auth, roomId, command, options }) {
 
 function runCodex(prompt, options) {
   return new Promise((resolve) => {
-    const child = spawn("codex", ["exec", "--sandbox", options.sandbox, prompt], {
+    const child = spawn(options.codexBin, ["exec", "--sandbox", options.sandbox, prompt], {
       cwd: options.cwd,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -313,6 +327,16 @@ function runCodex(prompt, options) {
         error: timedOut ? `Codex timed out after ${options.timeoutMs}ms.` : "",
       });
     });
+  });
+}
+
+function findDefaultCodexBin() {
+  return DEFAULT_CODEX_BIN_CANDIDATES.find((candidate) => {
+    if (candidate.includes("/")) {
+      return existsSync(candidate);
+    }
+
+    return true;
   });
 }
 
