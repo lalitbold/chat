@@ -89,6 +89,7 @@ const TASK_COMMAND = "/task";
 const DAY_COMMAND = "/day";
 const CODEX_COMMAND = "/codex";
 const TASK_LIST_LIMIT = 50;
+const TASK_PREVIEW_LIMIT = 3;
 const TASK_TIMER_REMINDER_MS = 25 * 60 * 1000;
 const TASK_TIMER_REPEAT_REMINDER_MS = 5 * 60 * 1000;
 const TASK_TIMER_MAX_UNANSWERED_REMINDERS = 2;
@@ -103,6 +104,11 @@ const BASE_SLASH_COMMANDS = [
     label: "/task list",
     insertText: "/task list",
     hint: "Pending tasks",
+  },
+  {
+    label: "/task view <id>",
+    insertText: "/task view ",
+    hint: "Share task",
   },
   {
     label: "/task process [#label]",
@@ -143,6 +149,11 @@ const BASE_SLASH_COMMANDS = [
     label: "/task continue [id]",
     insertText: "/task continue ",
     hint: "Continue timer",
+  },
+  {
+    label: "/task timers",
+    insertText: "/task timers",
+    hint: "Active timers",
   },
   {
     label: "/task summary",
@@ -1361,11 +1372,17 @@ function renderMessage(message, context = {}) {
     wrapper.append(renderTaskProcessMessage(message));
   } else if (message.type === "task-comments" && message.task && Array.isArray(message.comments)) {
     wrapper.append(renderTaskCommentsMessage(message));
+  } else if (message.type === "task-view" && message.task) {
+    wrapper.append(renderTaskViewMessage(message));
   } else {
     const body = document.createElement("p");
     body.className = "message-text";
     body.textContent = message.text;
     wrapper.append(body);
+
+    if (Array.isArray(message.taskPreviews) && message.taskPreviews.length > 0) {
+      wrapper.append(renderInlineTaskPreviews(message.taskPreviews));
+    }
   }
 
   if (message.isLocalOnly && Array.isArray(message.actions) && message.actions.length > 0) {
@@ -1514,9 +1531,16 @@ function renderTaskListItem(task, options = {}) {
     commentsButton.dataset.action = "task-comments-list";
     commentsButton.dataset.taskId = task.id;
 
+    const viewButton = document.createElement("button");
+    viewButton.type = "button";
+    viewButton.className = "task-list-edit";
+    viewButton.textContent = "View";
+    viewButton.dataset.action = "task-view";
+    viewButton.dataset.taskId = task.id;
+
     const actions = document.createElement("div");
     actions.className = "task-list-actions";
-    actions.append(editButton, commentButton, commentsButton);
+    actions.append(viewButton, editButton, commentButton, commentsButton);
     main.append(actions);
   }
 
@@ -1581,6 +1605,116 @@ function renderTaskListItem(task, options = {}) {
   }
 
   return item;
+}
+
+function renderTaskViewMessage(message) {
+  const container = document.createElement("div");
+  container.className = "task-view-message";
+
+  const header = document.createElement("div");
+  header.className = "task-list-header";
+
+  const title = document.createElement("strong");
+  title.textContent = "Task";
+
+  const id = document.createElement("span");
+  id.className = "task-list-count";
+  id.textContent = formatTaskId(message.task.id);
+
+  header.append(title, id);
+  container.append(header);
+  container.append(renderTaskPreviewCard(message.task, { showDescription: true }));
+
+  if (Array.isArray(message.comments)) {
+    container.append(
+      renderTaskCommentsPanel(message.task, message.comments, {
+        emptyText: "No comments yet.",
+        title: "Comments",
+      })
+    );
+  }
+
+  return container;
+}
+
+function renderInlineTaskPreviews(tasks) {
+  const container = document.createElement("div");
+  container.className = "inline-task-previews";
+
+  tasks.forEach((task) => {
+    container.append(renderTaskPreviewCard(task));
+  });
+
+  return container;
+}
+
+function renderTaskPreviewCard(task, options = {}) {
+  const card = document.createElement("article");
+  card.className = "task-preview-card";
+
+  const top = document.createElement("div");
+  top.className = "task-preview-top";
+
+  const id = document.createElement("span");
+  id.className = "task-list-id";
+  id.textContent = formatTaskId(task.id);
+  id.title = task.id;
+
+  const status = document.createElement("span");
+  status.className = `task-preview-status ${task.status === "complete" ? "complete" : "pending"}`;
+  status.textContent = task.status === "complete" ? "Complete" : "Pending";
+
+  top.append(id, status);
+
+  const title = document.createElement("p");
+  title.className = "task-preview-title";
+  title.textContent = task.description || "Untitled task";
+
+  card.append(top, title);
+
+  const meta = document.createElement("div");
+  meta.className = "task-preview-meta";
+
+  if (task.createdByName) {
+    const creator = document.createElement("span");
+    creator.textContent = task.createdByName;
+    meta.append(creator);
+  }
+
+  const createdAt = document.createElement("span");
+  createdAt.textContent = formatTaskTimestamp(task.createdAt);
+  meta.append(createdAt);
+
+  const commentCount = Number.isFinite(task.commentCount) ? task.commentCount : 0;
+  if (commentCount > 0) {
+    const comments = document.createElement("span");
+    comments.textContent = `${commentCount} comment${commentCount === 1 ? "" : "s"}`;
+    meta.append(comments);
+  }
+
+  if (task.activeTimerStartedAt) {
+    const running = document.createElement("span");
+    running.textContent = `Running by ${task.activeTimerStartedByName || "someone"}`;
+    meta.append(running);
+  }
+
+  card.append(meta);
+
+  if (Array.isArray(task.labels) && task.labels.length > 0) {
+    const labels = document.createElement("div");
+    labels.className = "task-list-labels";
+
+    task.labels.forEach((label) => {
+      const chip = document.createElement("span");
+      chip.className = "task-label";
+      chip.textContent = `#${label}`;
+      labels.append(chip);
+    });
+
+    card.append(labels);
+  }
+
+  return card;
 }
 
 function renderTaskProcessMessage(message) {
@@ -1738,6 +1872,13 @@ function handleMessageActionClick(event) {
   if (actionButton.dataset.action === "task-comments-list") {
     actionButton.disabled = true;
     void postTaskComments(actionButton.dataset.taskId || "").finally(() => {
+      actionButton.disabled = false;
+    });
+  }
+
+  if (actionButton.dataset.action === "task-view") {
+    actionButton.disabled = true;
+    void postTaskView(actionButton.dataset.taskId || "").finally(() => {
       actionButton.disabled = false;
     });
   }
@@ -1994,12 +2135,19 @@ async function sendSubmittedText(text) {
       return;
     }
 
-    await addDoc(collection(state.db, "rooms", state.roomId, "messages"), {
+    const taskPreviews = await buildTaskPreviewsForText(text);
+    const messagePayload = {
       text,
       senderId: state.profile.id,
       senderName: state.profile.name,
       createdAt: serverTimestamp(),
-    });
+    };
+
+    if (taskPreviews.length > 0) {
+      messagePayload.taskPreviews = taskPreviews;
+    }
+
+    await addDoc(collection(state.db, "rooms", state.roomId, "messages"), messagePayload);
 
     if (state.isPrivacyEnabled && state.isPrivacyPreviewVisible) {
       hidePrivacyPreview();
@@ -2287,7 +2435,7 @@ async function handleTaskCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     await postTaskMessage(
-      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task process\n/task process #bug\n/task process stop\n/task edit <id> <description> #label\n/task comment <id> <comment>\n/task comments <id>\n/task start\n/task start <id>\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task summary\n/task summary share\n/task complete <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nUse /day for attendance and leave commands."
+      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task view <id>\n/task process\n/task process #bug\n/task process stop\n/task edit <id> <description> #label\n/task comment <id> <comment>\n/task comments <id>\n/task start\n/task start <id>\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task timers\n/task summary\n/task summary share\n/task complete <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nMention a task id like #abc123 in a message to preview it.\nUse /day for attendance and leave commands."
     );
     return;
   }
@@ -2299,6 +2447,11 @@ async function handleTaskCommand(text) {
 
   if (normalizedAction === "process") {
     await handleTaskProcessCommand(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "view") {
+    await postTaskView(rest.join(" "));
     return;
   }
 
@@ -2338,6 +2491,11 @@ async function handleTaskCommand(text) {
   if (normalizedAction === "continue") {
     const taskId = rest.join(" ").trim();
     await continueTaskTimer(taskId);
+    return;
+  }
+
+  if (normalizedAction === "timers" || normalizedAction === "active") {
+    await postActiveTimers();
     return;
   }
 
@@ -2762,6 +2920,40 @@ async function postTaskComments(taskIdInput) {
   );
 }
 
+async function postTaskView(taskIdInput) {
+  const taskId = taskIdInput.trim();
+
+  if (!taskId) {
+    await postTaskMessage("Use /task view <id> to share a task.");
+    return;
+  }
+
+  const task = await findTaskById(taskId);
+
+  if (!task) {
+    await postTaskMessage(`Task ${taskId} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  const comments = await loadTaskComments(task.id);
+  const taskPreview = serializeTaskForMessage({
+    ...task,
+    commentCount: comments.length,
+  });
+
+  await addDoc(collection(state.db, "rooms", state.roomId, "messages"), {
+    text: `Task ${formatTaskId(task.id)}: ${task.description}`,
+    senderId: state.profile.id,
+    senderName: "Tasks",
+    type: "task-view",
+    task: taskPreview,
+    comments: comments.map(serializeTaskCommentForMessage),
+    createdAt: serverTimestamp(),
+  });
+  setStatus("Task shared.", "success");
+}
+
 async function startTaskTimer(taskIdInput) {
   const taskId = taskIdInput.trim();
 
@@ -2990,6 +3182,56 @@ async function continueTaskTimer(taskIdInput) {
     `Continuing Task ${formatTaskId(task.id)}. I will remind you again in ${formatDuration(TASK_TIMER_REMINDER_MS)} if it is still running.`
   );
   setStatus("Task timer continued.", "success");
+}
+
+async function postActiveTimers() {
+  const [tasks, workDays] = await Promise.all([
+    loadRoomTasks(),
+    loadRoomWorkDays(),
+  ]);
+  const activeTaskTimers = tasks
+    .filter((task) => task.activeTimerStartedAt)
+    .sort(compareActiveTimersByStartedAt);
+  const activeGeneralTimers = workDays
+    .filter((workDay) => workDay.activeTimerStartedAt)
+    .sort(compareActiveTimersByStartedAt);
+
+  if (activeTaskTimers.length === 0 && activeGeneralTimers.length === 0) {
+    postLocalTaskMessage("No active timers.");
+    setStatus("No active timers.", "success");
+    return;
+  }
+
+  const lines = ["Active timers:"];
+
+  if (activeGeneralTimers.length > 0) {
+    lines.push("General:");
+    activeGeneralTimers.forEach((workDay) => {
+      const ownerName = workDay.activeTimerStartedByName || workDay.userName || "Someone";
+      const elapsed = formatDuration(Date.now() - getTimestampMillis(workDay.activeTimerStartedAt));
+      const command = isCurrentUserWorkDay(workDay) ? " - stop with /task stop" : "";
+      lines.push(`- ${ownerName}: ${elapsed}${command}`);
+    });
+  }
+
+  if (activeTaskTimers.length > 0) {
+    lines.push("Tasks:");
+    activeTaskTimers.forEach((task) => {
+      const ownerName = getTaskTimerOwnerName(task);
+      const elapsed = formatDuration(Date.now() - getTimestampMillis(task.activeTimerStartedAt));
+      const taskId = formatTaskId(task.id);
+      const command = isCurrentUserTaskTimerOwner(task)
+        ? ` - stop with /task stop ${taskId}, complete with /task complete ${taskId}`
+        : "";
+      lines.push(`- ${taskId} ${task.description || "Untitled task"} (${ownerName}, ${elapsed})${command}`);
+    });
+  }
+
+  postLocalTaskMessage(lines.join("\n"));
+  setStatus(
+    `${activeTaskTimers.length + activeGeneralTimers.length} active timer${activeTaskTimers.length + activeGeneralTimers.length === 1 ? "" : "s"} listed.`,
+    "success"
+  );
 }
 
 async function updateTaskLabels(input, mode) {
@@ -3366,6 +3608,75 @@ async function findTaskById(taskIdInput) {
   const matches = tasks.filter((task) => task.id.toLowerCase().startsWith(normalizedPrefix));
 
   return matches.length === 1 ? matches[0] : null;
+}
+
+async function buildTaskPreviewsForText(text) {
+  const taskIds = extractTaskIdsFromText(text).slice(0, TASK_PREVIEW_LIMIT);
+
+  if (taskIds.length === 0) {
+    return [];
+  }
+
+  const previews = [];
+
+  for (const taskId of taskIds) {
+    const task = await findTaskById(taskId);
+
+    if (!task) {
+      continue;
+    }
+
+    const taskWithComments = await loadTaskCommentSummary(task);
+    previews.push(serializeTaskForMessage(taskWithComments));
+  }
+
+  return previews;
+}
+
+function extractTaskIdsFromText(text) {
+  const taskIds = [];
+  const seen = new Set();
+  const matches = String(text || "").matchAll(/(?:^|[\s([{])#([a-z0-9]{4,24})(?=$|[\s.,;:!?)}\]])/gi);
+
+  for (const match of matches) {
+    const taskId = match[1];
+    const normalizedTaskId = taskId.toLowerCase();
+
+    if (seen.has(normalizedTaskId)) {
+      continue;
+    }
+
+    seen.add(normalizedTaskId);
+    taskIds.push(taskId);
+  }
+
+  return taskIds;
+}
+
+function serializeTaskForMessage(task) {
+  return {
+    id: task.id,
+    description: task.description || "Untitled task",
+    labels: Array.isArray(task.labels) ? task.labels : [],
+    status: task.status || "pending",
+    createdAt: task.createdAt || null,
+    createdByName: task.createdByName || "",
+    completedAt: task.completedAt || null,
+    completedByName: task.completedByName || "",
+    totalTrackedMs: Number.isFinite(task.totalTrackedMs) ? task.totalTrackedMs : 0,
+    activeTimerStartedAt: task.activeTimerStartedAt || null,
+    activeTimerStartedByName: task.activeTimerStartedByName || "",
+    commentCount: Number.isFinite(task.commentCount) ? task.commentCount : 0,
+  };
+}
+
+function serializeTaskCommentForMessage(comment) {
+  return {
+    id: comment.id,
+    text: comment.text || "",
+    createdAt: comment.createdAt || null,
+    createdByName: comment.createdByName || "",
+  };
 }
 
 async function loadRoomTasks() {
@@ -3997,6 +4308,17 @@ function clearDayIdleTaskReminder() {
 
 function getGeneralTimerReminderId() {
   return `general:${getTodayKey()}`;
+}
+
+function compareActiveTimersByStartedAt(left, right) {
+  const leftTime = getTimestampMillis(left.activeTimerStartedAt);
+  const rightTime = getTimestampMillis(right.activeTimerStartedAt);
+
+  if (leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+
+  return String(left.id || "").localeCompare(String(right.id || ""));
 }
 
 function compareTasksByCreatedAt(left, right) {

@@ -593,6 +593,67 @@ button:disabled {
   gap: 12px;
 }
 
+.task-view-message,
+.inline-task-previews {
+  display: grid;
+  gap: 10px;
+}
+
+.inline-task-previews {
+  margin-top: 10px;
+}
+
+.task-preview-card {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(15, 118, 110, 0.2);
+  border-radius: 8px;
+  background: rgba(215, 243, 238, 0.22);
+}
+
+.task-preview-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.task-preview-status {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.task-preview-status.pending {
+  background: rgba(15, 118, 110, 0.12);
+  color: var(--accent-strong);
+}
+
+.task-preview-status.complete {
+  background: rgba(22, 34, 31, 0.1);
+  color: var(--muted);
+}
+
+.task-preview-title {
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.task-preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
 .task-process-message {
   display: grid;
   gap: 12px;
