@@ -2405,6 +2405,7 @@ function handleLocalCommand(text) {
     }
 
     const requestedCount = revealMatch[1] ? Number.parseInt(revealMatch[1], 10) : null;
+    clearLocalMessages({ silent: true });
     revealPrivacyTemporarily(requestedCount);
     return true;
   }
@@ -3988,17 +3989,24 @@ function postLocalMessage(text, senderName, type, actions = [], extra = {}) {
   renderMessages();
 }
 
-function clearLocalMessages() {
+function clearLocalMessages(options = {}) {
   if (state.localMessages.length === 0) {
     return;
   }
 
+  clearLocalMessagesState();
+
+  if (!options.silent) {
+    setStatus("Only me messages cleared.", "success");
+  }
+}
+
+function clearLocalMessagesState() {
   state.localMessages = [];
   syncStealthLayout();
   updatePrivacyIndicator();
   updateLocalMessagesUi();
   renderMessages();
-  setStatus("Only me messages cleared.", "success");
 }
 
 function updateLocalMessagesUi() {
