@@ -88,6 +88,7 @@ const GET_LINK_COMMAND = "getlink";
 const TASK_COMMAND = "/task";
 const DAY_COMMAND = "/day";
 const CODEX_COMMAND = "/codex";
+const QUERY_COMMAND = "/query";
 const TASK_LIST_LIMIT = 50;
 const TASK_PREVIEW_LIMIT = 3;
 const TASK_TIMER_REMINDER_MS = 25 * 60 * 1000;
@@ -95,6 +96,8 @@ const TASK_TIMER_REPEAT_REMINDER_MS = 5 * 60 * 1000;
 const TASK_TIMER_MAX_UNANSWERED_REMINDERS = 2;
 const TASK_TIMER_REMINDER_SYNC_MS = 60 * 1000;
 const DAY_IDLE_TASK_REMINDER_MS = 5 * 60 * 1000;
+const QUERY_REMINDER_MS = 10 * 60 * 1000;
+const QUERY_REMINDER_SYNC_MS = 60 * 1000;
 const BASE_SLASH_COMMANDS = [
   {
     label: "/task <description> #label",
@@ -120,6 +123,11 @@ const BASE_SLASH_COMMANDS = [
     label: "/task complete <id>",
     insertText: "/task complete ",
     hint: "Complete task",
+  },
+  {
+    label: "/task completed",
+    insertText: "/task completed",
+    hint: "Completed tasks",
   },
   {
     label: "/task edit <id> <description> #label",
@@ -197,6 +205,21 @@ const BASE_SLASH_COMMANDS = [
     hint: "End day",
   },
   {
+    label: "/day break start",
+    insertText: "/day break start",
+    hint: "Start break",
+  },
+  {
+    label: "/day break stop",
+    insertText: "/day break stop",
+    hint: "Stop break",
+  },
+  {
+    label: "/day break list",
+    insertText: "/day break list",
+    hint: "Breaks",
+  },
+  {
     label: "/day leave tomorrow <reason>",
     insertText: "/day leave tomorrow ",
     hint: "Schedule leave",
@@ -230,6 +253,31 @@ const BASE_SLASH_COMMANDS = [
     label: "/task unlabel <id> #label",
     insertText: "/task unlabel ",
     hint: "Remove label",
+  },
+  {
+    label: "/query <question>",
+    insertText: "/query ",
+    hint: "Ask with reminders",
+  },
+  {
+    label: "/query task <task-id> <question>",
+    insertText: "/query task ",
+    hint: "Ask on task",
+  },
+  {
+    label: "/query list",
+    insertText: "/query list",
+    hint: "Pending queries",
+  },
+  {
+    label: "/query respond <id> <response>",
+    insertText: "/query respond ",
+    hint: "Answer query",
+  },
+  {
+    label: "/query close <id>",
+    insertText: "/query close ",
+    hint: "Close query",
   },
 ];
 const PRIVACY_INVITE_COMMAND = "/privacy invite";
@@ -308,6 +356,8 @@ const state = {
   selectedCommandSuggestionIndex: 0,
   taskTimerReminderTimeouts: new Map(),
   taskTimerReminderSyncIntervalId: null,
+  queryReminderTimeouts: new Map(),
+  queryReminderSyncIntervalId: null,
   taskProcessSession: null,
   dayIdleTaskReminderTimeoutId: null,
   isNotificationsEnabled: loadNotificationsEnabled(),
@@ -1045,6 +1095,7 @@ async function connectToRoom(roomId, roomPasscode = "", roomData = null) {
   state.messages = [];
   state.localMessages = [];
   state.taskProcessSession = null;
+  state.queryReminderTimeouts = new Map();
   state.oldestMessageCursor = null;
   state.hasMoreMessages = true;
   state.isLoadingOlderMessages = false;
@@ -1072,6 +1123,7 @@ async function connectToRoom(roomId, roomPasscode = "", roomData = null) {
   queueReadReceiptSync();
   scheduleDayIdleTaskReminder();
   startTaskTimerReminderSync();
+  startQueryReminderSync();
   void announceTodaysLeaves();
 }
 
@@ -1309,6 +1361,8 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   clearSessionPersistTimer();
   clearTaskTimerReminderSync();
   clearTaskTimerReminders();
+  clearQueryReminderSync();
+  clearQueryReminders();
   clearDayIdleTaskReminder();
   clearMessageMaskRevealTimer();
   clearPrivacyPreviewTimer();
@@ -1393,6 +1447,10 @@ function renderMessage(message, context = {}) {
     wrapper.append(renderTaskCommentsMessage(message));
   } else if (message.type === "task-view" && message.task) {
     wrapper.append(renderTaskViewMessage(message));
+  } else if (message.type === "query-list" && Array.isArray(message.queries)) {
+    wrapper.append(renderQueryListMessage(message));
+  } else if (message.type === "query-view" && message.query) {
+    wrapper.append(renderQueryViewMessage(message));
   } else {
     const body = document.createElement("p");
     body.className = "message-text";
@@ -1417,6 +1475,10 @@ function renderMessage(message, context = {}) {
 
       if (action.taskId) {
         button.dataset.taskId = action.taskId;
+      }
+
+      if (action.queryId) {
+        button.dataset.queryId = action.queryId;
       }
 
       actions.append(button);
@@ -1664,6 +1726,155 @@ function renderTaskViewMessage(message) {
   }
 
   return container;
+}
+
+function renderQueryViewMessage(message) {
+  const queryData = message.query;
+  const container = document.createElement("div");
+  container.className = "query-view-message";
+
+  const header = document.createElement("div");
+  header.className = "task-list-header";
+
+  const title = document.createElement("strong");
+  title.textContent = queryData.status === "answered" ? "Answered query" : "Pending query";
+
+  const id = document.createElement("span");
+  id.className = "task-list-count";
+  id.textContent = formatQueryId(queryData.id);
+
+  header.append(title, id);
+  container.append(header);
+
+  container.append(renderQueryPreviewCard(queryData));
+
+  return container;
+}
+
+function renderQueryListMessage(message) {
+  const container = document.createElement("div");
+  container.className = "query-list-message";
+
+  const header = document.createElement("div");
+  header.className = "task-list-header";
+
+  const title = document.createElement("strong");
+  title.textContent = message.heading || "Pending queries";
+
+  const count = document.createElement("span");
+  count.className = "task-list-count";
+  count.textContent = `${message.queries.length} quer${message.queries.length === 1 ? "y" : "ies"}`;
+
+  header.append(title, count);
+  container.append(header);
+
+  const list = document.createElement("ol");
+  list.className = "query-list";
+
+  message.queries.forEach((queryData) => {
+    const item = document.createElement("li");
+    item.append(renderQueryPreviewCard(queryData, { allowClose: true }));
+    list.append(item);
+  });
+
+  container.append(list);
+
+  return container;
+}
+
+function renderQueryPreviewCard(queryData, options = {}) {
+  const card = document.createElement("article");
+  card.className = "query-preview-card";
+
+  const top = document.createElement("div");
+  top.className = "task-preview-top";
+
+  const id = document.createElement("span");
+  id.className = "task-list-id";
+  id.textContent = formatQueryId(queryData.id);
+  id.title = queryData.id;
+
+  const status = document.createElement("span");
+  status.className = `query-preview-status ${queryData.status === "answered" ? "answered" : "pending"}`;
+  status.textContent = queryData.status === "answered" ? "Answered" : "Pending";
+
+  top.append(id, status);
+
+  const question = document.createElement("p");
+  question.className = "task-preview-title";
+  question.textContent = queryData.text || "Untitled query";
+
+  card.append(top, question);
+
+  const meta = document.createElement("div");
+  meta.className = "task-preview-meta";
+
+  if (queryData.createdByName) {
+    const creator = document.createElement("span");
+    creator.textContent = `Asked by ${queryData.createdByName}`;
+    meta.append(creator);
+  }
+
+  const createdAt = document.createElement("span");
+  createdAt.textContent = formatTaskTimestamp(queryData.createdAt);
+  meta.append(createdAt);
+
+  if (queryData.taskId) {
+    const taskLink = document.createElement("span");
+    taskLink.textContent = `Task ${formatTaskId(queryData.taskId)}`;
+    meta.append(taskLink);
+  }
+
+  card.append(meta);
+
+  if (queryData.taskId && queryData.taskDescription) {
+    const task = document.createElement("p");
+    task.className = "query-linked-task";
+    task.textContent = queryData.taskDescription;
+    card.append(task);
+  }
+
+  if (queryData.status === "answered") {
+    const response = document.createElement("div");
+    response.className = "query-response";
+
+    const label = document.createElement("strong");
+    label.textContent = queryData.responseText ? `Response from ${queryData.answeredByName || "Someone"}` : "Closed";
+
+    const body = document.createElement("p");
+    body.textContent = queryData.responseText || `Closed by ${queryData.answeredByName || "someone"}.`;
+
+    response.append(label, body);
+    card.append(response);
+  }
+
+  if (!options.hideActions && queryData.status !== "answered") {
+    const actions = document.createElement("div");
+    actions.className = "task-list-actions";
+
+    const respondButton = document.createElement("button");
+    respondButton.type = "button";
+    respondButton.className = "task-list-edit";
+    respondButton.textContent = "Respond";
+    respondButton.dataset.action = "query-respond-draft";
+    respondButton.dataset.queryId = queryData.id;
+
+    actions.append(respondButton);
+
+    if (queryData.createdBy === state.profile?.id || options.allowClose) {
+      const closeButton = document.createElement("button");
+      closeButton.type = "button";
+      closeButton.className = "task-list-edit";
+      closeButton.textContent = "Close";
+      closeButton.dataset.action = "query-close";
+      closeButton.dataset.queryId = queryData.id;
+      actions.append(closeButton);
+    }
+
+    card.append(actions);
+  }
+
+  return card;
 }
 
 function renderInlineTaskPreviews(tasks) {
@@ -1990,6 +2201,17 @@ function handleMessageActionClick(event) {
     actionButton.disabled = true;
     void stopGeneralTimer();
   }
+
+  if (actionButton.dataset.action === "query-respond-draft") {
+    draftQueryResponse(actionButton.dataset.queryId || "");
+  }
+
+  if (actionButton.dataset.action === "query-close") {
+    actionButton.disabled = true;
+    void closeQuery(actionButton.dataset.queryId || "").finally(() => {
+      actionButton.disabled = false;
+    });
+  }
 }
 
 function renderEmptyState(message) {
@@ -2214,6 +2436,11 @@ async function sendSubmittedText(text) {
       return;
     }
 
+    if (isQueryCommand(text)) {
+      await handleQueryCommand(text);
+      return;
+    }
+
     const taskPreviews = await buildTaskPreviewsForText(text);
     const messagePayload = {
       text,
@@ -2240,6 +2467,8 @@ async function sendSubmittedText(text) {
           ? "Day command failed. Check the command and room permissions."
         : isCodexCommand(text)
           ? "Codex command failed. Check the command and room permissions."
+        : isQueryCommand(text)
+          ? "Query command failed. Check the command and room permissions."
         : "Message send failed. Check room permissions.",
       "error"
     );
@@ -2507,6 +2736,11 @@ function isCodexCommand(text) {
   return normalized === CODEX_COMMAND || normalized.startsWith(`${CODEX_COMMAND} `);
 }
 
+function isQueryCommand(text) {
+  const normalized = text.trim().toLowerCase();
+  return normalized === QUERY_COMMAND || normalized.startsWith(`${QUERY_COMMAND} `);
+}
+
 async function handleTaskCommand(text) {
   const rawCommand = text.trim();
   const payload = rawCommand.slice(TASK_COMMAND.length).trim();
@@ -2515,13 +2749,18 @@ async function handleTaskCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     await postTaskMessage(
-      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task view <id>\n/task process\n/task process #bug\n/task process stop\n/task edit <id> <description> #label\n/task comment <id> <comment>\n/task comments <id>\n/task subtask <id> <description>\n/task subtasks <id>\n/task subtask done <id> <subtask>\n/task subtask reopen <id> <subtask>\n/task subtask remove <id> <subtask>\n/task start\n/task start <id>\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task timers\n/task summary\n/task summary share\n/task complete <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nMention a task id like #abc123 in a message to preview it.\nUse /day for attendance and leave commands."
+      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task completed\n/task completed #bug\n/task view <id>\n/task process\n/task process #bug\n/task process stop\n/task edit <id> <description> #label\n/task comment <id> <comment>\n/task comments <id>\n/task subtask <id> <description>\n/task subtasks <id>\n/task subtask done <id> <subtask>\n/task subtask reopen <id> <subtask>\n/task subtask remove <id> <subtask>\n/task start\n/task start <id>\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task timers\n/task summary\n/task summary share\n/task complete <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nMention a task id like #abc123 in a message to preview it.\nUse /day for attendance and leave commands."
     );
     return;
   }
 
   if (normalizedAction === "list") {
     await postTaskList(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "completed") {
+    await postCompletedTaskList(rest.join(" "));
     return;
   }
 
@@ -2620,7 +2859,7 @@ async function handleDayCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     postLocalDayMessage(
-      "Day commands:\n/day start\n/day plan <plan>\n/day end\n/day leave <date-or-range> <reason>\n/day leave list\n/day leave cancel <id>"
+      "Day commands:\n/day start\n/day plan <plan>\n/day break start\n/day break stop\n/day break list\n/day end\n/day leave <date-or-range> <reason>\n/day leave list\n/day leave cancel <id>"
     );
     return;
   }
@@ -2637,6 +2876,11 @@ async function handleDayCommand(text) {
 
   if (normalizedAction === "end") {
     await endWorkDay();
+    return;
+  }
+
+  if (normalizedAction === "break") {
+    await handleBreakCommand(rest.join(" "));
     return;
   }
 
@@ -2676,6 +2920,265 @@ async function handleCodexCommand(text) {
     `Queued Codex command ${formatCodexCommandId(commandRef.id)} from ${state.profile.name}.\n${prompt}`
   );
   setStatus("Codex command queued.", "success");
+}
+
+async function handleQueryCommand(text) {
+  const rawCommand = text.trim();
+  const payload = rawCommand.slice(QUERY_COMMAND.length).trim();
+  const [action = "", ...rest] = payload.split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+
+  if (!payload || normalizedAction === "help") {
+    postLocalQueryMessage(
+      "Query commands:\n/query <question>\n/query task <task-id> <question>\n/query list\n/query respond <id> <response>\n/query close <id>"
+    );
+    return;
+  }
+
+  if (normalizedAction === "list") {
+    await postQueryList();
+    return;
+  }
+
+  if (normalizedAction === "task") {
+    await createTaskLinkedQuery(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "respond" || normalizedAction === "answer") {
+    await respondToQuery(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "close" || normalizedAction === "done") {
+    await closeQuery(rest.join(" "));
+    return;
+  }
+
+  await createQuery(payload);
+}
+
+async function createQuery(question, options = {}) {
+  const text = String(question || "").trim();
+
+  if (!text) {
+    postLocalQueryMessage("Add a question after /query.");
+    return;
+  }
+
+  const createdAt = new Date();
+  const queryPayload = {
+    text,
+    status: "pending",
+    createdAt: serverTimestamp(),
+    createdBy: state.profile.id,
+    createdByName: state.profile.name,
+    answeredAt: null,
+    answeredBy: null,
+    answeredByName: null,
+    responseText: null,
+    taskId: options.task?.id || null,
+    taskDescription: options.task?.description || null,
+    reminderIntervalMs: QUERY_REMINDER_MS,
+    lastReminderAt: null,
+    reminderCount: 0,
+  };
+  const queryRef = await addDoc(collection(state.db, "rooms", state.roomId, "queries"), queryPayload);
+  const queryData = {
+    id: queryRef.id,
+    ...queryPayload,
+    createdAt,
+  };
+
+  if (options.task) {
+    await addQueryTaskComment(options.task.id, `Query ${formatQueryId(queryRef.id)}: ${text}`);
+  }
+
+  await postQueryViewMessage(queryData);
+  scheduleQueryReminder({
+    ...queryData,
+    lastReminderAt: createdAt,
+  });
+  setStatus("Query created.", "success");
+}
+
+async function createTaskLinkedQuery(input) {
+  const [taskId = "", ...questionParts] = input.trim().split(/\s+/);
+  const question = questionParts.join(" ").trim();
+
+  if (!taskId || !question) {
+    postLocalQueryMessage("Use /query task <task-id> <question>.");
+    return;
+  }
+
+  const task = await findTaskById(taskId);
+
+  if (!task) {
+    postLocalQueryMessage(`Task ${taskId} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  await createQuery(question, { task });
+}
+
+async function postQueryList() {
+  const queries = await loadPendingOwnQueries();
+
+  if (queries.length === 0) {
+    postLocalQueryMessage("No pending queries.");
+    setStatus("No pending queries.", "success");
+    return;
+  }
+
+  postLocalMessage(
+    `Pending queries: ${queries.length}`,
+    "Queries (only you)",
+    "query-list",
+    [],
+    {
+      heading: "Pending queries",
+      queries: queries.sort(compareQueriesByCreatedAt),
+    }
+  );
+  setStatus(`${queries.length} pending quer${queries.length === 1 ? "y" : "ies"} listed.`, "success");
+}
+
+async function respondToQuery(input) {
+  const [queryIdInput = "", ...responseParts] = input.trim().split(/\s+/);
+  const responseText = responseParts.join(" ").trim();
+
+  if (!queryIdInput || !responseText) {
+    postLocalQueryMessage("Use /query respond <id> <response>.");
+    return;
+  }
+
+  const queryData = await findQueryById(queryIdInput);
+
+  if (!queryData) {
+    postLocalQueryMessage(`Query ${queryIdInput} was not found.`);
+    setStatus("Query not found.", "error");
+    return;
+  }
+
+  if (queryData.status === "answered") {
+    postLocalQueryMessage(`Query ${formatQueryId(queryData.id)} is already answered.`);
+    setStatus("Query already answered.", "success");
+    return;
+  }
+
+  const answeredAt = new Date();
+  await updateDoc(doc(state.db, "rooms", state.roomId, "queries", queryData.id), {
+    status: "answered",
+    answeredAt: serverTimestamp(),
+    answeredBy: state.profile.id,
+    answeredByName: state.profile.name,
+    responseText,
+    updatedAt: serverTimestamp(),
+  });
+
+  const answeredQuery = {
+    ...queryData,
+    status: "answered",
+    answeredAt,
+    answeredBy: state.profile.id,
+    answeredByName: state.profile.name,
+    responseText,
+  };
+
+  if (queryData.taskId) {
+    await addQueryTaskComment(
+      queryData.taskId,
+      `Response to Query ${formatQueryId(queryData.id)} from ${state.profile.name}: ${responseText}`
+    );
+  }
+
+  clearQueryReminder(queryData.id);
+  await postQueryViewMessage(answeredQuery);
+  setStatus("Query answered.", "success");
+}
+
+async function closeQuery(queryIdInput) {
+  const queryId = String(queryIdInput || "").trim();
+
+  if (!queryId) {
+    postLocalQueryMessage("Use /query close <id>.");
+    return;
+  }
+
+  const queryData = await findQueryById(queryId);
+
+  if (!queryData) {
+    postLocalQueryMessage(`Query ${queryId} was not found.`);
+    setStatus("Query not found.", "error");
+    return;
+  }
+
+  if (queryData.status === "answered") {
+    postLocalQueryMessage(`Query ${formatQueryId(queryData.id)} is already answered.`);
+    setStatus("Query already answered.", "success");
+    return;
+  }
+
+  if (queryData.createdBy !== state.profile.id) {
+    postLocalQueryMessage(`Only ${queryData.createdByName || "the creator"} can close Query ${formatQueryId(queryData.id)}.`);
+    setStatus("Only the query creator can close it.", "error");
+    return;
+  }
+
+  const answeredAt = new Date();
+  await updateDoc(doc(state.db, "rooms", state.roomId, "queries", queryData.id), {
+    status: "answered",
+    answeredAt: serverTimestamp(),
+    answeredBy: state.profile.id,
+    answeredByName: state.profile.name,
+    responseText: null,
+    updatedAt: serverTimestamp(),
+  });
+
+  clearQueryReminder(queryData.id);
+  await postQueryViewMessage({
+    ...queryData,
+    status: "answered",
+    answeredAt,
+    answeredBy: state.profile.id,
+    answeredByName: state.profile.name,
+    responseText: null,
+  });
+  setStatus("Query closed.", "success");
+}
+
+async function postQueryViewMessage(queryData) {
+  await addDoc(collection(state.db, "rooms", state.roomId, "messages"), {
+    text: formatQueryMessageText(queryData),
+    senderId: state.profile.id,
+    senderName: "Queries",
+    type: "query-view",
+    query: serializeQueryForMessage(queryData),
+    createdAt: serverTimestamp(),
+  });
+}
+
+function formatQueryMessageText(queryData) {
+  const taskText = queryData.taskId ? ` on Task ${formatTaskId(queryData.taskId)}` : "";
+
+  if (queryData.status === "answered") {
+    return queryData.responseText
+      ? `Query ${formatQueryId(queryData.id)} answered${taskText}: ${queryData.responseText}`
+      : `Query ${formatQueryId(queryData.id)} closed${taskText}.`;
+  }
+
+  return `Query ${formatQueryId(queryData.id)}${taskText}: ${queryData.text}`;
+}
+
+async function addQueryTaskComment(taskId, text) {
+  await addDoc(collection(state.db, "rooms", state.roomId, "tasks", taskId, "comments"), {
+    taskId,
+    text,
+    createdAt: serverTimestamp(),
+    createdBy: state.profile.id,
+    createdByName: state.profile.name,
+  });
 }
 
 async function createTask(description) {
@@ -2746,6 +3249,45 @@ async function postTaskList(filterText = "") {
     `${heading}\n${taskLines.join("\n")}\n${totalLine}`
   );
   setStatus(`${pendingTasks.length} pending task${pendingTasks.length === 1 ? "" : "s"} listed.`, "success");
+}
+
+async function postCompletedTaskList(filterText = "") {
+  const requestedLabels = parseLabels(filterText);
+  const completedTasks = await Promise.all((await loadCompletedRoomTasks())
+    .filter((task) => taskHasLabels(task, requestedLabels))
+    .sort(compareTasksByCompletedAt)
+    .slice(0, TASK_LIST_LIMIT)
+    .map(loadTaskCommentSummary));
+
+  if (completedTasks.length === 0) {
+    postLocalTaskMessage(
+      requestedLabels.length > 0
+        ? `No completed tasks with ${formatTaskLabels(requestedLabels).trim()}.`
+        : "No completed tasks."
+    );
+    setStatus("No completed tasks.", "success");
+    return;
+  }
+
+  const maskIdentity = isPrivacyModeActive();
+  const taskLines = completedTasks.map((task) => {
+    const completedAt = formatTaskTimestamp(task.completedAt);
+    const completedBy = task.completedByName || "Unknown";
+    const metadata = maskIdentity ? `completed ${completedAt}` : `${completedBy}, completed ${completedAt}`;
+    return `${formatTaskId(task.id)} - ${task.description}${formatTaskLabels(task.labels)}${formatTaskTimeSummary(task, { maskIdentity })} (${metadata})`;
+  });
+  const heading =
+    requestedLabels.length > 0
+      ? `Completed tasks ${formatTaskLabels(requestedLabels).trim()}:`
+      : "Completed tasks:";
+  const totalLine = `Total: ${completedTasks.length} task${completedTasks.length === 1 ? "" : "s"}`;
+
+  postLocalTaskListMessage(
+    heading.replace(/:$/, ""),
+    completedTasks,
+    `${heading}\n${taskLines.join("\n")}\n${totalLine}`
+  );
+  setStatus(`${completedTasks.length} completed task${completedTasks.length === 1 ? "" : "s"} listed.`, "success");
 }
 
 async function handleTaskProcessCommand(input = "") {
@@ -3574,6 +4116,7 @@ async function startWorkDay() {
       dateKey: getTodayKey(),
       startedAt: existingDay?.startedAt || serverTimestamp(),
       endedAt: null,
+      breaks: Array.isArray(existingDay?.breaks) ? existingDay.breaks : [],
       updatedAt: serverTimestamp(),
     },
     { merge: true }
@@ -3611,6 +4154,8 @@ async function saveWorkDayPlan(planInput) {
 }
 
 async function endWorkDay() {
+  await stopActiveBreak({ announce: false });
+
   await setDoc(
     getWorkDayRef(),
     {
@@ -3627,6 +4172,138 @@ async function endWorkDay() {
   await postDayMessage(summary);
   clearDayIdleTaskReminder();
   setStatus("Day ended and summary shared.", "success");
+}
+
+async function handleBreakCommand(input = "") {
+  const [action = "start"] = input.trim().split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+
+  if (["start", "begin"].includes(normalizedAction)) {
+    await startBreak();
+    return;
+  }
+
+  if (["stop", "end"].includes(normalizedAction)) {
+    await stopActiveBreak();
+    return;
+  }
+
+  if (["list", "status"].includes(normalizedAction)) {
+    await postBreakList();
+    return;
+  }
+
+  postLocalDayMessage("Use /day break start, /day break stop, or /day break list.");
+}
+
+async function startBreak() {
+  const workDay = await getWorkDay();
+
+  if (workDay?.activeBreakStartedAt) {
+    postLocalDayMessage(
+      `Break already running for ${formatDuration(Date.now() - getTimestampMillis(workDay.activeBreakStartedAt))}. Stop it with /day break stop.`
+    );
+    setStatus("Break is already running.", "error");
+    return;
+  }
+
+  const startedAt = new Date();
+
+  await setDoc(
+    getWorkDayRef(),
+    {
+      userId: state.profile.id,
+      userName: state.profile.name,
+      dateKey: getTodayKey(),
+      startedAt: workDay?.startedAt || serverTimestamp(),
+      endedAt: null,
+      activeBreakStartedAt: startedAt,
+      activeBreakStartedBy: state.profile.id,
+      activeBreakStartedByName: state.profile.name,
+      breaks: Array.isArray(workDay?.breaks) ? workDay.breaks : [],
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  await postDayMessage(`${state.profile.name} started a break.`);
+  clearDayIdleTaskReminder();
+  setStatus("Break started.", "success");
+}
+
+async function stopActiveBreak(options = {}) {
+  const workDay = await getWorkDay();
+
+  if (!workDay?.activeBreakStartedAt) {
+    if (options.announce !== false) {
+      postLocalDayMessage("No break is running.");
+      setStatus("No break is running.", "error");
+    }
+    return null;
+  }
+
+  const stoppedAt = new Date();
+  const durationMs = Math.max(0, stoppedAt.getTime() - getTimestampMillis(workDay.activeBreakStartedAt));
+  const breakEntry = {
+    id: generateBreakId(),
+    userId: state.profile.id,
+    userName: state.profile.name,
+    startedAt: normalizeTimestampDate(workDay.activeBreakStartedAt),
+    stoppedAt,
+    durationMs,
+  };
+  const breaks = Array.isArray(workDay.breaks) ? workDay.breaks : [];
+
+  await setDoc(
+    getWorkDayRef(),
+    {
+      userId: state.profile.id,
+      userName: state.profile.name,
+      dateKey: getTodayKey(),
+      breaks: [...breaks, breakEntry],
+      activeBreakStartedAt: null,
+      activeBreakStartedBy: null,
+      activeBreakStartedByName: null,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  if (options.announce !== false) {
+    await postDayMessage(`${state.profile.name} ended a break after ${formatDuration(durationMs)}.`);
+    scheduleDayIdleTaskReminder();
+    setStatus("Break stopped.", "success");
+  }
+
+  return breakEntry;
+}
+
+async function postBreakList() {
+  const workDay = await getWorkDay();
+  const breaks = Array.isArray(workDay?.breaks) ? workDay.breaks : [];
+  const lines = ["Breaks today:"];
+
+  breaks.forEach((breakEntry, index) => {
+    lines.push(
+      `${index + 1}. ${formatBreakTimeRange(breakEntry)} (${formatDuration(getBreakDurationMs(breakEntry))})`
+    );
+  });
+
+  if (workDay?.activeBreakStartedAt) {
+    lines.push(
+      `Running: ${formatDuration(Date.now() - getTimestampMillis(workDay.activeBreakStartedAt))} so far`
+    );
+  }
+
+  if (lines.length === 1) {
+    postLocalDayMessage("No breaks recorded today.");
+    setStatus("No breaks recorded.", "success");
+    return;
+  }
+
+  lines.push(`Total break time: ${formatDuration(getTotalBreakMs(workDay))}`);
+  postLocalDayMessage(lines.join("\n"));
+  setStatus("Breaks listed.", "success");
 }
 
 async function handleLeaveCommand(input = "") {
@@ -3824,6 +4501,7 @@ async function buildDailyTaskSummary(options = {}) {
     (total, entry) => total + (Number.isFinite(entry.durationMs) ? entry.durationMs : 0),
     0
   );
+  const breakMs = getTotalBreakMs(workDay);
   const trackedMs = taskTrackedMs + generalTrackedMs;
   const lines = [
     `Work summary for ${formatSummaryDate(start)}`,
@@ -3836,6 +4514,9 @@ async function buildDailyTaskSummary(options = {}) {
   lines.push(`Time tracked: ${formatDuration(trackedMs)}`);
   if (generalTrackedMs > 0) {
     lines.push(`General time: ${formatDuration(generalTrackedMs)}`);
+  }
+  if (breakMs > 0) {
+    lines.push(`Break time: ${formatDuration(breakMs)}`);
   }
   lines.push(`Completed: ${completedToday.length}`);
 
@@ -3854,6 +4535,12 @@ async function buildDailyTaskSummary(options = {}) {
     );
   }
 
+  if (workDay?.activeBreakStartedAt) {
+    lines.push(
+      `Break running: ${formatDuration(Date.now() - getTimestampMillis(workDay.activeBreakStartedAt))}`
+    );
+  }
+
   if (activeTimers.length > 0) {
     lines.push(`Running timers: ${activeTimers.length}`);
     activeTimers.slice(0, 10).forEach((task) => {
@@ -3866,7 +4553,9 @@ async function buildDailyTaskSummary(options = {}) {
     completedToday.length === 0 &&
     createdToday.length === 0 &&
     activeTimers.length === 0 &&
-    !activeGeneralTimer?.data?.activeTimerStartedAt
+    !activeGeneralTimer?.data?.activeTimerStartedAt &&
+    breakMs === 0 &&
+    !workDay?.activeBreakStartedAt
   ) {
     lines.push("No task activity recorded today.");
   }
@@ -4029,6 +4718,68 @@ function serializeTaskCommentForMessage(comment) {
   };
 }
 
+function serializeQueryForMessage(queryData) {
+  return {
+    id: queryData.id,
+    text: queryData.text || "Untitled query",
+    status: queryData.status === "answered" ? "answered" : "pending",
+    createdAt: queryData.createdAt || null,
+    createdBy: queryData.createdBy || null,
+    createdByName: queryData.createdByName || "",
+    answeredAt: queryData.answeredAt || null,
+    answeredBy: queryData.answeredBy || null,
+    answeredByName: queryData.answeredByName || "",
+    responseText: queryData.responseText || "",
+    taskId: queryData.taskId || null,
+    taskDescription: queryData.taskDescription || "",
+  };
+}
+
+async function findQueryById(queryIdInput) {
+  const normalizedId = normalizeQueryId(queryIdInput);
+
+  if (!normalizedId) {
+    return null;
+  }
+
+  const directSnapshot = await getDoc(doc(state.db, "rooms", state.roomId, "queries", normalizedId));
+
+  if (directSnapshot.exists()) {
+    return {
+      id: directSnapshot.id,
+      ...directSnapshot.data(),
+    };
+  }
+
+  const queries = await loadRoomQueries();
+  const matches = queries.filter((queryData) => queryData.id.toLowerCase().startsWith(normalizedId));
+
+  return matches.length === 1 ? matches[0] : null;
+}
+
+async function loadRoomQueries() {
+  const queriesSnapshot = await getDocs(collection(state.db, "rooms", state.roomId, "queries"));
+
+  return queriesSnapshot.docs.map((queryDoc) => ({
+    id: queryDoc.id,
+    ...queryDoc.data(),
+  }));
+}
+
+async function loadPendingOwnQueries() {
+  const pendingQueries = query(
+    collection(state.db, "rooms", state.roomId, "queries"),
+    where("createdBy", "==", state.profile.id),
+    where("status", "==", "pending")
+  );
+  const queriesSnapshot = await getDocs(pendingQueries);
+
+  return queriesSnapshot.docs.map((queryDoc) => ({
+    id: queryDoc.id,
+    ...queryDoc.data(),
+  }));
+}
+
 async function loadRoomTasks() {
   const tasksSnapshot = await getDocs(collection(state.db, "rooms", state.roomId, "tasks"));
 
@@ -4181,6 +4932,19 @@ async function loadPendingRoomTasks() {
   }));
 }
 
+async function loadCompletedRoomTasks() {
+  const completedTasksQuery = query(
+    collection(state.db, "rooms", state.roomId, "tasks"),
+    where("status", "==", "complete")
+  );
+  const tasksSnapshot = await getDocs(completedTasksQuery);
+
+  return tasksSnapshot.docs.map((taskDoc) => ({
+    id: taskDoc.id,
+    ...taskDoc.data(),
+  }));
+}
+
 async function postTaskMessage(text) {
   await addDoc(collection(state.db, "rooms", state.roomId, "messages"), {
     text,
@@ -4320,6 +5084,10 @@ function postLocalCodexMessage(text) {
   postLocalMessage(text, "Codex (only you)", "codex");
 }
 
+function postLocalQueryMessage(text, actions = [], extra = {}) {
+  postLocalMessage(text, "Queries (only you)", extra.type || "query", actions, extra);
+}
+
 function postLocalMessage(text, senderName, type, actions = [], extra = {}) {
   state.localMessages.push({
     id: `local-${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -4366,6 +5134,141 @@ function updateLocalMessagesUi() {
   const hasLocalMessages = state.localMessages.length > 0;
   clearLocalMessagesButton.hidden = !hasLocalMessages;
   clearLocalMessagesButton.disabled = !hasLocalMessages;
+}
+
+function startQueryReminderSync() {
+  clearQueryReminderSync();
+  void syncQueryReminders();
+
+  state.queryReminderSyncIntervalId = window.setInterval(() => {
+    void syncQueryReminders();
+  }, QUERY_REMINDER_SYNC_MS);
+}
+
+async function syncQueryReminders() {
+  if (!state.db || !state.roomId || !state.profile) {
+    return;
+  }
+
+  try {
+    const queries = await loadPendingOwnQueries();
+    const activeQueryIds = new Set();
+
+    queries.forEach((queryData) => {
+      activeQueryIds.add(queryData.id);
+
+      if (!state.queryReminderTimeouts.has(queryData.id)) {
+        scheduleQueryReminder(queryData);
+      }
+    });
+
+    [...state.queryReminderTimeouts.keys()].forEach((queryId) => {
+      if (!activeQueryIds.has(queryId)) {
+        clearQueryReminder(queryId);
+      }
+    });
+  } catch (error) {
+    console.error("Query reminder sync failed:", error);
+  }
+}
+
+function scheduleQueryReminder(queryData) {
+  clearQueryReminder(queryData.id);
+
+  if (queryData.status === "answered" || queryData.createdBy !== state.profile?.id) {
+    return;
+  }
+
+  const intervalMs = getQueryReminderIntervalMs(queryData);
+  const lastReminderAt = getQueryReminderBaseTime(queryData);
+  const delayMs = Math.max(0, lastReminderAt + intervalMs - Date.now());
+  const timeoutId = window.setTimeout(() => {
+    void handleQueryReminder(queryData.id);
+  }, delayMs);
+
+  state.queryReminderTimeouts.set(queryData.id, { timeoutId });
+}
+
+async function handleQueryReminder(queryId) {
+  state.queryReminderTimeouts.delete(queryId);
+
+  const queryData = await findQueryById(queryId);
+
+  if (!queryData || queryData.status === "answered" || queryData.createdBy !== state.profile?.id) {
+    return;
+  }
+
+  const remindedAt = new Date();
+  const reminderCount = Number.isFinite(queryData.reminderCount) ? queryData.reminderCount : 0;
+  await updateDoc(doc(state.db, "rooms", state.roomId, "queries", queryData.id), {
+    lastReminderAt: serverTimestamp(),
+    reminderCount: increment(1),
+    updatedAt: serverTimestamp(),
+  });
+
+  const remindedQuery = {
+    ...queryData,
+    lastReminderAt: remindedAt,
+    reminderCount: reminderCount + 1,
+  };
+
+  postLocalQueryMessage(
+    `Reminder: Query ${formatQueryId(queryData.id)} still needs a response.\n${queryData.text}\nRespond with /query respond ${formatQueryId(queryData.id)} <response> or close with /query close ${formatQueryId(queryData.id)}.`,
+    [],
+    {
+      type: "query-view",
+      query: serializeQueryForMessage(remindedQuery),
+    }
+  );
+  void showQueryReminderNotification(remindedQuery);
+  scheduleQueryReminder(remindedQuery);
+  setStatus("Query reminder.", "success");
+}
+
+function clearQueryReminder(queryId) {
+  const reminder = state.queryReminderTimeouts.get(queryId);
+
+  if (!reminder?.timeoutId) {
+    return;
+  }
+
+  window.clearTimeout(reminder.timeoutId);
+  state.queryReminderTimeouts.delete(queryId);
+}
+
+function clearQueryReminders() {
+  state.queryReminderTimeouts.forEach((reminder) => {
+    if (reminder?.timeoutId) {
+      window.clearTimeout(reminder.timeoutId);
+    }
+  });
+  state.queryReminderTimeouts.clear();
+}
+
+function clearQueryReminderSync() {
+  if (!state.queryReminderSyncIntervalId) {
+    return;
+  }
+
+  window.clearInterval(state.queryReminderSyncIntervalId);
+  state.queryReminderSyncIntervalId = null;
+}
+
+function getQueryReminderIntervalMs(queryData) {
+  return Number.isFinite(queryData.reminderIntervalMs) && queryData.reminderIntervalMs > 0
+    ? queryData.reminderIntervalMs
+    : QUERY_REMINDER_MS;
+}
+
+function getQueryReminderBaseTime(queryData) {
+  const lastReminderTime = getTimestampMillis(queryData.lastReminderAt);
+
+  if (lastReminderTime > 0) {
+    return lastReminderTime;
+  }
+
+  const createdTime = getTimestampMillis(queryData.createdAt);
+  return createdTime > 0 ? createdTime : Date.now();
 }
 
 function scheduleTaskTimerReminder(task) {
@@ -4767,6 +5670,28 @@ function compareTasksByCreatedAt(left, right) {
   return left.id.localeCompare(right.id);
 }
 
+function compareTasksByCompletedAt(left, right) {
+  const leftTime = getTimestampMillis(left.completedAt);
+  const rightTime = getTimestampMillis(right.completedAt);
+
+  if (leftTime !== rightTime) {
+    return rightTime - leftTime;
+  }
+
+  return left.id.localeCompare(right.id);
+}
+
+function compareQueriesByCreatedAt(left, right) {
+  const leftTime = getTimestampMillis(left.createdAt);
+  const rightTime = getTimestampMillis(right.createdAt);
+
+  if (leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+
+  return left.id.localeCompare(right.id);
+}
+
 function draftTaskEdit(taskId, description) {
   if (!taskId) {
     return;
@@ -4791,8 +5716,31 @@ function draftTaskComment(taskId) {
   setStatus("Write the task comment and send when ready.", "success");
 }
 
+function draftQueryResponse(queryId) {
+  if (!queryId) {
+    return;
+  }
+
+  messageInput.value = `/query respond ${formatQueryId(queryId)} `;
+  messageInput.focus();
+  messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+  handleMessageInputChange();
+  setStatus("Write the query response and send when ready.", "success");
+}
+
 function formatTaskId(taskId) {
   return `#${taskId.slice(0, 6)}`;
+}
+
+function formatQueryId(queryId) {
+  return `?${String(queryId || "").slice(0, 6)}`;
+}
+
+function normalizeQueryId(queryId) {
+  return String(queryId || "")
+    .trim()
+    .replace(/^[?#]/, "")
+    .toLowerCase();
 }
 
 function formatCodexCommandId(commandId) {
@@ -4869,6 +5817,40 @@ function formatDuration(durationMs) {
   }
 
   return `${minutes}m`;
+}
+
+function generateBreakId() {
+  return `b${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getBreakDurationMs(breakEntry) {
+  if (Number.isFinite(breakEntry?.durationMs)) {
+    return breakEntry.durationMs;
+  }
+
+  const startedAt = getTimestampMillis(breakEntry?.startedAt);
+  const stoppedAt = getTimestampMillis(breakEntry?.stoppedAt);
+  return startedAt && stoppedAt ? Math.max(0, stoppedAt - startedAt) : 0;
+}
+
+function getTotalBreakMs(workDay) {
+  const breaks = Array.isArray(workDay?.breaks) ? workDay.breaks : [];
+  const completedBreakMs = breaks.reduce((total, breakEntry) => total + getBreakDurationMs(breakEntry), 0);
+  const activeBreakMs = workDay?.activeBreakStartedAt
+    ? Math.max(0, Date.now() - getTimestampMillis(workDay.activeBreakStartedAt))
+    : 0;
+
+  return completedBreakMs + activeBreakMs;
+}
+
+function formatBreakTimeRange(breakEntry) {
+  const startedAt = normalizeTimestampDate(breakEntry?.startedAt);
+  const stoppedAt = normalizeTimestampDate(breakEntry?.stoppedAt);
+  const formatter = new Intl.DateTimeFormat(undefined, {
+    timeStyle: "short",
+  });
+
+  return `${formatter.format(startedAt)} - ${formatter.format(stoppedAt)}`;
 }
 
 function getTodayBounds() {
@@ -5461,6 +6443,35 @@ async function showIncomingNotification(message) {
     await showBrowserNotification(title, options);
   } catch (error) {
     console.error("Notification display failed:", error);
+  }
+}
+
+async function showQueryReminderNotification(queryData) {
+  if (
+    !state.isNotificationsEnabled ||
+    typeof Notification === "undefined" ||
+    Notification.permission !== "granted"
+  ) {
+    return;
+  }
+
+  const taskText = queryData.taskId ? `Task ${formatTaskId(queryData.taskId)}: ` : "";
+
+  try {
+    await showBrowserNotification("Query reminder", {
+      body: `${taskText}${queryData.text || "A query still needs a response."}`,
+      tag: `query-${state.roomId}-${queryData.id}`,
+      renotify: true,
+      badge: "./icons/icon-192.png",
+      icon: "./icons/icon-192.png",
+      data: {
+        roomId: state.roomId,
+        queryId: queryData.id,
+        notificationType: "query-reminder",
+      },
+    });
+  } catch (error) {
+    console.error("Query reminder notification failed:", error);
   }
 }
 

@@ -65,6 +65,22 @@ rooms/{roomId}/codexCommands/{commandId}
   result
   error
 
+rooms/{roomId}/queries/{queryId}
+  text
+  status
+  createdAt
+  createdBy
+  createdByName
+  answeredAt
+  answeredBy
+  answeredByName
+  responseText
+  taskId
+  taskDescription
+  reminderIntervalMs
+  lastReminderAt
+  reminderCount
+
 rooms/{roomId}/readReceipts/{userId}
   userId
   displayName
@@ -161,6 +177,15 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 - `/task complete <id>` marks a task complete. The `<id>` can be the short ID shown in the task list, like `#abc123`, or the full Firestore document ID.
 - `/task label <id> #bug` adds a label to an existing task.
 - `/task unlabel <id> #bug` removes a label from an existing task.
+
+## Query commands
+
+- `/query Can you confirm deployment?` creates a pending query and posts it to the room.
+- `/query task <task-id> What is blocked?` creates a pending query linked to a task and adds the question as a task comment.
+- `/query list` shows your pending queries only to you.
+- `/query respond <id> Looks good` marks the query answered, posts the response to the room, and adds the response as a task comment for task-linked queries.
+- `/query close <id>` marks one of your queries answered without response text.
+- Pending queries remind their creator locally every 10 minutes while the app is open. If browser notifications are enabled, query reminders also use notifications.
 
 ## Codex commands
 
