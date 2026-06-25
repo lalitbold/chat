@@ -1,0 +1,100 @@
+[debug] [2026-06-25T11:52:47.850Z] ----------------------------------------------------------------------
+[debug] [2026-06-25T11:52:47.856Z] Command:       /opt/homebrew/Cellar/node/25.8.1_1/bin/node /opt/homebrew/bin/firebase deploy
+[debug] [2026-06-25T11:52:47.856Z] CLI Version:   15.17.0
+[debug] [2026-06-25T11:52:47.856Z] Platform:      darwin
+[debug] [2026-06-25T11:52:47.856Z] Node Version:  v25.8.1
+[debug] [2026-06-25T11:52:47.856Z] Time:          Thu Jun 25 2026 17:22:47 GMT+0530 (India Standard Time)
+[debug] [2026-06-25T11:52:47.856Z] ----------------------------------------------------------------------
+[debug] 
+[debug] [2026-06-25T11:52:48.584Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-06-25T11:52:48.584Z] > authorizing via signed-in user (lalit.bold@gmail.com)
+[debug] [2026-06-25T11:52:48.584Z] [iam] checking project chat-6835e for permissions ["datastore.indexes.create","datastore.indexes.delete","datastore.indexes.list","datastore.indexes.update","firebase.projects.get","firebasehosting.sites.update"]
+[debug] [2026-06-25T11:52:48.585Z] Checked if tokens are valid: false, expires at: 1782388860382
+[debug] [2026-06-25T11:52:48.585Z] Checked if tokens are valid: false, expires at: 1782388860382
+[debug] [2026-06-25T11:52:48.585Z] > refreshing access token with scopes: []
+[debug] [2026-06-25T11:52:48.586Z] >>> [apiv2][query] POST https://www.googleapis.com/oauth2/v3/token [none]
+[debug] [2026-06-25T11:52:48.586Z] >>> [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-06-25T11:52:48.841Z] <<< [apiv2][status] POST https://www.googleapis.com/oauth2/v3/token 200
+[debug] [2026-06-25T11:52:48.841Z] <<< [apiv2][body] POST https://www.googleapis.com/oauth2/v3/token [omitted]
+[debug] [2026-06-25T11:52:48.856Z] >>> [apiv2][query] POST https://cloudresourcemanager.googleapis.com/v1/projects/chat-6835e:testIamPermissions [none]
+[debug] [2026-06-25T11:52:48.857Z] >>> [apiv2][(partial)header] POST https://cloudresourcemanager.googleapis.com/v1/projects/chat-6835e:testIamPermissions  x-goog-user-project=chat-6835e
+[debug] [2026-06-25T11:52:48.857Z] >>> [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/chat-6835e:testIamPermissions {"permissions":["datastore.indexes.create","datastore.indexes.delete","datastore.indexes.list","datastore.indexes.update","firebase.projects.get","firebasehosting.sites.update"]}
+[debug] [2026-06-25T11:52:50.363Z] <<< [apiv2][status] POST https://cloudresourcemanager.googleapis.com/v1/projects/chat-6835e:testIamPermissions 200
+[debug] [2026-06-25T11:52:50.363Z] <<< [apiv2][body] POST https://cloudresourcemanager.googleapis.com/v1/projects/chat-6835e:testIamPermissions {"permissions":["datastore.indexes.create","datastore.indexes.delete","datastore.indexes.list","datastore.indexes.update","firebase.projects.get","firebasehosting.sites.update"]}
+[debug] [2026-06-25T11:52:50.364Z] Checked if tokens are valid: true, expires at: 1782391967841
+[debug] [2026-06-25T11:52:50.364Z] Checked if tokens are valid: true, expires at: 1782391967841
+[debug] [2026-06-25T11:52:50.364Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects/chat-6835e [none]
+[debug] [2026-06-25T11:52:50.930Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects/chat-6835e 200
+[debug] [2026-06-25T11:52:50.930Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects/chat-6835e {"projectId":"chat-6835e","projectNumber":"147705007476","displayName":"Chat","name":"projects/chat-6835e","resources":{"hostingSite":"chat-6835e"},"state":"ACTIVE","etag":"1_8fafbc49-4807-4a6c-8ee6-76b2e3d4c2f2"}
+[info] 
+[info] === Deploying to 'chat-6835e'...
+[info] 
+[info] i  deploying firestore, hosting 
+[info] i  firestore: ensuring required API firestore.googleapis.com is enabled... 
+[info] i  firestore: ensuring required API firestore.googleapis.com is enabled... 
+[debug] [2026-06-25T11:52:50.937Z] Checked if tokens are valid: true, expires at: 1782391967841
+[debug] [2026-06-25T11:52:50.937Z] Checked if tokens are valid: true, expires at: 1782391967841
+[debug] [2026-06-25T11:52:50.938Z] >>> [apiv2][query] GET https://firestore.googleapis.com/v1/projects/chat-6835e/databases/(default) [none]
+[debug] [2026-06-25T11:52:51.188Z] <<< [apiv2][status] GET https://firestore.googleapis.com/v1/projects/chat-6835e/databases/(default) 200
+[debug] [2026-06-25T11:52:51.189Z] <<< [apiv2][body] GET https://firestore.googleapis.com/v1/projects/chat-6835e/databases/(default) {"name":"projects/chat-6835e/databases/(default)","uid":"319edb67-8244-4224-b389-f7d7d24b6cad","createTime":"2026-05-08T04:35:30.667360Z","updateTime":"2026-05-08T04:35:30.667360Z","locationId":"asia-south2","type":"FIRESTORE_NATIVE","concurrencyMode":"PESSIMISTIC","versionRetentionPeriod":"3600s","earliestVersionTime":"2026-06-25T10:52:51.199323Z","appEngineIntegrationMode":"DISABLED","pointInTimeRecoveryEnablement":"POINT_IN_TIME_RECOVERY_DISABLED","deleteProtectionState":"DELETE_PROTECTION_DISABLED","databaseEdition":"STANDARD","freeTier":true,"realtimeUpdatesMode":"REALTIME_UPDATES_MODE_ENABLED","etag":"IP2m3o2qopUDMIDgj43vqJQD"}
+[info] i  cloud.firestore: checking firestore.rules for compilation errors... 
+[debug] [2026-06-25T11:52:51.190Z] Checked if tokens are valid: true, expires at: 1782391967841
+[debug] [2026-06-25T11:52:51.190Z] Checked if tokens are valid: true, expires at: 1782391967841
+[debug] [2026-06-25T11:52:51.190Z] >>> [apiv2][query] POST https://firebaserules.googleapis.com/v1/projects/chat-6835e:test [none]
+[debug] [2026-06-25T11:52:51.190Z] >>> [apiv2][body] POST https://firebaserules.googleapis.com/v1/projects/chat-6835e:test [omitted]
+[debug] [2026-06-25T11:52:52.859Z] <<< [apiv2][status] POST https://firebaserules.googleapis.com/v1/projects/chat-6835e:test 200
+[debug] [2026-06-25T11:52:52.859Z] <<< [apiv2][body] POST https://firebaserules.googleapis.com/v1/projects/chat-6835e:test {}
+[info] ✔  cloud.firestore: rules file firestore.rules compiled successfully 
+[debug] [2026-06-25T11:52:52.862Z] Checked if tokens are valid: true, expires at: 1782391967841
+[debug] [2026-06-25T11:52:52.862Z] Checked if tokens are valid: true, expires at: 1782391967841
+[debug] [2026-06-25T11:52:52.862Z] >>> [apiv2][query] GET https://firebasehosting.googleapis.com/v1beta1/projects/chat-6835e/sites/chat-6835e [none]
+[debug] [2026-06-25T11:52:54.171Z] <<< [apiv2][status] GET https://firebasehosting.googleapis.com/v1beta1/projects/chat-6835e/sites/chat-6835e 200
+[debug] [2026-06-25T11:52:54.172Z] <<< [apiv2][body] GET https://firebasehosting.googleapis.com/v1beta1/projects/chat-6835e/sites/chat-6835e {"name":"projects/chat-6835e/sites/chat-6835e","defaultUrl":"https://chat-6835e.web.app","type":"DEFAULT_SITE"}
+[debug] [2026-06-25T11:52:54.173Z] Checked if tokens are valid: true, expires at: 1782391967841
+[debug] [2026-06-25T11:52:54.173Z] Checked if tokens are valid: true, expires at: 1782391967841
+[debug] [2026-06-25T11:52:54.173Z] >>> [apiv2][query] POST https://firebasehosting.googleapis.com/v1beta1/projects/-/sites/chat-6835e/versions [none]
+[debug] [2026-06-25T11:52:54.173Z] >>> [apiv2][body] POST https://firebasehosting.googleapis.com/v1beta1/projects/-/sites/chat-6835e/versions {"status":"CREATED","labels":{"deployment-tool":"cli-firebase"}}
+[debug] [2026-06-25T11:52:55.426Z] <<< [apiv2][status] POST https://firebasehosting.googleapis.com/v1beta1/projects/-/sites/chat-6835e/versions 200
+[debug] [2026-06-25T11:52:55.427Z] <<< [apiv2][body] POST https://firebasehosting.googleapis.com/v1beta1/projects/-/sites/chat-6835e/versions {"name":"projects/147705007476/sites/chat-6835e/versions/21af09abd84b79dc","status":"CREATED","config":{},"labels":{"deployment-tool":"cli-firebase"}}
+[debug] [2026-06-25T11:52:55.428Z] Checked if tokens are valid: true, expires at: 1782391967841
+[debug] [2026-06-25T11:52:55.428Z] Checked if tokens are valid: true, expires at: 1782391967841
+[debug] [2026-06-25T11:52:55.429Z] >>> [apiv2][query] GET https://firebaserules.googleapis.com/v1/projects/chat-6835e/releases pageSize=10&pageToken=
+[debug] [2026-06-25T11:52:56.834Z] <<< [apiv2][status] GET https://firebaserules.googleapis.com/v1/projects/chat-6835e/releases 200
+[debug] [2026-06-25T11:52:56.835Z] <<< [apiv2][body] GET https://firebaserules.googleapis.com/v1/projects/chat-6835e/releases {"releases":[{"name":"projects/chat-6835e/releases/cloud.firestore","rulesetName":"projects/chat-6835e/rulesets/1f765570-5aae-46ff-8497-bd6f10607f30","createTime":"2026-05-08T04:35:34.232312Z","updateTime":"2026-06-25T11:27:56.374711Z"}]}
+[debug] [2026-06-25T11:52:56.835Z] Checked if tokens are valid: true, expires at: 1782391967841
+[debug] [2026-06-25T11:52:56.836Z] Checked if tokens are valid: true, expires at: 1782391967841
+[debug] [2026-06-25T11:52:56.836Z] >>> [apiv2][query] GET https://firebaserules.googleapis.com/v1/projects/chat-6835e/rulesets/1f765570-5aae-46ff-8497-bd6f10607f30 [none]
+[debug] [2026-06-25T11:52:58.269Z] <<< [apiv2][status] GET https://firebaserules.googleapis.com/v1/projects/chat-6835e/rulesets/1f765570-5aae-46ff-8497-bd6f10607f30 200
+[debug] [2026-06-25T11:52:58.269Z] <<< [apiv2][body] GET https://firebaserules.googleapis.com/v1/projects/chat-6835e/rulesets/1f765570-5aae-46ff-8497-bd6f10607f30 [omitted]
+[info] i  firestore: uploading rules firestore.rules... 
+[debug] [2026-06-25T11:52:58.271Z] Checked if tokens are valid: true, expires at: 1782391967841
+[debug] [2026-06-25T11:52:58.271Z] Checked if tokens are valid: true, expires at: 1782391967841
+[debug] [2026-06-25T11:52:58.271Z] >>> [apiv2][query] POST https://firebaserules.googleapis.com/v1/projects/chat-6835e/rulesets [none]
+[debug] [2026-06-25T11:52:58.271Z] >>> [apiv2][body] POST https://firebaserules.googleapis.com/v1/projects/chat-6835e/rulesets [omitted]
+[debug] [2026-06-25T11:52:59.700Z] <<< [apiv2][status] POST https://firebaserules.googleapis.com/v1/projects/chat-6835e/rulesets 200
+[debug] [2026-06-25T11:52:59.700Z] <<< [apiv2][body] POST https://firebaserules.googleapis.com/v1/projects/chat-6835e/rulesets {"name":"projects/chat-6835e/rulesets/f8769843-fd48-4c5f-8344-6b78ef972d14","source":{"files":[{"content":"rules_version = '2';\n\nservice cloud.firestore {\n  match /databases/{database}/documents {\n    match /appSettings/{settingId} {\n      allow read, create, update: if request.auth != null;\n    }\n\n    match /rooms/{roomId} {\n      allow read, create, update: if request.auth != null;\n\n      match /messages/{messageId} {\n        allow read: if request.auth != null;\n        allow create: if request.auth != null\n          && request.resource.data.senderId == request.auth.uid;\n      }\n\n      match /codexCommands/{commandId} {\n        allow read: if request.auth != null;\n        allow create: if request.auth != null\n          && request.resource.data.requestedBy == request.auth.uid;\n        allow update: if request.auth != null;\n      }\n\n      match /queries/{queryId} {\n        allow read: if request.auth != null;\n        allow create: if request.auth != null\n          && request.resource.data.createdBy == request.auth.uid;\n        allow update: if request.auth != null;\n      }\n\n      match /leads/{leadId} {\n        allow read: if request.auth != null;\n        allow create: if request.auth != null\n          && request.resource.data.createdBy == request.auth.uid;\n        allow update: if request.auth != null;\n      }\n\n      match /readReceipts/{userId} {\n        allow read: if request.auth != null;\n        allow create, update: if request.auth != null\n          && request.auth.uid == userId\n          && request.resource.data.userId == request.auth.uid;\n      }\n\n      match /tasks/{taskId} {\n        allow read: if request.auth != null;\n        allow create: if request.auth != null\n          && request.resource.data.createdBy == request.auth.uid;\n        allow update: if request.auth != null;\n\n        match /timeEntries/{entryId} {\n          allow read: if request.auth != null;\n          allow create: if request.auth != null\n            && request.resource.data.userId == request.auth.uid;\n        }\n\n        match /comments/{commentId} {\n          allow read: if request.auth != null;\n          allow create: if request.auth != null\n            && request.resource.data.createdBy == request.auth.uid;\n        }\n      }\n\n      match /workDays/{workDayId} {\n        allow read: if request.auth != null;\n        allow create, update: if request.auth != null\n          && request.resource.data.userId == request.auth.uid;\n\n        match /timeEntries/{entryId} {\n          allow read: if request.auth != null;\n          allow create: if request.auth != null\n            && request.resource.data.userId == request.auth.uid;\n        }\n      }\n\n      match /leaves/{leaveId} {\n        allow read: if request.auth != null;\n        allow create, update: if request.auth != null\n          && request.resource.data.userId == request.auth.uid;\n      }\n\n      match /leaveAnnouncements/{announcementId} {\n        allow read, create: if request.auth != null;\n      }\n    }\n  }\n}\n","name":"firestore.rules"}]},"createTime":"2026-06-25T11:52:59.564815Z","metadata":{"services":["cloud.firestore"]}}
+[debug] [2026-06-25T11:52:59.700Z] [rules] created ruleset projects/chat-6835e/rulesets/f8769843-fd48-4c5f-8344-6b78ef972d14
+[info] i  firestore: deploying indexes... 
+[info] i  hosting[chat-6835e]: beginning deploy... 
+[info] i  hosting[chat-6835e]: found 17 files in . 
+[debug] [2026-06-25T11:52:59.718Z] [hosting] uploading with 200 concurrency
+[debug] [2026-06-25T11:52:59.744Z] Checked if tokens are valid: true, expires at: 1782391967841
+[debug] [2026-06-25T11:52:59.745Z] Checked if tokens are valid: true, expires at: 1782391967841
+[debug] [2026-06-25T11:52:59.745Z] [hosting] hash cache [] stored for 17 files
+[debug] [2026-06-25T11:52:59.745Z] [hosting][hash queue][FINAL] {"max":21,"min":0,"avg":1.4705882352941178,"active":0,"complete":17,"success":17,"errored":0,"retried":0,"total":17,"elapsed":24}
+[debug] [2026-06-25T11:52:59.746Z] >>> [apiv2][query] POST https://firebasehosting.googleapis.com/v1beta1/projects/147705007476/sites/chat-6835e/versions/21af09abd84b79dc:populateFiles [none]
+[debug] [2026-06-25T11:52:59.746Z] >>> [apiv2][body] POST https://firebasehosting.googleapis.com/v1beta1/projects/147705007476/sites/chat-6835e/versions/21af09abd84b79dc:populateFiles {"files":{"/sw.js":"94ff8cec5d630edf74eb662582040ec89cbf49b6d4b46d120a7dd3fc3a3e5b53","/styles.css":"77d859b36934cb70aea56af8c9fc992521d84358c5bb67934d05bcd782f10fc6","/package.json":"5b5f93338ce098b5b04f300fe5c3856e849e95bb86f2eeac0a6b941987950f7d","/manifest.webmanifest":"01beb26465587f695808a9d1ed35e5049b94ea9bab16e679bd8154977befca15","/index.html":"19bd8e276a818c214245c20374157d60b813c219d8e38fe34030126342477725","/firebase-config.js":"a027ea0713ac52a9e5d31b18c6a17adf9edcd7c6f0d55c9c1965f35259bd69ef","/firebase-config.example.js":"3893b15e64199aaf36e624bfd8b78043877ffc8228d6399fa25ef6fb9088251a","/ANDROID.md":"58c11e2273c3c16d1ca34055c7153595704055571fa76108e2b68a5a6945892d","/.firebaserc.example":"6419417282bdb091fd27e086c40671c5ddc3d47adf7b04bcdae83a8f80e25df4","/tools/pending-tasks.mjs":"2bec5eb8c932b50e06f62ea51f4e713ade767642fad6097b599ff48c37527e99","/tools/codex-bridge.mjs":"3e9f52fa8fbd2663a828805e62b6ae14eb155a8dd5180b255c6b1a7dc1fc3ebb","/icons/icon.svg":"5e556ff3d4e2a5e8fb36c5e36677f54105a3b7063ca9faf47bb641097910ef3f","/icons/icon-512.png":"595807425e255fac80cd748e9c243ccc1a98cd83fd01433dc402ac6dad543072","/icons/icon-192.png":"e0da9e0399cd824e80f0bfadd03ff55e67c0511d15ccbbceea304fbd75a8f24f","/.well-known/assetlinks.example.json":"f269a941049547f543a8bed3a345e401a74044dc5e190d336b8c2c209308ca46","/firestore.rules":"1ec80693ee8629278e62389b533da7dfc632e2a02605bfecdb10ff81b0cdc745","/app.js":"f464d35a1b3490db58caf02325e4bbc2cb7c070e4bb424b149407669fb7176ca"}}
+[debug] [2026-06-25T11:53:00.571Z] <<< [apiv2][status] POST https://firebasehosting.googleapis.com/v1beta1/projects/147705007476/sites/chat-6835e/versions/21af09abd84b79dc:populateFiles 200
+[debug] [2026-06-25T11:53:00.571Z] <<< [apiv2][body] POST https://firebasehosting.googleapis.com/v1beta1/projects/147705007476/sites/chat-6835e/versions/21af09abd84b79dc:populateFiles {"uploadRequiredHashes":["f464d35a1b3490db58caf02325e4bbc2cb7c070e4bb424b149407669fb7176ca","1ec80693ee8629278e62389b533da7dfc632e2a02605bfecdb10ff81b0cdc745"],"uploadUrl":"https://upload-firebasehosting.googleapis.com/upload/sites/chat-6835e/versions/21af09abd84b79dc/files"}
+[debug] [2026-06-25T11:53:00.572Z] Checked if tokens are valid: true, expires at: 1782391967841
+[debug] [2026-06-25T11:53:00.572Z] Checked if tokens are valid: true, expires at: 1782391967841
+[debug] [2026-06-25T11:53:00.572Z] Checked if tokens are valid: true, expires at: 1782391967841
+[debug] [2026-06-25T11:53:00.572Z] Checked if tokens are valid: true, expires at: 1782391967841
+[debug] [2026-06-25T11:53:00.572Z] >>> [apiv2][query] POST https://upload-firebasehosting.googleapis.com/upload/sites/chat-6835e/versions/21af09abd84b79dc/files/f464d35a1b3490db58caf02325e4bbc2cb7c070e4bb424b149407669fb7176ca [none]
+[debug] [2026-06-25T11:53:00.573Z] >>> [apiv2][body] POST https://upload-firebasehosting.googleapis.com/upload/sites/chat-6835e/versions/21af09abd84b79dc/files/f464d35a1b3490db58caf02325e4bbc2cb7c070e4bb424b149407669fb7176ca [stream]
+[debug] [2026-06-25T11:53:00.575Z] >>> [apiv2][query] POST https://upload-firebasehosting.googleapis.com/upload/sites/chat-6835e/versions/21af09abd84b79dc/files/1ec80693ee8629278e62389b533da7dfc632e2a02605bfecdb10ff81b0cdc745 [none]
+[debug] [2026-06-25T11:53:00.575Z] >>> [apiv2][body] POST https://upload-firebasehosting.googleapis.com/upload/sites/chat-6835e/versions/21af09abd84b79dc/files/1ec80693ee8629278e62389b533da7dfc632e2a02605bfecdb10ff81b0cdc745 [stream]
+[debug] [2026-06-25T11:53:00.576Z] [hosting][populate queue][FINAL] {"max":828,"min":828,"avg":828,"active":0,"complete":1,"success":1,"errored":0,"retried":0,"total":1,"elapsed":832}
+[debug] [2026-06-25T11:53:00.576Z] [hosting] uploads queued: 2
+[debug] [2026-06-25T11:53:02.358Z] <<< [apiv2][status] POST https://upload-firebasehosting.googleapis.com/upload/sites/chat-6835e/versions/21af09abd84b79dc/files/f464d35a1b3490db58caf02325e4bbc2cb7c070e4bb424b149407669fb7176ca 200
+[debug] [2026-06-25T11:53:02.358Z] <<< [apiv2][body] POST https://upload-firebasehosting.googleapis.com/upload/sites/chat-6835e/versions/21af09abd84b79dc/files/f464d35a1b3490db58caf02325e4bbc2cb7c070e4bb424b149407669fb7176ca [stream]

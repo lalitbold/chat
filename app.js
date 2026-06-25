@@ -90,8 +90,11 @@ const TASK_COMMAND = "/task";
 const DAY_COMMAND = "/day";
 const CODEX_COMMAND = "/codex";
 const QUERY_COMMAND = "/query";
+const PLUGIN_COMMAND = "/plugin";
+const LEAD_COMMAND = "/lead";
 const COMMAND_AUTOCOMPLETE_LIMIT = 8;
 const TASK_LIST_LIMIT = 50;
+const LEAD_LIST_LIMIT = 25;
 const TASK_PREVIEW_LIMIT = 3;
 const TASK_REACTION_OPTIONS = ["👍", "✅", "👀", "🙌"];
 const TASK_TIMER_REMINDER_MS = 25 * 60 * 1000;
@@ -111,7 +114,24 @@ const QUERY_REMINDER_AUDIENCES = new Set([
   QUERY_REMINDER_AUDIENCE_ASKER,
   QUERY_REMINDER_AUDIENCE_OTHERS,
 ]);
+const PLUGIN_LEADS = "leads";
+const SUPPORTED_PLUGINS = new Set([PLUGIN_LEADS]);
 const BASE_SLASH_COMMANDS = [
+  {
+    label: "/plugin enable leads",
+    insertText: "/plugin enable leads",
+    hint: "Enable leads",
+  },
+  {
+    label: "/plugin disable leads",
+    insertText: "/plugin disable leads",
+    hint: "Disable leads",
+  },
+  {
+    label: "/plugin list",
+    insertText: "/plugin list",
+    hint: "Group plugins",
+  },
   {
     label: "/task <description> #label",
     insertText: "/task ",
@@ -381,6 +401,7 @@ const state = {
   roomPasscode: "",
   roomCommands: { ...DEFAULT_ROOM_COMMANDS },
   groupRoomCommands: {},
+  roomPlugins: {},
   groupQueryReminderAudience: DEFAULT_QUERY_REMINDER_AUDIENCE,
   queryReminderAudience: DEFAULT_QUERY_REMINDER_AUDIENCE,
   isAdvancedSettingsVisible: false,
@@ -1408,6 +1429,7 @@ function subscribeToRoom(roomId) {
 
 function applyRoomData(roomData = {}) {
   state.groupRoomCommands = loadGroupRoomCommands(roomData);
+  state.roomPlugins = normalizeRoomPlugins(roomData?.plugins);
   state.roomCommands = getEffectiveRoomCommands(state.roomId, state.groupRoomCommands);
   state.groupQueryReminderAudience = loadGroupQueryReminderAudience(roomData);
   state.queryReminderAudience = getEffectiveQueryReminderAudience(
@@ -1416,6 +1438,10 @@ function applyRoomData(roomData = {}) {
   );
   void syncQueryReminders();
   updatePrivacyFeatureAccess();
+
+  if (messageInput.value.trimStart().startsWith("/")) {
+    updateCommandAutocomplete();
+  }
 }
 
 function updatePrivacyFeatureAccess() {
@@ -1609,6 +1635,7 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   state.roomPasscode = "";
   state.roomCommands = { ...DEFAULT_ROOM_COMMANDS };
   state.groupRoomCommands = {};
+  state.roomPlugins = {};
   state.groupQueryReminderAudience = DEFAULT_QUERY_REMINDER_AUDIENCE;
   state.queryReminderAudience = DEFAULT_QUERY_REMINDER_AUDIENCE;
   state.activeBreakStartedAt = null;
@@ -1695,6 +1722,10 @@ function renderMessage(message, context = {}) {
     wrapper.append(renderQueryListMessage(message));
   } else if (message.type === "query-view" && message.query) {
     wrapper.append(renderQueryViewMessage(message));
+  } else if (message.type === "lead-list" && Array.isArray(message.leads)) {
+    wrapper.append(renderLeadListMessage(message));
+  } else if (message.type === "lead-view" && message.lead) {
+    wrapper.append(renderLeadViewMessage(message));
   } else {
     const body = document.createElement("p");
     body.className = "message-text";
@@ -1723,6 +1754,10 @@ function renderMessage(message, context = {}) {
 
       if (action.queryId) {
         button.dataset.queryId = action.queryId;
+      }
+
+      if (action.leadId) {
+        button.dataset.leadId = action.leadId;
       }
 
       actions.append(button);
@@ -2207,6 +2242,140 @@ function renderQueryPreviewCard(queryData, options = {}) {
   return card;
 }
 
+function renderLeadViewMessage(message) {
+  const lead = message.lead;
+  const container = document.createElement("div");
+  container.className = "lead-view-message";
+
+  const header = document.createElement("div");
+  header.className = "task-list-header";
+
+  const title = document.createElement("strong");
+  title.textContent = "Lead";
+
+  const id = document.createElement("span");
+  id.className = "task-list-count";
+  id.textContent = formatLeadId(lead.id);
+
+  header.append(title, id);
+  container.append(header);
+  container.append(renderLeadPreviewCard(lead));
+
+  return container;
+}
+
+function renderLeadListMessage(message) {
+  const container = document.createElement("div");
+  container.className = "lead-list-message";
+
+  const header = document.createElement("div");
+  header.className = "task-list-header";
+
+  const title = document.createElement("strong");
+  title.textContent = message.heading || "Recent leads";
+
+  const count = document.createElement("span");
+  count.className = "task-list-count";
+  count.textContent = `${message.leads.length} lead${message.leads.length === 1 ? "" : "s"}`;
+
+  header.append(title, count);
+  container.append(header);
+
+  const list = document.createElement("ol");
+  list.className = "query-list";
+
+  message.leads.forEach((lead) => {
+    const item = document.createElement("li");
+    item.append(renderLeadPreviewCard(lead, { localActions: true }));
+    list.append(item);
+  });
+
+  container.append(list);
+  return container;
+}
+
+function renderLeadPreviewCard(lead, options = {}) {
+  const card = document.createElement("article");
+  card.className = "query-preview-card lead-preview-card";
+
+  const top = document.createElement("div");
+  top.className = "task-preview-top";
+
+  const id = document.createElement("span");
+  id.className = "task-list-id";
+  id.textContent = formatLeadId(lead.id);
+  id.title = lead.id || "";
+
+  const status = document.createElement("span");
+  status.className = "query-preview-status pending";
+  status.textContent = lead.status || "new";
+
+  top.append(id, status);
+
+  const name = document.createElement("p");
+  name.className = "task-preview-title";
+  name.textContent = lead.name || "Untitled lead";
+
+  card.append(top, name);
+
+  const meta = document.createElement("div");
+  meta.className = "task-preview-meta";
+
+  [
+    lead.company,
+    lead.phone ? `Phone ${lead.phone}` : "",
+    lead.email ? `Email ${lead.email}` : "",
+    lead.source ? `Source ${lead.source}` : "",
+    lead.owner ? `Owner ${lead.owner}` : "",
+  ]
+    .filter(Boolean)
+    .forEach((value) => {
+      const item = document.createElement("span");
+      item.textContent = value;
+      meta.append(item);
+    });
+
+  const createdAt = document.createElement("span");
+  createdAt.textContent = formatTaskTimestamp(lead.createdAt);
+  meta.append(createdAt);
+  card.append(meta);
+
+  if (lead.notes) {
+    const notes = document.createElement("p");
+    notes.className = "query-linked-task";
+    notes.textContent = lead.notes;
+    card.append(notes);
+  }
+
+  if (!options.hideActions) {
+    const actions = document.createElement("div");
+    actions.className = "task-list-actions";
+
+    const updateButton = document.createElement("button");
+    updateButton.type = "button";
+    updateButton.className = "task-list-edit";
+    updateButton.textContent = "Update";
+    updateButton.dataset.action = "lead-update-draft";
+    updateButton.dataset.leadId = lead.id || "";
+
+    actions.append(updateButton);
+
+    if (options.localActions) {
+      const viewButton = document.createElement("button");
+      viewButton.type = "button";
+      viewButton.className = "task-list-edit";
+      viewButton.textContent = "View";
+      viewButton.dataset.action = "lead-view";
+      viewButton.dataset.leadId = lead.id || "";
+      actions.prepend(viewButton);
+    }
+
+    card.append(actions);
+  }
+
+  return card;
+}
+
 function renderInlineTaskPreviews(tasks) {
   const container = document.createElement("div");
   container.className = "inline-task-previews";
@@ -2611,6 +2780,17 @@ function handleMessageActionClick(event) {
       actionButton.disabled = false;
     });
   }
+
+  if (actionButton.dataset.action === "lead-update-draft") {
+    draftLeadUpdate(actionButton.dataset.leadId || "");
+  }
+
+  if (actionButton.dataset.action === "lead-view") {
+    actionButton.disabled = true;
+    void postLeadView(actionButton.dataset.leadId || "").finally(() => {
+      actionButton.disabled = false;
+    });
+  }
 }
 
 function renderEmptyState(message) {
@@ -2840,6 +3020,16 @@ async function sendSubmittedText(text) {
       return;
     }
 
+    if (isPluginCommand(text)) {
+      await handlePluginCommand(text);
+      return;
+    }
+
+    if (isLeadCommand(text)) {
+      await handleLeadCommand(text);
+      return;
+    }
+
     const taskPreviews = await buildTaskPreviewsForText(text);
     const messagePayload = {
       text,
@@ -2868,6 +3058,10 @@ async function sendSubmittedText(text) {
           ? "Codex command failed. Check the command and room permissions."
         : isQueryCommand(text)
           ? "Query command failed. Check the command and room permissions."
+        : isPluginCommand(text)
+          ? "Plugin command failed. Check the command and room permissions."
+        : isLeadCommand(text)
+          ? "Lead command failed. Check the command and room permissions."
         : "Message send failed. Check room permissions.",
       "error"
     );
@@ -3008,6 +3202,36 @@ function compareTasksForAutocomplete(left, right) {
 
 function getAvailableSlashCommands() {
   const commands = [...BASE_SLASH_COMMANDS];
+
+  if (isRoomPluginEnabled(PLUGIN_LEADS)) {
+    commands.push(
+      {
+        label: "/lead <name> phone:<phone>",
+        insertText: "/lead ",
+        hint: "Create lead",
+      },
+      {
+        label: "/lead new",
+        insertText: "/lead new",
+        hint: "Lead template",
+      },
+      {
+        label: "/lead list",
+        insertText: "/lead list",
+        hint: "Recent leads",
+      },
+      {
+        label: "/lead view <id>",
+        insertText: "/lead view ",
+        hint: "Share lead",
+      },
+      {
+        label: "/lead update <id> status:<status>",
+        insertText: "/lead update ",
+        hint: "Update lead",
+      }
+    );
+  }
 
   if (state.canUsePrivacyFeature) {
     const roomCommands = getEffectiveRoomCommands(state.roomId, state.groupRoomCommands);
@@ -3255,6 +3479,16 @@ function isQueryCommand(text) {
   return normalized === QUERY_COMMAND || normalized.startsWith(`${QUERY_COMMAND} `);
 }
 
+function isPluginCommand(text) {
+  const normalized = text.trim().toLowerCase();
+  return normalized === PLUGIN_COMMAND || normalized.startsWith(`${PLUGIN_COMMAND} `);
+}
+
+function isLeadCommand(text) {
+  const normalized = text.trim().toLowerCase();
+  return normalized === LEAD_COMMAND || normalized.startsWith(`${LEAD_COMMAND} `);
+}
+
 async function handleTaskCommand(text) {
   const rawCommand = text.trim();
   const payload = rawCommand.slice(TASK_COMMAND.length).trim();
@@ -3493,6 +3727,93 @@ async function handleQueryCommand(text) {
   await createQuery(payload);
 }
 
+async function handlePluginCommand(text) {
+  const rawCommand = text.trim();
+  const payload = rawCommand.slice(PLUGIN_COMMAND.length).trim();
+  const [action = "", pluginName = ""] = payload.split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+  const normalizedPlugin = normalizePluginName(pluginName);
+
+  if (!payload || normalizedAction === "help") {
+    postLocalPluginMessage(
+      "Plugin commands:\n/plugin enable leads\n/plugin disable leads\n/plugin list"
+    );
+    return;
+  }
+
+  if (normalizedAction === "list") {
+    postPluginList();
+    return;
+  }
+
+  if (normalizedAction !== "enable" && normalizedAction !== "disable") {
+    postLocalPluginMessage(`Unknown plugin command: /plugin ${payload}`);
+    setStatus("Unknown plugin command.", "error");
+    return;
+  }
+
+  if (!SUPPORTED_PLUGINS.has(normalizedPlugin)) {
+    postLocalPluginMessage("Supported plugins: leads.");
+    setStatus("Unknown plugin.", "error");
+    return;
+  }
+
+  const enabled = normalizedAction === "enable";
+  await setRoomPluginEnabled(normalizedPlugin, enabled);
+  state.roomPlugins = {
+    ...state.roomPlugins,
+    [normalizedPlugin]: {
+      ...(state.roomPlugins[normalizedPlugin] || {}),
+      enabled,
+    },
+  };
+  postLocalPluginMessage(`${formatPluginName(normalizedPlugin)} plugin ${enabled ? "enabled" : "disabled"} for this group.`);
+  setStatus(`${formatPluginName(normalizedPlugin)} plugin ${enabled ? "enabled" : "disabled"}.`, "success");
+  void updateCommandAutocomplete();
+}
+
+async function handleLeadCommand(text) {
+  if (!isRoomPluginEnabled(PLUGIN_LEADS)) {
+    postLocalLeadMessage("Leads are not enabled in this group. Enable them with /plugin enable leads.");
+    setStatus("Leads plugin is disabled.", "error");
+    return;
+  }
+
+  const rawCommand = text.trim();
+  const payload = rawCommand.slice(LEAD_COMMAND.length).trim();
+  const [action = "", ...rest] = payload.split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+
+  if (!payload || normalizedAction === "help") {
+    postLocalLeadMessage(
+      "Lead commands:\n/lead <name> phone:<phone> email:<email> company:<company> source:<source> notes:<notes>\n/lead new\n/lead list\n/lead view <id>\n/lead update <id> status:<status> owner:<owner> notes:<notes>"
+    );
+    return;
+  }
+
+  if (normalizedAction === "new") {
+    draftNewLead();
+    return;
+  }
+
+  if (normalizedAction === "list") {
+    await postLeadList();
+    return;
+  }
+
+  if (normalizedAction === "view") {
+    await postLeadView(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "update") {
+    await updateLead(rest.join(" "));
+    return;
+  }
+
+  await createLead(payload);
+}
+
 async function createQuery(question, options = {}) {
   const { text, reminderIntervalMs, error } = parseQueryReminderInput(question);
 
@@ -3694,6 +4015,147 @@ async function postQueryViewMessage(queryData) {
   });
 }
 
+async function createLead(input) {
+  const parsedLead = parseLeadInput(input);
+
+  if (!parsedLead.name) {
+    postLocalLeadMessage("Add a lead name after /lead, or use /lead new.");
+    return;
+  }
+
+  const createdAt = new Date();
+  const leadPayload = {
+    name: parsedLead.name,
+    phone: parsedLead.phone,
+    email: parsedLead.email,
+    company: parsedLead.company,
+    source: parsedLead.source,
+    status: parsedLead.status || "new",
+    owner: parsedLead.owner || state.profile.name,
+    notes: parsedLead.notes,
+    createdAt: serverTimestamp(),
+    createdBy: state.profile.id,
+    createdByName: state.profile.name,
+    updatedAt: serverTimestamp(),
+    updatedBy: state.profile.id,
+    updatedByName: state.profile.name,
+  };
+  const leadRef = await addDoc(collection(state.db, "rooms", state.roomId, "leads"), leadPayload);
+  const leadData = {
+    id: leadRef.id,
+    ...leadPayload,
+    createdAt,
+    updatedAt: createdAt,
+  };
+
+  await postLeadViewMessage(leadData, "created");
+  setStatus("Lead created.", "success");
+}
+
+async function updateLead(input) {
+  const [leadIdInput = "", ...updateParts] = input.trim().split(/\s+/);
+
+  if (!leadIdInput || updateParts.length === 0) {
+    postLocalLeadMessage("Use /lead update <id> status:<status> owner:<owner> notes:<notes>.");
+    return;
+  }
+
+  const leadData = await findLeadById(leadIdInput);
+
+  if (!leadData) {
+    postLocalLeadMessage(`Lead ${leadIdInput} was not found.`);
+    setStatus("Lead not found.", "error");
+    return;
+  }
+
+  const updates = parseLeadFields(updateParts.join(" "));
+  const allowedFields = ["name", "phone", "email", "company", "source", "status", "owner", "notes"];
+  const leadUpdates = {};
+
+  allowedFields.forEach((field) => {
+    if (Object.prototype.hasOwnProperty.call(updates, field) && updates[field]) {
+      leadUpdates[field] = updates[field];
+    }
+  });
+
+  if (Object.keys(leadUpdates).length === 0) {
+    postLocalLeadMessage("Add at least one field to update, like status:contacted or notes:called twice.");
+    return;
+  }
+
+  const updatedAt = new Date();
+  await updateDoc(doc(state.db, "rooms", state.roomId, "leads", leadData.id), {
+    ...leadUpdates,
+    updatedAt: serverTimestamp(),
+    updatedBy: state.profile.id,
+    updatedByName: state.profile.name,
+  });
+
+  await postLeadViewMessage({
+    ...leadData,
+    ...leadUpdates,
+    updatedAt,
+    updatedBy: state.profile.id,
+    updatedByName: state.profile.name,
+  }, "updated");
+  setStatus("Lead updated.", "success");
+}
+
+async function postLeadList() {
+  const leads = (await loadRoomLeads())
+    .sort(compareLeadsByCreatedAt)
+    .slice(0, LEAD_LIST_LIMIT);
+
+  if (leads.length === 0) {
+    postLocalLeadMessage("No leads yet. Create one with /lead new.");
+    setStatus("No leads found.", "success");
+    return;
+  }
+
+  postLocalMessage(
+    `Recent leads: ${leads.length}`,
+    "Leads (only you)",
+    "lead-list",
+    [],
+    {
+      heading: "Recent leads",
+      leads,
+    }
+  );
+  setStatus(`${leads.length} lead${leads.length === 1 ? "" : "s"} listed.`, "success");
+}
+
+async function postLeadView(leadIdInput) {
+  const leadId = String(leadIdInput || "").trim();
+
+  if (!leadId) {
+    postLocalLeadMessage("Use /lead view <id>.");
+    return;
+  }
+
+  const leadData = await findLeadById(leadId);
+
+  if (!leadData) {
+    postLocalLeadMessage(`Lead ${leadId} was not found.`);
+    setStatus("Lead not found.", "error");
+    return;
+  }
+
+  await postLeadViewMessage(leadData, "shared");
+  setStatus("Lead shared.", "success");
+}
+
+async function postLeadViewMessage(leadData, action = "shared") {
+  await addDoc(collection(state.db, "rooms", state.roomId, "messages"), {
+    text: formatLeadMessageText(leadData, action),
+    senderId: state.profile.id,
+    senderName: "Leads",
+    type: "lead-view",
+    lead: serializeLeadForMessage(leadData),
+    createdAt: serverTimestamp(),
+  });
+}
+
 function formatQueryMessageText(queryData) {
   const taskText = queryData.taskId ? ` on Task ${formatTaskId(queryData.taskId)}` : "";
 
@@ -3704,6 +4166,63 @@ function formatQueryMessageText(queryData) {
   }
 
   return `Query ${formatQueryId(queryData.id)}${taskText}: ${queryData.text}`;
+}
+
+function formatLeadMessageText(leadData, action = "shared") {
+  const actionText = action === "created" ? "created" : action === "updated" ? "updated" : "shared";
+  const companyText = leadData.company ? ` at ${leadData.company}` : "";
+  return `Lead ${formatLeadId(leadData.id)} ${actionText}: ${leadData.name || "Untitled lead"}${companyText}`;
+}
+
+function parseLeadInput(input) {
+  const fields = parseLeadFields(input);
+  const name = normalizeLeadFieldValue(fields.name || removeLeadFieldTokens(input));
+
+  return {
+    name,
+    phone: normalizeLeadFieldValue(fields.phone),
+    email: normalizeLeadFieldValue(fields.email),
+    company: normalizeLeadFieldValue(fields.company),
+    source: normalizeLeadFieldValue(fields.source),
+    status: normalizeLeadFieldValue(fields.status),
+    owner: normalizeLeadFieldValue(fields.owner),
+    notes: normalizeLeadFieldValue(fields.notes),
+  };
+}
+
+function parseLeadFields(input) {
+  const allowedFields = new Set(["name", "phone", "email", "company", "source", "status", "owner", "notes"]);
+  const text = String(input || "");
+  const fieldRegex = /\b(name|phone|email|company|source|status|owner|notes):/gi;
+  const matches = [...text.matchAll(fieldRegex)];
+  const fields = {};
+
+  matches.forEach((match, index) => {
+    const key = match[1].toLowerCase();
+
+    if (!allowedFields.has(key)) {
+      return;
+    }
+
+    const valueStart = match.index + match[0].length;
+    const valueEnd = index + 1 < matches.length ? matches[index + 1].index : text.length;
+    fields[key] = normalizeLeadFieldValue(text.slice(valueStart, valueEnd));
+  });
+
+  return fields;
+}
+
+function removeLeadFieldTokens(input) {
+  return String(input || "")
+    .replace(/\b(name|phone|email|company|source|status|owner|notes):.*?(?=\s+\b(?:name|phone|email|company|source|status|owner|notes):|$)/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeLeadFieldValue(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ");
 }
 
 function parseQueryReminderInput(value) {
@@ -5998,6 +6517,26 @@ function serializeQueryForMessage(queryData) {
   };
 }
 
+function serializeLeadForMessage(leadData) {
+  return {
+    id: leadData.id,
+    name: leadData.name || "Untitled lead",
+    phone: leadData.phone || "",
+    email: leadData.email || "",
+    company: leadData.company || "",
+    source: leadData.source || "",
+    status: leadData.status || "new",
+    owner: leadData.owner || "",
+    notes: leadData.notes || "",
+    createdAt: leadData.createdAt || null,
+    createdBy: leadData.createdBy || null,
+    createdByName: leadData.createdByName || "",
+    updatedAt: leadData.updatedAt || null,
+    updatedBy: leadData.updatedBy || null,
+    updatedByName: leadData.updatedByName || "",
+  };
+}
+
 async function findQueryById(queryIdInput) {
   const normalizedId = normalizeQueryId(queryIdInput);
 
@@ -6039,6 +6578,37 @@ async function loadPendingRoomQueries() {
   return queriesSnapshot.docs.map((queryDoc) => ({
     id: queryDoc.id,
     ...queryDoc.data(),
+  }));
+}
+
+async function findLeadById(leadIdInput) {
+  const normalizedId = normalizeLeadId(leadIdInput);
+
+  if (!normalizedId) {
+    return null;
+  }
+
+  const directSnapshot = await getDoc(doc(state.db, "rooms", state.roomId, "leads", normalizedId));
+
+  if (directSnapshot.exists()) {
+    return {
+      id: directSnapshot.id,
+      ...directSnapshot.data(),
+    };
+  }
+
+  const leads = await loadRoomLeads();
+  const matches = leads.filter((lead) => lead.id.toLowerCase().startsWith(normalizedId));
+
+  return matches.length === 1 ? matches[0] : null;
+}
+
+async function loadRoomLeads() {
+  const leadsSnapshot = await getDocs(collection(state.db, "rooms", state.roomId, "leads"));
+
+  return leadsSnapshot.docs.map((leadDoc) => ({
+    id: leadDoc.id,
+    ...leadDoc.data(),
   }));
 }
 
@@ -6383,6 +6953,14 @@ function postLocalCodexMessage(text) {
 
 function postLocalQueryMessage(text, actions = [], extra = {}) {
   postLocalMessage(text, "Queries (only you)", extra.type || "query", actions, extra);
+}
+
+function postLocalPluginMessage(text) {
+  postLocalMessage(text, "Plugins (only you)", "plugin");
+}
+
+function postLocalLeadMessage(text, actions = [], extra = {}) {
+  postLocalMessage(text, "Leads (only you)", extra.type || "lead", actions, extra);
 }
 
 function postLocalMessage(text, senderName, type, actions = [], extra = {}) {
@@ -7008,6 +7586,17 @@ function compareQueriesByCreatedAt(left, right) {
   return left.id.localeCompare(right.id);
 }
 
+function compareLeadsByCreatedAt(left, right) {
+  const leftTime = getTimestampMillis(left.createdAt);
+  const rightTime = getTimestampMillis(right.createdAt);
+
+  if (leftTime !== rightTime) {
+    return rightTime - leftTime;
+  }
+
+  return String(left.id || "").localeCompare(String(right.id || ""));
+}
+
 function draftTaskEdit(taskId, description) {
   if (!taskId) {
     return;
@@ -7083,6 +7672,28 @@ function draftQueryResponse(queryId) {
   setStatus("Write the query response and send when ready.", "success");
 }
 
+function draftNewLead() {
+  messageInput.value = "/lead name phone: email: company: source: notes:";
+  messageInput.focus();
+  messageInput.setSelectionRange("/lead ".length, "/lead name".length);
+  syncMessageMaskOverlay();
+  handleMessageInputChange();
+  setStatus("Fill the lead fields and send when ready.", "success");
+}
+
+function draftLeadUpdate(leadId) {
+  if (!leadId) {
+    return;
+  }
+
+  messageInput.value = `/lead update ${formatLeadId(leadId)} status: owner: notes:`;
+  messageInput.focus();
+  messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+  syncMessageMaskOverlay();
+  handleMessageInputChange();
+  setStatus("Update the lead fields and send when ready.", "success");
+}
+
 function formatTaskId(taskId) {
   return `#${taskId.slice(0, 6)}`;
 }
@@ -7091,10 +7702,21 @@ function formatQueryId(queryId) {
   return `?${String(queryId || "").slice(0, 6)}`;
 }
 
+function formatLeadId(leadId) {
+  return `~${String(leadId || "").slice(0, 6)}`;
+}
+
 function normalizeQueryId(queryId) {
   return String(queryId || "")
     .trim()
     .replace(/^[?#]/, "")
+    .toLowerCase();
+}
+
+function normalizeLeadId(leadId) {
+  return String(leadId || "")
+    .trim()
+    .replace(/^[~#]/, "")
     .toLowerCase();
 }
 
@@ -8406,6 +9028,65 @@ function normalizeRoomCommands(commands = DEFAULT_ROOM_COMMANDS) {
     reveal: normalizeCommandPhrase(commands.reveal) || DEFAULT_ROOM_COMMANDS.reveal,
     disable: normalizeCommandPhrase(commands.disable) || DEFAULT_ROOM_COMMANDS.disable,
   };
+}
+
+function normalizeRoomPlugins(plugins = {}) {
+  return Object.fromEntries(
+    Object.entries(plugins || {})
+      .map(([pluginName, pluginConfig]) => [
+        normalizePluginName(pluginName),
+        {
+          enabled: Boolean(pluginConfig?.enabled),
+        },
+      ])
+      .filter(([pluginName]) => SUPPORTED_PLUGINS.has(pluginName))
+  );
+}
+
+function normalizePluginName(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
+
+function formatPluginName(pluginName) {
+  return pluginName === PLUGIN_LEADS ? "Leads" : pluginName;
+}
+
+function isRoomPluginEnabled(pluginName) {
+  const normalizedPlugin = normalizePluginName(pluginName);
+  return Boolean(state.roomPlugins?.[normalizedPlugin]?.enabled);
+}
+
+async function setRoomPluginEnabled(pluginName, enabled) {
+  const normalizedPlugin = normalizePluginName(pluginName);
+
+  if (!state.roomId || !SUPPORTED_PLUGINS.has(normalizedPlugin)) {
+    return;
+  }
+
+  await setDoc(
+    doc(state.db, "rooms", state.roomId),
+    {
+      plugins: {
+        [normalizedPlugin]: {
+          enabled: Boolean(enabled),
+        },
+      },
+    },
+    { merge: true }
+  );
+}
+
+function postPluginList() {
+  const lines = ["Group plugins:"];
+
+  SUPPORTED_PLUGINS.forEach((pluginName) => {
+    lines.push(`- ${formatPluginName(pluginName)}: ${isRoomPluginEnabled(pluginName) ? "enabled" : "disabled"}`);
+  });
+
+  postLocalPluginMessage(lines.join("\n"));
+  setStatus("Plugins listed.", "success");
 }
 
 function normalizeCommandPhrase(value) {

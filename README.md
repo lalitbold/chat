@@ -199,6 +199,22 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 - Pending queries remind users locally every 10 minutes by default while the app is open. A custom query duration changes both the first reminder delay and repeat interval for that query.
 - Advanced Settings can change the query reminder audience to `All`, `Asker`, or `Others`, either for the group or only for you. If browser notifications are enabled, query reminders also use notifications.
 
+## Plugin commands
+
+- `/plugin enable leads` enables lead capture for the current group.
+- `/plugin disable leads` disables lead capture for the current group.
+- `/plugin list` shows enabled and disabled group plugins only to you.
+
+## Lead commands
+
+Lead commands are available after `/plugin enable leads`.
+
+- `/lead Rahul phone:9999999999 email:rahul@example.com company:Acme source:referral notes:interested in demo` creates a lead and posts a compact lead card to the group.
+- `/lead new` fills the composer with a lead template.
+- `/lead list` shows recent leads only to you.
+- `/lead view <id>` posts a lead card to the group. Lead IDs are shown like `~abc123`.
+- `/lead update <id> status:contacted owner:Lalit notes:demo scheduled` updates a lead and posts the updated card to the group.
+
 ## Codex commands
 
 - `/codex <instruction>` queues an instruction for a trusted Codex bridge process.
