@@ -93,6 +93,7 @@ const TASK_PREVIEW_LIMIT = 3;
 const TASK_TIMER_REMINDER_MS = 25 * 60 * 1000;
 const TASK_TIMER_REPEAT_REMINDER_MS = 5 * 60 * 1000;
 const TASK_TIMER_MAX_UNANSWERED_REMINDERS = 2;
+const TASK_TIMER_REMINDER_SYNC_MS = 60 * 1000;
 const DAY_IDLE_TASK_REMINDER_MS = 5 * 60 * 1000;
 const BASE_SLASH_COMMANDS = [
   {
@@ -134,6 +135,21 @@ const BASE_SLASH_COMMANDS = [
     label: "/task comments <id>",
     insertText: "/task comments ",
     hint: "View comments",
+  },
+  {
+    label: "/task subtask <id> <description>",
+    insertText: "/task subtask ",
+    hint: "Add subtask",
+  },
+  {
+    label: "/task subtasks <id>",
+    insertText: "/task subtasks ",
+    hint: "View subtasks",
+  },
+  {
+    label: "/task subtask done <id> <subtask>",
+    insertText: "/task subtask done ",
+    hint: "Complete subtask",
   },
   {
     label: "/task start [id]",
@@ -291,6 +307,7 @@ const state = {
   commandSuggestionMatches: [],
   selectedCommandSuggestionIndex: 0,
   taskTimerReminderTimeouts: new Map(),
+  taskTimerReminderSyncIntervalId: null,
   taskProcessSession: null,
   dayIdleTaskReminderTimeoutId: null,
   isNotificationsEnabled: loadNotificationsEnabled(),
@@ -1054,6 +1071,7 @@ async function connectToRoom(roomId, roomPasscode = "", roomData = null) {
   subscribeToLatestMessages(roomId);
   queueReadReceiptSync();
   scheduleDayIdleTaskReminder();
+  startTaskTimerReminderSync();
   void announceTodaysLeaves();
 }
 
@@ -1289,6 +1307,7 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
 
   clearReadReceiptTimer();
   clearSessionPersistTimer();
+  clearTaskTimerReminderSync();
   clearTaskTimerReminders();
   clearDayIdleTaskReminder();
   clearMessageMaskRevealTimer();
@@ -1505,6 +1524,7 @@ function renderTaskListItem(task, options = {}) {
   title.textContent = task.description || "Untitled task";
 
   const commentCount = Number.isFinite(task.commentCount) ? task.commentCount : 0;
+  const subtaskSummary = getSubtaskSummary(task);
 
   main.append(id, title);
 
@@ -1588,6 +1608,13 @@ function renderTaskListItem(task, options = {}) {
     meta.append(comments);
   }
 
+  if (subtaskSummary.total > 0) {
+    const subtasks = document.createElement("span");
+    subtasks.className = "task-list-badge";
+    subtasks.textContent = `${subtaskSummary.completed}/${subtaskSummary.total} subtasks`;
+    meta.append(subtasks);
+  }
+
   item.append(main, meta);
 
   if (Array.isArray(task.labels) && task.labels.length > 0) {
@@ -1603,6 +1630,8 @@ function renderTaskListItem(task, options = {}) {
 
     item.append(labels);
   }
+
+  item.append(renderTaskSubtasksPanel(task, { compact: true }));
 
   return item;
 }
@@ -1700,6 +1729,8 @@ function renderTaskPreviewCard(task, options = {}) {
 
   card.append(meta);
 
+  card.append(renderTaskSubtasksPanel(task, { compact: true }));
+
   if (Array.isArray(task.labels) && task.labels.length > 0) {
     const labels = document.createElement("div");
     labels.className = "task-list-labels";
@@ -1715,6 +1746,54 @@ function renderTaskPreviewCard(task, options = {}) {
   }
 
   return card;
+}
+
+function renderTaskSubtasksPanel(task, options = {}) {
+  const subtasks = normalizeSubtasks(task.subtasks);
+
+  if (subtasks.length === 0) {
+    return document.createDocumentFragment();
+  }
+
+  const summary = getSubtaskSummary(task);
+  const panel = document.createElement("section");
+  panel.className = "task-subtasks-panel";
+  panel.classList.toggle("compact", Boolean(options.compact));
+
+  const heading = document.createElement("div");
+  heading.className = "task-subtasks-heading";
+
+  const title = document.createElement("strong");
+  title.textContent = "Subtasks";
+
+  const count = document.createElement("span");
+  count.textContent = `${summary.completed}/${summary.total}`;
+
+  heading.append(title, count);
+  panel.append(heading);
+
+  const list = document.createElement("ol");
+  list.className = "task-subtasks-list";
+
+  subtasks.forEach((subtask) => {
+    const item = document.createElement("li");
+    item.className = "task-subtask";
+    item.classList.toggle("complete", subtask.status === "complete");
+
+    const id = document.createElement("span");
+    id.className = "task-subtask-id";
+    id.textContent = formatSubtaskId(subtask.id);
+
+    const text = document.createElement("span");
+    text.className = "task-subtask-text";
+    text.textContent = subtask.text || "Untitled subtask";
+
+    item.append(id, text);
+    list.append(item);
+  });
+
+  panel.append(list);
+  return panel;
 }
 
 function renderTaskProcessMessage(message) {
@@ -2436,7 +2515,7 @@ async function handleTaskCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     await postTaskMessage(
-      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task view <id>\n/task process\n/task process #bug\n/task process stop\n/task edit <id> <description> #label\n/task comment <id> <comment>\n/task comments <id>\n/task start\n/task start <id>\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task timers\n/task summary\n/task summary share\n/task complete <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nMention a task id like #abc123 in a message to preview it.\nUse /day for attendance and leave commands."
+      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task view <id>\n/task process\n/task process #bug\n/task process stop\n/task edit <id> <description> #label\n/task comment <id> <comment>\n/task comments <id>\n/task subtask <id> <description>\n/task subtasks <id>\n/task subtask done <id> <subtask>\n/task subtask reopen <id> <subtask>\n/task subtask remove <id> <subtask>\n/task start\n/task start <id>\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task timers\n/task summary\n/task summary share\n/task complete <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nMention a task id like #abc123 in a message to preview it.\nUse /day for attendance and leave commands."
     );
     return;
   }
@@ -2474,6 +2553,16 @@ async function handleTaskCommand(text) {
 
   if (normalizedAction === "comments") {
     await postTaskComments(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "subtask") {
+    await handleSubtaskCommand(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "subtasks") {
+    await postTaskSubtasks(rest.join(" "));
     return;
   }
 
@@ -2611,6 +2700,7 @@ async function createTask(description) {
     activeTimerStartedAt: null,
     activeTimerStartedBy: null,
     activeTimerStartedByName: null,
+    subtasks: [],
   });
 
   await postTaskMessage(
@@ -2919,6 +3009,202 @@ async function postTaskComments(taskIdInput) {
       : `${comments.length} task comment${comments.length === 1 ? "" : "s"} listed.`,
     "success"
   );
+}
+
+async function handleSubtaskCommand(input) {
+  const [actionOrTaskId = "", ...rest] = input.trim().split(/\s+/);
+  const normalizedAction = actionOrTaskId.toLowerCase();
+
+  if (!actionOrTaskId) {
+    await postTaskMessage("Use /task subtask <id> <description>.");
+    return;
+  }
+
+  if (["done", "complete", "check"].includes(normalizedAction)) {
+    await updateSubtaskStatus(rest.join(" "), "complete");
+    return;
+  }
+
+  if (["reopen", "open", "todo", "undone"].includes(normalizedAction)) {
+    await updateSubtaskStatus(rest.join(" "), "pending");
+    return;
+  }
+
+  if (["remove", "delete"].includes(normalizedAction)) {
+    await removeSubtask(rest.join(" "));
+    return;
+  }
+
+  await addSubtask(input);
+}
+
+async function addSubtask(input) {
+  const [taskId = "", ...descriptionParts] = input.trim().split(/\s+/);
+  const description = descriptionParts.join(" ").trim();
+
+  if (!taskId || !description) {
+    await postTaskMessage("Use /task subtask <id> <description>.");
+    return;
+  }
+
+  const task = await findTaskById(taskId);
+
+  if (!task) {
+    await postTaskMessage(`Task ${taskId} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  const subtasks = normalizeSubtasks(task.subtasks);
+  const subtask = {
+    id: generateSubtaskId(),
+    text: description,
+    status: "pending",
+    createdAt: new Date(),
+    createdBy: state.profile.id,
+    createdByName: state.profile.name,
+    completedAt: null,
+    completedBy: null,
+    completedByName: null,
+  };
+
+  await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", task.id), {
+    subtasks: [...subtasks, subtask],
+    updatedAt: serverTimestamp(),
+    updatedBy: state.profile.id,
+    updatedByName: state.profile.name,
+  });
+
+  await postTaskMessage(
+    `Subtask ${formatSubtaskId(subtask.id)} added to Task ${formatTaskId(task.id)}: ${description}`
+  );
+  setStatus("Subtask added.", "success");
+}
+
+async function postTaskSubtasks(taskIdInput) {
+  const taskId = taskIdInput.trim();
+
+  if (!taskId) {
+    postLocalTaskMessage("Use /task subtasks <id> to view subtasks.");
+    return;
+  }
+
+  const task = await findTaskById(taskId);
+
+  if (!task) {
+    postLocalTaskMessage(`Task ${taskId} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  const subtasks = normalizeSubtasks(task.subtasks);
+
+  if (subtasks.length === 0) {
+    postLocalTaskMessage(`Task ${formatTaskId(task.id)} has no subtasks: ${task.description}`);
+    setStatus("No subtasks.", "success");
+    return;
+  }
+
+  const lines = [
+    `Subtasks for Task ${formatTaskId(task.id)}: ${task.description}`,
+    ...subtasks.map((subtask) => {
+      const marker = subtask.status === "complete" ? "x" : " ";
+      return `- [${marker}] ${formatSubtaskId(subtask.id)} ${subtask.text}`;
+    }),
+  ];
+  postLocalTaskMessage(lines.join("\n"));
+  setStatus(`${subtasks.length} subtask${subtasks.length === 1 ? "" : "s"} listed.`, "success");
+}
+
+async function updateSubtaskStatus(input, status) {
+  const [taskId = "", subtaskId = ""] = input.trim().split(/\s+/);
+  const isComplete = status === "complete";
+
+  if (!taskId || !subtaskId) {
+    await postTaskMessage(`Use /task subtask ${isComplete ? "done" : "reopen"} <id> <subtask>.`);
+    return;
+  }
+
+  const task = await findTaskById(taskId);
+
+  if (!task) {
+    await postTaskMessage(`Task ${taskId} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  const subtasks = normalizeSubtasks(task.subtasks);
+  const targetSubtask = findSubtaskById(subtasks, subtaskId);
+
+  if (!targetSubtask) {
+    await postTaskMessage(`Subtask ${subtaskId} was not found on Task ${formatTaskId(task.id)}.`);
+    setStatus("Subtask not found.", "error");
+    return;
+  }
+
+  const updatedSubtasks = subtasks.map((subtask) => {
+    if (subtask.id !== targetSubtask.id) {
+      return subtask;
+    }
+
+    return {
+      ...subtask,
+      status,
+      completedAt: isComplete ? new Date() : null,
+      completedBy: isComplete ? state.profile.id : null,
+      completedByName: isComplete ? state.profile.name : null,
+    };
+  });
+
+  await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", task.id), {
+    subtasks: updatedSubtasks,
+    updatedAt: serverTimestamp(),
+    updatedBy: state.profile.id,
+    updatedByName: state.profile.name,
+  });
+
+  await postTaskMessage(
+    `Subtask ${formatSubtaskId(targetSubtask.id)} ${isComplete ? "completed" : "reopened"} on Task ${formatTaskId(task.id)}: ${targetSubtask.text}`
+  );
+  setStatus(`Subtask ${isComplete ? "completed" : "reopened"}.`, "success");
+}
+
+async function removeSubtask(input) {
+  const [taskId = "", subtaskId = ""] = input.trim().split(/\s+/);
+
+  if (!taskId || !subtaskId) {
+    await postTaskMessage("Use /task subtask remove <id> <subtask>.");
+    return;
+  }
+
+  const task = await findTaskById(taskId);
+
+  if (!task) {
+    await postTaskMessage(`Task ${taskId} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  const subtasks = normalizeSubtasks(task.subtasks);
+  const targetSubtask = findSubtaskById(subtasks, subtaskId);
+
+  if (!targetSubtask) {
+    await postTaskMessage(`Subtask ${subtaskId} was not found on Task ${formatTaskId(task.id)}.`);
+    setStatus("Subtask not found.", "error");
+    return;
+  }
+
+  await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", task.id), {
+    subtasks: subtasks.filter((subtask) => subtask.id !== targetSubtask.id),
+    updatedAt: serverTimestamp(),
+    updatedBy: state.profile.id,
+    updatedByName: state.profile.name,
+  });
+
+  await postTaskMessage(
+    `Subtask ${formatSubtaskId(targetSubtask.id)} removed from Task ${formatTaskId(task.id)}: ${targetSubtask.text}`
+  );
+  setStatus("Subtask removed.", "success");
 }
 
 async function postTaskView(taskIdInput) {
@@ -3659,6 +3945,7 @@ function serializeTaskForMessage(task) {
     id: task.id,
     description: task.description || "Untitled task",
     labels: Array.isArray(task.labels) ? task.labels : [],
+    subtasks: normalizeSubtasks(task.subtasks),
     status: task.status || "pending",
     createdAt: task.createdAt || null,
     createdByName: task.createdByName || "",
@@ -3669,6 +3956,68 @@ function serializeTaskForMessage(task) {
     activeTimerStartedByName: task.activeTimerStartedByName || "",
     commentCount: Number.isFinite(task.commentCount) ? task.commentCount : 0,
   };
+}
+
+function normalizeSubtasks(subtasks) {
+  if (!Array.isArray(subtasks)) {
+    return [];
+  }
+
+  return subtasks
+    .map((subtask) => ({
+      id: String(subtask?.id || "").trim(),
+      text: String(subtask?.text || "").trim(),
+      status: subtask?.status === "complete" ? "complete" : "pending",
+      createdAt: subtask?.createdAt || null,
+      createdBy: subtask?.createdBy || null,
+      createdByName: subtask?.createdByName || "",
+      completedAt: subtask?.completedAt || null,
+      completedBy: subtask?.completedBy || null,
+      completedByName: subtask?.completedByName || "",
+    }))
+    .filter((subtask) => subtask.id && subtask.text);
+}
+
+function getSubtaskSummary(task) {
+  const subtasks = normalizeSubtasks(task.subtasks);
+
+  return {
+    total: subtasks.length,
+    completed: subtasks.filter((subtask) => subtask.status === "complete").length,
+  };
+}
+
+function findSubtaskById(subtasks, subtaskIdInput) {
+  const normalizedId = normalizeSubtaskId(subtaskIdInput);
+
+  if (!normalizedId) {
+    return null;
+  }
+
+  const exactMatch = subtasks.find((subtask) => normalizeSubtaskId(subtask.id) === normalizedId);
+
+  if (exactMatch) {
+    return exactMatch;
+  }
+
+  const prefixMatches = subtasks.filter((subtask) => normalizeSubtaskId(subtask.id).startsWith(normalizedId));
+  return prefixMatches.length === 1 ? prefixMatches[0] : null;
+}
+
+function generateSubtaskId() {
+  return `s${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function formatSubtaskId(subtaskId) {
+  const normalizedId = normalizeSubtaskId(subtaskId);
+  return normalizedId ? `@${normalizedId.slice(0, 6)}` : "@subtask";
+}
+
+function normalizeSubtaskId(subtaskId) {
+  return String(subtaskId || "")
+    .trim()
+    .replace(/^@/, "")
+    .toLowerCase();
 }
 
 function serializeTaskCommentForMessage(comment) {
@@ -4035,6 +4384,75 @@ function scheduleTaskTimerReminder(task) {
   state.taskTimerReminderTimeouts.set(task.id, { timeoutId });
 }
 
+function startTaskTimerReminderSync() {
+  clearTaskTimerReminderSync();
+  void syncActiveTaskTimerReminders();
+
+  state.taskTimerReminderSyncIntervalId = window.setInterval(() => {
+    void syncActiveTaskTimerReminders();
+  }, TASK_TIMER_REMINDER_SYNC_MS);
+}
+
+async function syncActiveTaskTimerReminders() {
+  if (!state.db || !state.roomId || !state.profile) {
+    return;
+  }
+
+  try {
+    const [tasks, activeGeneralTimer] = await Promise.all([
+      loadRoomTasks(),
+      findActiveGeneralTimer(),
+    ]);
+    const activeOwnedTasks = tasks.filter(
+      (task) =>
+        task.status !== "complete" &&
+        task.activeTimerStartedAt &&
+        isCurrentUserTaskTimerOwner(task)
+    );
+    const activeReminderIds = new Set();
+
+    activeOwnedTasks.forEach((task) => {
+      activeReminderIds.add(task.id);
+
+      if (!state.taskTimerReminderTimeouts.has(task.id)) {
+        scheduleTaskTimerReminder({
+          id: task.id,
+          description: task.description || "Untitled task",
+          startedAt: task.activeTimerStartedAt,
+        });
+      }
+    });
+
+    if (activeGeneralTimer?.data?.activeTimerStartedAt) {
+      const reminderId = getGeneralTimerReminderId();
+      activeReminderIds.add(reminderId);
+
+      if (!state.taskTimerReminderTimeouts.has(reminderId)) {
+        scheduleTaskTimerReminder({
+          id: reminderId,
+          description: "General work",
+          startedAt: activeGeneralTimer.data.activeTimerStartedAt,
+          activeTimerStartedAt: activeGeneralTimer.data.activeTimerStartedAt,
+          isGeneralTimer: true,
+          ref: activeGeneralTimer.ref,
+        });
+      }
+    }
+
+    [...state.taskTimerReminderTimeouts.keys()].forEach((reminderId) => {
+      if (!activeReminderIds.has(reminderId)) {
+        clearTaskTimerReminder(reminderId);
+      }
+    });
+
+    if (activeReminderIds.size > 0) {
+      clearDayIdleTaskReminder();
+    }
+  } catch (error) {
+    console.error("Active timer reminder sync failed:", error);
+  }
+}
+
 function scheduleTaskTimerFollowUpReminder(task) {
   clearTaskTimerReminder(task.id);
 
@@ -4249,6 +4667,15 @@ function clearTaskTimerReminders() {
     }
   });
   state.taskTimerReminderTimeouts.clear();
+}
+
+function clearTaskTimerReminderSync() {
+  if (!state.taskTimerReminderSyncIntervalId) {
+    return;
+  }
+
+  window.clearInterval(state.taskTimerReminderSyncIntervalId);
+  state.taskTimerReminderSyncIntervalId = null;
 }
 
 function clearGeneralTimerReminders() {
@@ -5371,6 +5798,10 @@ function handleAttentionChange() {
     updateDocumentTitle();
     updateAppBadge();
     return;
+  }
+
+  if (document.visibilityState === "visible") {
+    void syncActiveTaskTimerReminders();
   }
 
   if (!shouldAutoMarkAsRead()) {
