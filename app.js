@@ -200,6 +200,16 @@ const BASE_SLASH_COMMANDS = [
     hint: "Save plan",
   },
   {
+    label: "/day free <reason>",
+    insertText: "/day free ",
+    hint: "Set free status",
+  },
+  {
+    label: "/day status",
+    insertText: "/day status",
+    hint: "Day status",
+  },
+  {
     label: "/day end",
     insertText: "/day end",
     hint: "End day",
@@ -363,6 +373,9 @@ const state = {
   isNotificationsEnabled: loadNotificationsEnabled(),
   availableGroups: [],
   joinedRooms: loadJoinedRooms(),
+  groupUnreadCounts: new Map(),
+  groupUnreadState: new Map(),
+  unsubscribeGroupUnreadCounts: new Map(),
   availableGroupsRequestId: 0,
   availableGroupsDebounceId: null,
   hasJoinedRoomOnce: false,
@@ -390,6 +403,7 @@ async function boot() {
     const handledGoogleRedirect = await handleGoogleRedirectResult();
     await ensureAnonymousAuthSession();
     subscribeToPrivacyFeatureConfig();
+    void refreshAvailableGroups();
 
     if (!handledGoogleRedirect) {
       setStatus("Connected. Create or join a room.", "success");
@@ -618,9 +632,11 @@ async function refreshAvailableGroups() {
     rooms.sort((a, b) => a.id.localeCompare(b.id));
 
     renderAvailableGroups(rooms, getAvailableGroupsStatus(rooms, Boolean(passcode)));
+    syncGroupUnreadCountListeners(rooms);
   } catch (error) {
     console.error(error);
     renderAvailableGroups(state.joinedRooms, "Saved groups are shown. New groups could not be loaded.");
+    syncGroupUnreadCountListeners(state.joinedRooms);
   }
 }
 
@@ -686,7 +702,19 @@ function renderAvailableGroups(rooms, status) {
       meta.className = "available-group-meta";
       meta.textContent = room.id === state.roomId ? "Current" : "Join";
 
-      button.append(name, meta);
+      const unreadCount = getGroupUnreadCount(room.id);
+
+      button.append(name);
+
+      if (unreadCount > 0) {
+        const badge = document.createElement("span");
+        badge.className = "available-group-count";
+        badge.textContent = formatGroupUnreadCount(unreadCount);
+        badge.setAttribute("aria-label", `${unreadCount} pending message${unreadCount === 1 ? "" : "s"}`);
+        button.append(badge);
+      }
+
+      button.append(meta);
       return button;
     })
   );
@@ -707,6 +735,144 @@ function handleAvailableGroupClick(event) {
   roomIdInput.value = roomId;
   roomPasscodeInput.value = roomPasscode;
   void joinRoom(roomId, roomPasscode);
+}
+
+function syncGroupUnreadCountListeners(rooms = state.availableGroups) {
+  if (!state.db || !getCurrentUserId()) {
+    clearGroupUnreadCountListeners();
+    return;
+  }
+
+  const roomIds = new Set(rooms.map((room) => room.id).filter(Boolean));
+
+  state.unsubscribeGroupUnreadCounts.forEach((unsubscribe, roomId) => {
+    if (!roomIds.has(roomId)) {
+      unsubscribe();
+      state.unsubscribeGroupUnreadCounts.delete(roomId);
+      state.groupUnreadState.delete(roomId);
+      state.groupUnreadCounts.delete(roomId);
+    }
+  });
+
+  roomIds.forEach((roomId) => {
+    if (!state.unsubscribeGroupUnreadCounts.has(roomId)) {
+      subscribeToGroupUnreadCount(roomId);
+    }
+  });
+
+  renderAvailableGroups(rooms, availableGroupsStatus.textContent);
+}
+
+function subscribeToGroupUnreadCount(roomId) {
+  const userId = getCurrentUserId();
+  if (!state.db || !userId || !roomId) {
+    return;
+  }
+
+  const unreadState = {
+    messages: [],
+    receipt: null,
+  };
+  state.groupUnreadState.set(roomId, unreadState);
+
+  const messagesQuery = query(
+    collection(state.db, "rooms", roomId, "messages"),
+    orderBy("createdAt", "desc"),
+    limit(MESSAGES_PAGE_SIZE)
+  );
+  const receiptRef = doc(state.db, "rooms", roomId, "readReceipts", userId);
+
+  const unsubscribeMessages = onSnapshot(
+    messagesQuery,
+    (snapshot) => {
+      unreadState.messages = snapshot.docs.map((messageDoc) => ({
+        id: messageDoc.id,
+        ...messageDoc.data(),
+      }));
+      updateGroupUnreadCount(roomId);
+    },
+    (error) => {
+      console.error(error);
+    }
+  );
+
+  const unsubscribeReceipt = onSnapshot(
+    receiptRef,
+    (snapshot) => {
+      unreadState.receipt = snapshot.exists() ? snapshot.data() : null;
+      updateGroupUnreadCount(roomId);
+    },
+    (error) => {
+      console.error(error);
+    }
+  );
+
+  state.unsubscribeGroupUnreadCounts.set(roomId, () => {
+    unsubscribeMessages();
+    unsubscribeReceipt();
+  });
+}
+
+function updateGroupUnreadCount(roomId) {
+  const unreadState = state.groupUnreadState.get(roomId);
+  const userId = getCurrentUserId();
+
+  if (!unreadState || !userId) {
+    return;
+  }
+
+  const lastReadMillis = getTimestampMillis(unreadState.receipt?.lastReadCreatedAt);
+  const unreadCount = unreadState.messages.filter((message) => {
+    if (message.senderId === userId) {
+      return false;
+    }
+
+    const createdAtMillis = getTimestampMillis(message.createdAt);
+    return createdAtMillis > lastReadMillis;
+  }).length;
+
+  setGroupUnreadCount(roomId, roomId === state.roomId ? 0 : unreadCount);
+}
+
+function setGroupUnreadCount(roomId, unreadCount) {
+  const nextCount = Math.max(0, unreadCount);
+
+  if (state.groupUnreadCounts.get(roomId) === nextCount) {
+    return;
+  }
+
+  if (nextCount > 0) {
+    state.groupUnreadCounts.set(roomId, nextCount);
+  } else {
+    state.groupUnreadCounts.delete(roomId);
+  }
+
+  renderAvailableGroups(state.availableGroups, availableGroupsStatus.textContent);
+}
+
+function getGroupUnreadCount(roomId) {
+  if (roomId === state.roomId) {
+    return 0;
+  }
+
+  return state.groupUnreadCounts.get(roomId) || 0;
+}
+
+function formatGroupUnreadCount(count) {
+  return count > 99 ? "99+" : String(count);
+}
+
+function getCurrentUserId() {
+  return state.profile?.id || state.authUser?.uid || "";
+}
+
+function clearGroupUnreadCountListeners() {
+  state.unsubscribeGroupUnreadCounts.forEach((unsubscribe) => {
+    unsubscribe();
+  });
+  state.unsubscribeGroupUnreadCounts.clear();
+  state.groupUnreadState.clear();
+  state.groupUnreadCounts.clear();
 }
 
 function initializeAuthSession() {
@@ -787,10 +953,12 @@ function applyAuthUser(user) {
   updatePrivacyFeatureAccess();
 
   if (previousProfileId && previousProfileId !== user.uid) {
+    clearGroupUnreadCountListeners();
     state.lastSyncedReadMessageId = null;
     state.pendingReadMessageId = null;
     renderMessages();
     queueReadReceiptSync();
+    void refreshAvailableGroups();
     persistSession();
   }
 
@@ -2859,7 +3027,7 @@ async function handleDayCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     postLocalDayMessage(
-      "Day commands:\n/day start\n/day plan <plan>\n/day break start\n/day break stop\n/day break list\n/day end\n/day leave <date-or-range> <reason>\n/day leave list\n/day leave cancel <id>"
+      "Day commands:\n/day start\n/day plan <plan>\n/day free <reason>\n/day status\n/day break start\n/day break stop\n/day break list\n/day end\n/day leave <date-or-range> <reason>\n/day leave list\n/day leave cancel <id>"
     );
     return;
   }
@@ -2876,6 +3044,16 @@ async function handleDayCommand(text) {
 
   if (normalizedAction === "end") {
     await endWorkDay();
+    return;
+  }
+
+  if (normalizedAction === "free") {
+    await setFreeDayStatus(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "status") {
+    await postDayStatus();
     return;
   }
 
@@ -4174,6 +4352,74 @@ async function endWorkDay() {
   setStatus("Day ended and summary shared.", "success");
 }
 
+async function setFreeDayStatus(reasonInput = "") {
+  const reason = reasonInput.trim();
+
+  await setDoc(
+    getWorkDayRef(),
+    {
+      userId: state.profile.id,
+      userName: state.profile.name,
+      dateKey: getTodayKey(),
+      availabilityStatus: "free",
+      availabilityReason: reason || null,
+      availabilityUpdatedAt: serverTimestamp(),
+      availabilityUpdatedBy: state.profile.id,
+      availabilityUpdatedByName: state.profile.name,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  await postDayMessage(`${state.profile.name} is free${reason ? `: ${reason}` : "."}`);
+  setStatus("Free status saved.", "success");
+}
+
+async function postDayStatus() {
+  const workDay = await getWorkDay();
+  const activeGeneralTimer = await findActiveGeneralTimer();
+  const activeTaskTimers = (await loadRoomTasks())
+    .filter((task) => task.activeTimerStartedAt && isCurrentUserTaskTimerOwner(task))
+    .sort(compareActiveTimersByStartedAt);
+  const lines = ["Day status:"];
+
+  if (workDay?.startedAt && !workDay?.endedAt) {
+    lines.push(`Day: started ${formatTaskTimestamp(workDay.startedAt)}`);
+  } else if (workDay?.endedAt) {
+    lines.push(`Day: ended ${formatTaskTimestamp(workDay.endedAt)}`);
+  } else {
+    lines.push("Day: not started");
+  }
+
+  if (workDay?.availabilityStatus === "free") {
+    lines.push(`Availability: ${formatDayAvailabilityStatus(workDay)}`);
+  }
+
+  if (activeGeneralTimer?.data?.activeTimerStartedAt) {
+    lines.push(
+      `General timer: running ${formatDuration(Date.now() - getTimestampMillis(activeGeneralTimer.data.activeTimerStartedAt))}`
+    );
+  }
+
+  if (activeTaskTimers.length > 0) {
+    lines.push(`Task timers: ${activeTaskTimers.length} running`);
+    activeTaskTimers.slice(0, 5).forEach((task) => {
+      lines.push(
+        `- ${formatTaskId(task.id)} ${task.description || "Untitled task"} (${formatDuration(Date.now() - getTimestampMillis(task.activeTimerStartedAt))})`
+      );
+    });
+  }
+
+  if (workDay?.activeBreakStartedAt) {
+    lines.push(
+      `Break: running ${formatDuration(Date.now() - getTimestampMillis(workDay.activeBreakStartedAt))}`
+    );
+  }
+
+  postLocalDayMessage(lines.join("\n"));
+  setStatus("Day status ready.", "success");
+}
+
 async function handleBreakCommand(input = "") {
   const [action = "start"] = input.trim().split(/\s+/);
   const normalizedAction = action.toLowerCase();
@@ -4509,6 +4755,10 @@ async function buildDailyTaskSummary(options = {}) {
 
   if (options.includePlan && workDay?.plan) {
     lines.push(`Plan: ${workDay.plan}`);
+  }
+
+  if (workDay?.availabilityStatus === "free") {
+    lines.push(`Availability: ${formatDayAvailabilityStatus(workDay)}`);
   }
 
   lines.push(`Time tracked: ${formatDuration(trackedMs)}`);
@@ -5747,6 +5997,15 @@ function formatCodexCommandId(commandId) {
   return `#${String(commandId || "").slice(0, 6)}`;
 }
 
+function formatDayAvailabilityStatus(workDay) {
+  if (workDay?.availabilityStatus !== "free") {
+    return "Unknown";
+  }
+
+  const reason = String(workDay.availabilityReason || "").trim();
+  return reason ? `Free: ${reason}` : "Free";
+}
+
 function formatTaskTimeSummary(task, options = {}) {
   const maskIdentity = Boolean(options.maskIdentity);
   const totalTrackedMs = Number.isFinite(task.totalTrackedMs) ? task.totalTrackedMs : 0;
@@ -6170,6 +6429,7 @@ async function syncReadReceipt(message) {
       { merge: true }
     );
     state.lastSyncedReadMessageId = message.id;
+    setGroupUnreadCount(state.roomId, 0);
   } catch (error) {
     console.error(error);
   } finally {

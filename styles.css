@@ -124,7 +124,7 @@ h2 {
 .available-group {
   width: 100%;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 10px;
   padding: 11px 12px;
@@ -153,6 +153,21 @@ h2 {
   color: var(--accent-strong);
   font-size: 0.82rem;
   font-weight: 700;
+}
+
+.available-group-count {
+  min-width: 24px;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 0.76rem;
+  font-weight: 800;
+  line-height: 1;
 }
 
 .composer-count {

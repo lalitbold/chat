@@ -243,6 +243,8 @@ The script signs in anonymously with the Firebase web app config and reads pendi
 - `/day start` starts your day and posts attendance to the group.
 - When your day is started and no task timer is running, the app reminds you locally every 5 minutes.
 - `/day plan Ship feature X` saves and posts your plan to the group.
+- `/day free tired` marks your current status as free with an optional reason and posts it to the group.
+- `/day status` shows your current day status only to you.
 - `/day end` ends your day and posts your work summary to the group.
 - `/day leave tomorrow Sick leave` schedules leave and posts it to the group.
 - `/day leave 2026-05-20 to 2026-05-22 PTO` schedules a multi-day leave.
