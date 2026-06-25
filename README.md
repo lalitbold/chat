@@ -46,6 +46,7 @@ This project is a lightweight realtime chat app built with:
 rooms/{roomId}
   createdAt
   createdBy
+  settings.queryReminderAudience
 
 rooms/{roomId}/messages/{messageId}
   text
@@ -164,8 +165,15 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 - `/task list` shows the pending task list only to you. Completed tasks are hidden by default.
 - `/task list #bug` shows pending tasks with that label only to you.
 - `/task edit <id> <description> #bug` updates a task description. Labels are replaced only when new labels are included.
+- Typing `#` in the composer suggests task IDs and task labels. In `/task edit <id>`, selecting or typing a task ID loads the current task text into the composer for easier editing.
 - `/task comment <id> <comment>` adds a comment to a task.
 - `/task comments <id>` shows task comments only to you.
+- `/task react <id> <reaction>` toggles your reaction on a task. Task cards also include quick reaction buttons.
+- `/task day today #abc123 #def456` adds existing pending tasks to today's plan.
+- `/task day tomorrow #abc123` or `/task day 2026-06-26 #abc123` plans tasks for another day.
+- `/task day list [today|tomorrow|YYYY-MM-DD]` shows planned tasks only to you.
+- `/task day review` shows unfinished planned tasks from yesterday with carry, complete, and skip actions.
+- `/task process continue` resumes the last task process for the current room and user.
 - `/task start` starts a general timer without linking it to a task.
 - `/task start <id>` starts a timer on a task and reminds you locally after 25 minutes, then every 5 minutes until you continue, complete, or stop it. If two reminders go unanswered, the timer auto-stops and records time only through the first unanswered reminder.
 - `/task stop` stops your general timer and records the elapsed time.
@@ -175,17 +183,21 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 - `/task summary` shows your work summary for today only to you.
 - `/task summary share` posts your work summary for today to the group.
 - `/task complete <id>` marks a task complete. The `<id>` can be the short ID shown in the task list, like `#abc123`, or the full Firestore document ID.
+- `/task reopen <id>` moves a completed task back to pending.
 - `/task label <id> #bug` adds a label to an existing task.
 - `/task unlabel <id> #bug` removes a label from an existing task.
 
 ## Query commands
 
 - `/query Can you confirm deployment?` creates a pending query and posts it to the room.
+- `/query after 1h Can you confirm deployment?` creates a query with a custom reminder interval. Durations support `m`, `h`, and `d`, such as `10m`, `1h`, `1d`, or `5d`.
 - `/query task <task-id> What is blocked?` creates a pending query linked to a task and adds the question as a task comment.
-- `/query list` shows your pending queries only to you.
+- `/query task <task-id> after 1d What is blocked?` creates a task-linked query with a custom reminder interval.
+- `/query list` shows all pending room queries only to you.
 - `/query respond <id> Looks good` marks the query answered, posts the response to the room, and adds the response as a task comment for task-linked queries.
 - `/query close <id>` marks one of your queries answered without response text.
-- Pending queries remind their creator locally every 10 minutes while the app is open. If browser notifications are enabled, query reminders also use notifications.
+- Pending queries remind users locally every 10 minutes by default while the app is open. A custom query duration changes both the first reminder delay and repeat interval for that query.
+- Advanced Settings can change the query reminder audience to `All`, `Asker`, or `Others`, either for the group or only for you. If browser notifications are enabled, query reminders also use notifications.
 
 ## Codex commands
 
@@ -245,6 +257,7 @@ The script signs in anonymously with the Firebase web app config and reads pendi
 - `/day plan Ship feature X` saves and posts your plan to the group.
 - `/day free tired` marks your current status as free with an optional reason and posts it to the group.
 - `/day status` shows your current day status only to you.
+- `/day break start` changes the app color while your break is active. Activity during a break shows a local prompt to stop it.
 - `/day end` ends your day and posts your work summary to the group.
 - `/day leave tomorrow Sick leave` schedules leave and posts it to the group.
 - `/day leave 2026-05-20 to 2026-05-22 PTO` schedules a multi-day leave.

@@ -27,6 +27,24 @@ body {
   color: var(--ink);
 }
 
+body.break-active {
+  background:
+    radial-gradient(circle at top left, rgba(159, 18, 57, 0.18), transparent 30%),
+    linear-gradient(135deg, #fff1f2, #f4dfdf 60%, #fff7ed);
+}
+
+body.break-active .chat-panel,
+body.break-active .composer,
+body.break-active .messages {
+  border-color: rgba(159, 18, 57, 0.32);
+}
+
+body.break-active .status-banner {
+  border-color: rgba(159, 18, 57, 0.32);
+  background: rgba(255, 241, 242, 0.9);
+  color: #9f1239;
+}
+
 button,
 input,
 select,
@@ -1000,6 +1018,48 @@ button:disabled {
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6px;
+}
+
+.task-reaction-actions,
+.task-reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.task-reaction-button,
+.task-reaction-summary {
+  min-width: 32px;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  border: 1px solid rgba(214, 208, 194, 0.86);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.74);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.84rem;
+  line-height: 1;
+}
+
+.task-reaction-button {
+  cursor: pointer;
+}
+
+.task-reaction-button:hover,
+.task-reaction-button:focus-visible,
+.task-reaction-button.active {
+  transform: none;
+  border-color: rgba(15, 118, 110, 0.42);
+  background: var(--accent-soft);
+  outline: none;
+}
+
+.task-reaction-summary {
+  width: fit-content;
+  font-weight: 700;
 }
 
 .task-list-item-meta,

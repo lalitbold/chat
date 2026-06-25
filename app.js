@@ -47,6 +47,7 @@ const commandScopeInput = document.getElementById("command-scope");
 const privacyCommandInput = document.getElementById("privacy-command");
 const revealCommandInput = document.getElementById("reveal-command");
 const disableCommandInput = document.getElementById("disable-command");
+const queryReminderAudienceInput = document.getElementById("query-reminder-audience");
 const toggleCommandVisibilityButton = document.getElementById("toggle-command-visibility");
 const createRoomButton = document.getElementById("create-room");
 const openSettingsButton = document.getElementById("open-settings");
@@ -89,8 +90,10 @@ const TASK_COMMAND = "/task";
 const DAY_COMMAND = "/day";
 const CODEX_COMMAND = "/codex";
 const QUERY_COMMAND = "/query";
+const COMMAND_AUTOCOMPLETE_LIMIT = 8;
 const TASK_LIST_LIMIT = 50;
 const TASK_PREVIEW_LIMIT = 3;
+const TASK_REACTION_OPTIONS = ["👍", "✅", "👀", "🙌"];
 const TASK_TIMER_REMINDER_MS = 25 * 60 * 1000;
 const TASK_TIMER_REPEAT_REMINDER_MS = 5 * 60 * 1000;
 const TASK_TIMER_MAX_UNANSWERED_REMINDERS = 2;
@@ -98,6 +101,16 @@ const TASK_TIMER_REMINDER_SYNC_MS = 60 * 1000;
 const DAY_IDLE_TASK_REMINDER_MS = 5 * 60 * 1000;
 const QUERY_REMINDER_MS = 10 * 60 * 1000;
 const QUERY_REMINDER_SYNC_MS = 60 * 1000;
+const QUERY_REMINDER_MAX_MS = 21 * 24 * 60 * 60 * 1000;
+const QUERY_REMINDER_AUDIENCE_ALL = "all";
+const QUERY_REMINDER_AUDIENCE_ASKER = "asker";
+const QUERY_REMINDER_AUDIENCE_OTHERS = "others";
+const DEFAULT_QUERY_REMINDER_AUDIENCE = QUERY_REMINDER_AUDIENCE_ALL;
+const QUERY_REMINDER_AUDIENCES = new Set([
+  QUERY_REMINDER_AUDIENCE_ALL,
+  QUERY_REMINDER_AUDIENCE_ASKER,
+  QUERY_REMINDER_AUDIENCE_OTHERS,
+]);
 const BASE_SLASH_COMMANDS = [
   {
     label: "/task <description> #label",
@@ -120,14 +133,44 @@ const BASE_SLASH_COMMANDS = [
     hint: "One task at a time",
   },
   {
+    label: "/task process continue",
+    insertText: "/task process continue",
+    hint: "Resume process",
+  },
+  {
     label: "/task complete <id>",
     insertText: "/task complete ",
     hint: "Complete task",
   },
   {
+    label: "/task reopen <id>",
+    insertText: "/task reopen ",
+    hint: "Reopen task",
+  },
+  {
+    label: "/task react <id> <reaction>",
+    insertText: "/task react ",
+    hint: "React to task",
+  },
+  {
     label: "/task completed",
     insertText: "/task completed",
     hint: "Completed tasks",
+  },
+  {
+    label: "/task day today <ids>",
+    insertText: "/task day today ",
+    hint: "Plan tasks",
+  },
+  {
+    label: "/task day list",
+    insertText: "/task day list",
+    hint: "Planned tasks",
+  },
+  {
+    label: "/task day review",
+    insertText: "/task day review",
+    hint: "Rollover review",
   },
   {
     label: "/task edit <id> <description> #label",
@@ -270,9 +313,19 @@ const BASE_SLASH_COMMANDS = [
     hint: "Ask with reminders",
   },
   {
+    label: "/query after 1h <question>",
+    insertText: "/query after 1h ",
+    hint: "Custom reminder",
+  },
+  {
     label: "/query task <task-id> <question>",
     insertText: "/query task ",
     hint: "Ask on task",
+  },
+  {
+    label: "/query task <task-id> after 1d <question>",
+    insertText: "/query task ",
+    hint: "Task reminder",
   },
   {
     label: "/query list",
@@ -296,6 +349,7 @@ const SESSION_KEY = "firestore-chat-session";
 const JOINED_ROOMS_KEY = "openbox-joined-rooms";
 const MESSAGES_PAGE_SIZE = 25;
 const LOCAL_ROOM_COMMANDS_KEY_PREFIX = "firestore-chat-room-commands";
+const TASK_PROCESS_STATE_KEY_PREFIX = "firestore-chat-task-process";
 const GROUP_COMMAND_SCOPE = "group";
 const PERSONAL_COMMAND_SCOPE = "personal";
 const SHARE_QUERY_KEY = "c";
@@ -327,6 +381,8 @@ const state = {
   roomPasscode: "",
   roomCommands: { ...DEFAULT_ROOM_COMMANDS },
   groupRoomCommands: {},
+  groupQueryReminderAudience: DEFAULT_QUERY_REMINDER_AUDIENCE,
+  queryReminderAudience: DEFAULT_QUERY_REMINDER_AUDIENCE,
   isAdvancedSettingsVisible: false,
   areAdvancedCommandsVisible: false,
   pendingInvitePrivacyMode: false,
@@ -348,6 +404,7 @@ const state = {
   unreadMessageIds: [],
   hiddenMessageIds: [],
   previewMessageIds: [],
+  autocompleteRequestId: 0,
   isPrivacyEnabled: false,
   isPrivacyPreviewVisible: false,
   privacyPreviewTimeoutId: null,
@@ -370,6 +427,8 @@ const state = {
   queryReminderSyncIntervalId: null,
   taskProcessSession: null,
   dayIdleTaskReminderTimeoutId: null,
+  activeBreakStartedAt: null,
+  lastBreakActivityPromptAt: 0,
   isNotificationsEnabled: loadNotificationsEnabled(),
   availableGroups: [],
   joinedRooms: loadJoinedRooms(),
@@ -440,6 +499,8 @@ function wireEvents() {
   window.addEventListener("focus", handleAttentionChange);
   window.addEventListener("pagehide", flushPendingSessionPersist);
   document.addEventListener("visibilitychange", handleAttentionChange);
+  document.addEventListener("click", handleBreakActivity);
+  document.addEventListener("keydown", handleBreakActivity);
   messageInput.addEventListener("keydown", handleMessageInputKeydown);
   messageInput.addEventListener("input", handleMessageInputChange);
   messageInput.addEventListener("scroll", syncMessageMaskOverlayScroll);
@@ -557,6 +618,7 @@ async function joinRoom(roomId, roomPasscode, displayName = displayNameInput.val
       roomIdInput.value = state.roomId;
       roomPasscodeInput.value = state.roomPasscode;
       applyRoomCommandsToInputs(state.roomCommands);
+      applyQueryReminderAudienceToInput(state.queryReminderAudience);
     } catch (error) {
       console.error(error);
       if (error?.message === "ROOM_PASSCODE_REQUIRED") {
@@ -1282,6 +1344,7 @@ async function connectToRoom(roomId, roomPasscode = "", roomData = null) {
   hideShareLinkPanel();
   renderEmptyState("No messages yet. Say hello.");
   applyRoomCommandsToInputs({});
+  applyQueryReminderAudienceToInput(DEFAULT_QUERY_REMINDER_AUDIENCE);
   setAdvancedSettingsVisibility(false);
 
   await loadInitialMessages(roomId);
@@ -1293,6 +1356,8 @@ async function connectToRoom(roomId, roomPasscode = "", roomData = null) {
   startTaskTimerReminderSync();
   startQueryReminderSync();
   void announceTodaysLeaves();
+  void postDailyTaskRolloverReview({ auto: true });
+  void syncActiveBreakState();
 }
 
 async function loadInitialMessages(roomId) {
@@ -1344,6 +1409,12 @@ function subscribeToRoom(roomId) {
 function applyRoomData(roomData = {}) {
   state.groupRoomCommands = loadGroupRoomCommands(roomData);
   state.roomCommands = getEffectiveRoomCommands(state.roomId, state.groupRoomCommands);
+  state.groupQueryReminderAudience = loadGroupQueryReminderAudience(roomData);
+  state.queryReminderAudience = getEffectiveQueryReminderAudience(
+    state.roomId,
+    state.groupQueryReminderAudience
+  );
+  void syncQueryReminders();
   updatePrivacyFeatureAccess();
 }
 
@@ -1538,6 +1609,10 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   state.roomPasscode = "";
   state.roomCommands = { ...DEFAULT_ROOM_COMMANDS };
   state.groupRoomCommands = {};
+  state.groupQueryReminderAudience = DEFAULT_QUERY_REMINDER_AUDIENCE;
+  state.queryReminderAudience = DEFAULT_QUERY_REMINDER_AUDIENCE;
+  state.activeBreakStartedAt = null;
+  state.lastBreakActivityPromptAt = 0;
   state.isAdvancedSettingsVisible = false;
   state.pendingInvitePrivacyMode = false;
   state.isClaimingPrivacyFeatureInvite = false;
@@ -1563,6 +1638,7 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   hideShareLinkPanel();
   setAdvancedSettingsVisibility(false);
   syncStealthLayout();
+  syncBreakVisualState();
   updatePrivacyIndicator();
   updateLocalMessagesUi();
   updateDocumentTitle();
@@ -1723,7 +1799,14 @@ function renderTaskListMessage(message) {
   list.className = "task-list";
 
   message.tasks.forEach((task) => {
-    list.append(renderTaskListItem(task, { maskIdentity: Boolean(message.maskIdentity) }));
+    list.append(
+      renderTaskListItem(task, {
+        maskIdentity: Boolean(message.maskIdentity),
+        rolloverReview: Boolean(message.rolloverReview),
+        rolloverDateKey: message.rolloverDateKey || "",
+        privateAliases: message.privateAliases || {},
+      })
+    );
   });
 
   container.append(list);
@@ -1755,6 +1838,7 @@ function renderTaskListItem(task, options = {}) {
 
   const commentCount = Number.isFinite(task.commentCount) ? task.commentCount : 0;
   const subtaskSummary = getSubtaskSummary(task);
+  const reactionSummary = summarizeTaskReactions(task.reactions);
 
   main.append(id, title);
 
@@ -1788,26 +1872,96 @@ function renderTaskListItem(task, options = {}) {
     viewButton.dataset.action = "task-view";
     viewButton.dataset.taskId = task.id;
 
+    const reactionButtons = document.createElement("div");
+    reactionButtons.className = "task-reaction-actions";
+
+    TASK_REACTION_OPTIONS.forEach((reaction) => {
+      const reactionButton = document.createElement("button");
+      reactionButton.type = "button";
+      reactionButton.className = "task-reaction-button";
+      reactionButton.textContent = reaction;
+      reactionButton.title = `React ${reaction}`;
+      reactionButton.dataset.action = "task-react";
+      reactionButton.dataset.taskId = task.id;
+      reactionButton.dataset.reaction = reaction;
+      reactionButton.classList.toggle("active", hasCurrentUserTaskReaction(task.reactions, reaction));
+      reactionButtons.append(reactionButton);
+    });
+
     const actions = document.createElement("div");
     actions.className = "task-list-actions";
+
+    if (task.status === "complete") {
+      const reopenButton = document.createElement("button");
+      reopenButton.type = "button";
+      reopenButton.className = "task-list-edit";
+      reopenButton.textContent = "Reopen";
+      reopenButton.dataset.action = "task-reopen";
+      reopenButton.dataset.taskId = task.id;
+      actions.append(reopenButton);
+    }
+
+    if (options.rolloverReview) {
+      const carryButton = document.createElement("button");
+      carryButton.type = "button";
+      carryButton.className = "task-list-edit";
+      carryButton.textContent = "Carry to today";
+      carryButton.dataset.action = "task-day-carry";
+      carryButton.dataset.taskId = task.id;
+      carryButton.dataset.sourceDateKey = options.rolloverDateKey || "";
+
+      const completeButton = document.createElement("button");
+      completeButton.type = "button";
+      completeButton.className = "task-list-edit";
+      completeButton.textContent = "Complete";
+      completeButton.dataset.action = "task-day-complete";
+      completeButton.dataset.taskId = task.id;
+      completeButton.dataset.sourceDateKey = options.rolloverDateKey || "";
+
+      const skipButton = document.createElement("button");
+      skipButton.type = "button";
+      skipButton.className = "task-list-edit";
+      skipButton.textContent = "Skip";
+      skipButton.dataset.action = "task-day-skip";
+      skipButton.dataset.taskId = task.id;
+      skipButton.dataset.sourceDateKey = options.rolloverDateKey || "";
+
+      actions.append(carryButton, completeButton, skipButton);
+    }
+
     actions.append(viewButton, editButton, commentButton, commentsButton);
-    main.append(actions);
+    main.append(actions, reactionButtons);
   }
 
   const meta = document.createElement("div");
   meta.className = "task-list-item-meta";
 
-  if (!maskIdentity) {
+  if (task.status === "complete" || task.completedAt) {
+    const completedBy = document.createElement("span");
+    completedBy.textContent = `Completed by ${formatTaskPersonName(
+      task.completedBy,
+      task.completedByName || "Unknown",
+      options.privateAliases,
+      { maskIdentity }
+    )}`;
+    meta.append(completedBy);
+
+    const completedAt = document.createElement("span");
+    completedAt.textContent = `Completed ${formatTaskTimestamp(task.completedAt)}`;
+    meta.append(completedAt);
+  } else if (!maskIdentity) {
     const creator = document.createElement("span");
     creator.textContent = task.createdByName || "Unknown";
     meta.append(creator);
-  }
 
-  const createdAt = document.createElement("span");
-  createdAt.textContent = maskIdentity
-    ? `Created ${formatTaskTimestamp(task.createdAt)}`
-    : formatTaskTimestamp(task.createdAt);
-  meta.append(createdAt);
+    const createdAt = document.createElement("span");
+    createdAt.textContent = formatTaskTimestamp(task.createdAt);
+    meta.append(createdAt);
+  } else {
+    const createdAt = document.createElement("span");
+    createdAt.textContent = `Created ${formatTaskTimestamp(task.createdAt)}`;
+    meta.append(createdAt);
+  }
 
   const totalTrackedMs = Number.isFinite(task.totalTrackedMs) ? task.totalTrackedMs : 0;
   const activeMs = task.activeTimerStartedAt
@@ -1846,6 +2000,10 @@ function renderTaskListItem(task, options = {}) {
   }
 
   item.append(main, meta);
+
+  if (reactionSummary.length > 0) {
+    item.append(renderTaskReactions(task.reactions));
+  }
 
   if (Array.isArray(task.labels) && task.labels.length > 0) {
     const labels = document.createElement("div");
@@ -1987,6 +2145,10 @@ function renderQueryPreviewCard(queryData, options = {}) {
   createdAt.textContent = formatTaskTimestamp(queryData.createdAt);
   meta.append(createdAt);
 
+  const reminder = document.createElement("span");
+  reminder.textContent = `Reminds every ${formatDuration(getQueryReminderIntervalMs(queryData))}`;
+  meta.append(reminder);
+
   if (queryData.taskId) {
     const taskLink = document.createElement("span");
     taskLink.textContent = `Task ${formatTaskId(queryData.taskId)}`;
@@ -2108,6 +2270,10 @@ function renderTaskPreviewCard(task, options = {}) {
 
   card.append(meta);
 
+  if (summarizeTaskReactions(task.reactions).length > 0) {
+    card.append(renderTaskReactions(task.reactions));
+  }
+
   card.append(renderTaskSubtasksPanel(task, { compact: true }));
 
   if (Array.isArray(task.labels) && task.labels.length > 0) {
@@ -2173,6 +2339,27 @@ function renderTaskSubtasksPanel(task, options = {}) {
 
   panel.append(list);
   return panel;
+}
+
+function renderTaskReactions(reactions) {
+  const summary = summarizeTaskReactions(reactions);
+
+  if (summary.length === 0) {
+    return document.createDocumentFragment();
+  }
+
+  const list = document.createElement("div");
+  list.className = "task-reactions";
+
+  summary.forEach((entry) => {
+    const item = document.createElement("span");
+    item.className = "task-reaction-summary";
+    item.textContent = `${entry.reaction} ${entry.count}`;
+    item.title = entry.userNames.join(", ");
+    list.append(item);
+  });
+
+  return list;
 }
 
 function renderTaskProcessMessage(message) {
@@ -2307,6 +2494,13 @@ function handleMessageActionClick(event) {
     void continueTaskTimer(actionButton.dataset.taskId || "");
   }
 
+  if (actionButton.dataset.action === "day-break-stop") {
+    actionButton.disabled = true;
+    void stopActiveBreak().finally(() => {
+      actionButton.disabled = false;
+    });
+  }
+
   if (actionButton.dataset.action === "task-start") {
     actionButton.disabled = true;
     void startTaskTimer(actionButton.dataset.taskId || "").finally(() => {
@@ -2319,12 +2513,30 @@ function handleMessageActionClick(event) {
     void completeTask(actionButton.dataset.taskId || "");
   }
 
+  if (actionButton.dataset.action === "task-reopen") {
+    actionButton.disabled = true;
+    void reopenTask(actionButton.dataset.taskId || "").finally(() => {
+      actionButton.disabled = false;
+    });
+  }
+
+  if (actionButton.dataset.action === "task-react") {
+    actionButton.disabled = true;
+    void toggleTaskReaction(actionButton.dataset.taskId || "", actionButton.dataset.reaction || "").finally(() => {
+      actionButton.disabled = false;
+    });
+  }
+
   if (actionButton.dataset.action === "task-edit-draft") {
     draftTaskEdit(actionButton.dataset.taskId || "", actionButton.dataset.taskDescription || "");
   }
 
   if (actionButton.dataset.action === "task-comment-draft") {
     draftTaskComment(actionButton.dataset.taskId || "");
+  }
+
+  if (actionButton.dataset.action === "task-query-draft") {
+    draftTaskQuery(actionButton.dataset.taskId || "");
   }
 
   if (actionButton.dataset.action === "task-comments-list") {
@@ -2337,6 +2549,25 @@ function handleMessageActionClick(event) {
   if (actionButton.dataset.action === "task-view") {
     actionButton.disabled = true;
     void postTaskView(actionButton.dataset.taskId || "").finally(() => {
+      actionButton.disabled = false;
+    });
+  }
+
+  if (actionButton.dataset.action === "task-day-carry") {
+    actionButton.disabled = true;
+    void carryDailyTaskToToday(actionButton.dataset.taskId || "", actionButton.dataset.sourceDateKey || "").finally(() => {
+      actionButton.disabled = false;
+    });
+  }
+
+  if (actionButton.dataset.action === "task-day-complete") {
+    actionButton.disabled = true;
+    void completeDailyTaskReviewItem(actionButton.dataset.taskId || "", actionButton.dataset.sourceDateKey || "");
+  }
+
+  if (actionButton.dataset.action === "task-day-skip") {
+    actionButton.disabled = true;
+    void skipDailyTaskReviewItem(actionButton.dataset.taskId || "", actionButton.dataset.sourceDateKey || "").finally(() => {
       actionButton.disabled = false;
     });
   }
@@ -2643,17 +2874,38 @@ async function sendSubmittedText(text) {
   }
 }
 
-function updateCommandAutocomplete() {
-  const matches = getCommandAutocompleteMatches(messageInput.value);
+async function updateCommandAutocomplete() {
+  const requestId = state.autocompleteRequestId + 1;
+  state.autocompleteRequestId = requestId;
+  const value = messageInput.value;
+  const cursorIndex = messageInput.selectionStart ?? value.length;
+  const matches = await getComposerAutocompleteMatches(value, cursorIndex);
+
+  if (requestId !== state.autocompleteRequestId || value !== messageInput.value) {
+    return;
+  }
+
   state.commandSuggestionMatches = matches;
   state.selectedCommandSuggestionIndex = 0;
 
   if (matches.length === 0) {
     hideCommandAutocomplete();
+    void maybeHydrateTaskEditDraft();
     return;
   }
 
   renderCommandAutocomplete();
+  void maybeHydrateTaskEditDraft();
+}
+
+async function getComposerAutocompleteMatches(value, cursorIndex = value.length) {
+  const commandMatches = getCommandAutocompleteMatches(value);
+
+  if (commandMatches.length > 0) {
+    return commandMatches;
+  }
+
+  return getHashAutocompleteMatches(value, cursorIndex);
 }
 
 function getCommandAutocompleteMatches(value) {
@@ -2668,7 +2920,90 @@ function getCommandAutocompleteMatches(value) {
     const label = command.label.toLowerCase();
     const insertText = command.insertText.toLowerCase();
     return label.startsWith(query) || insertText.startsWith(query);
-  }).slice(0, 5);
+  }).slice(0, COMMAND_AUTOCOMPLETE_LIMIT);
+}
+
+async function getHashAutocompleteMatches(value, cursorIndex = value.length) {
+  const context = getHashAutocompleteContext(value, cursorIndex);
+
+  if (!context || !state.db || !state.roomId) {
+    return [];
+  }
+
+  const queryText = context.query.toLowerCase();
+  const tasks = (await loadRoomTasks()).sort(compareTasksForAutocomplete);
+  const taskSuggestions = tasks
+    .filter((task) => task.id.toLowerCase().startsWith(queryText))
+    .map((task) => ({
+      label: formatTaskId(task.id),
+      insertText: formatTaskId(task.id),
+      hint: task.description || "Task",
+      replaceStart: context.start,
+      replaceEnd: context.end,
+      type: "task-id",
+      taskId: task.id,
+    }));
+  const labelSuggestions = getTaskLabelSuggestions(tasks, queryText, context);
+
+  if (!queryText) {
+    return [...taskSuggestions.slice(0, 5), ...labelSuggestions.slice(0, 3)].slice(0, COMMAND_AUTOCOMPLETE_LIMIT);
+  }
+
+  return [...taskSuggestions, ...labelSuggestions].slice(0, COMMAND_AUTOCOMPLETE_LIMIT);
+}
+
+function getHashAutocompleteContext(value, cursorIndex = value.length) {
+  const beforeCursor = value.slice(0, cursorIndex);
+  const match = beforeCursor.match(/(^|\s)#([a-z0-9_-]*)$/i);
+
+  if (!match) {
+    return null;
+  }
+
+  const token = `#${match[2]}`;
+  return {
+    query: match[2] || "",
+    start: cursorIndex - token.length,
+    end: cursorIndex,
+  };
+}
+
+function getTaskLabelSuggestions(tasks, queryText, context) {
+  const labels = new Set();
+
+  tasks.forEach((task) => {
+    if (!Array.isArray(task.labels)) {
+      return;
+    }
+
+    task.labels.forEach((label) => {
+      const normalizedLabel = String(label || "").trim().toLowerCase();
+
+      if (normalizedLabel) {
+        labels.add(normalizedLabel);
+      }
+    });
+  });
+
+  return [...labels]
+    .sort((left, right) => left.localeCompare(right))
+    .filter((label) => label.startsWith(queryText))
+    .map((label) => ({
+      label: `#${label}`,
+      insertText: `#${label}`,
+      hint: "Tag",
+      replaceStart: context.start,
+      replaceEnd: context.end,
+      type: "tag",
+    }));
+}
+
+function compareTasksForAutocomplete(left, right) {
+  if (left.status !== right.status) {
+    return left.status === "pending" ? -1 : 1;
+  }
+
+  return compareTasksByCreatedAt(left, right);
 }
 
 function getAvailableSlashCommands() {
@@ -2801,11 +3136,22 @@ function applyCommandSuggestion(index) {
     return;
   }
 
-  messageInput.value = command.insertText;
+  if (Number.isFinite(command.replaceStart) && Number.isFinite(command.replaceEnd)) {
+    const before = messageInput.value.slice(0, command.replaceStart);
+    const after = messageInput.value.slice(command.replaceEnd);
+    const suffix = after ? (/^\s/.test(after) ? "" : " ") : " ";
+    messageInput.value = `${before}${command.insertText}${suffix}${after}`;
+    const cursorIndex = before.length + command.insertText.length + suffix.length;
+    messageInput.setSelectionRange(cursorIndex, cursorIndex);
+  } else {
+    messageInput.value = command.insertText;
+    messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+  }
+
   syncMessageMaskOverlay();
   hideCommandAutocomplete();
   messageInput.focus();
-  messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+  void maybeHydrateTaskEditDraft();
 }
 
 function handleMessageListScroll() {
@@ -2917,7 +3263,7 @@ async function handleTaskCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     await postTaskMessage(
-      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task completed\n/task completed #bug\n/task view <id>\n/task process\n/task process #bug\n/task process stop\n/task edit <id> <description> #label\n/task comment <id> <comment>\n/task comments <id>\n/task subtask <id> <description>\n/task subtasks <id>\n/task subtask done <id> <subtask>\n/task subtask reopen <id> <subtask>\n/task subtask remove <id> <subtask>\n/task start\n/task start <id>\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task timers\n/task summary\n/task summary share\n/task complete <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nMention a task id like #abc123 in a message to preview it.\nUse /day for attendance and leave commands."
+      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task completed\n/task completed #bug\n/task day today #abc123 #def456\n/task day tomorrow #abc123\n/task day list [today|tomorrow|YYYY-MM-DD]\n/task day review\n/task view <id>\n/task process\n/task process #bug\n/task process continue\n/task process stop\n/task edit <id> <description> #label\n/task comment <id> <comment>\n/task comments <id>\n/task react <id> <reaction>\n/task subtask <id> <description>\n/task subtasks <id>\n/task subtask done <id> <subtask>\n/task subtask reopen <id> <subtask>\n/task subtask remove <id> <subtask>\n/task start\n/task start <id>\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task timers\n/task summary\n/task summary share\n/task complete <id>\n/task reopen <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nMention a task id like #abc123 in a message to preview it.\nUse /day for attendance and leave commands."
     );
     return;
   }
@@ -2929,6 +3275,11 @@ async function handleTaskCommand(text) {
 
   if (normalizedAction === "completed") {
     await postCompletedTaskList(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "day") {
+    await handleTaskDayCommand(rest.join(" "));
     return;
   }
 
@@ -2948,6 +3299,12 @@ async function handleTaskCommand(text) {
     return;
   }
 
+  if (normalizedAction === "reopen") {
+    const taskId = rest.join(" ").trim();
+    await reopenTask(taskId);
+    return;
+  }
+
   if (normalizedAction === "edit") {
     await editTask(rest.join(" "));
     return;
@@ -2960,6 +3317,11 @@ async function handleTaskCommand(text) {
 
   if (normalizedAction === "comments") {
     await postTaskComments(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "react" || normalizedAction === "reaction") {
+    await reactToTask(rest.join(" "));
     return;
   }
 
@@ -2998,11 +3360,6 @@ async function handleTaskCommand(text) {
 
   if (normalizedAction === "summary") {
     await postTaskSummary(rest.join(" "));
-    return;
-  }
-
-  if (normalizedAction === "day") {
-    postLocalDayMessage("Day commands moved to /day.\nUse /day start, /day plan <plan>, or /day end.");
     return;
   }
 
@@ -3108,7 +3465,7 @@ async function handleQueryCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     postLocalQueryMessage(
-      "Query commands:\n/query <question>\n/query task <task-id> <question>\n/query list\n/query respond <id> <response>\n/query close <id>"
+      "Query commands:\n/query <question>\n/query after 1h <question>\n/query task <task-id> <question>\n/query task <task-id> after 1d <question>\n/query list\n/query respond <id> <response>\n/query close <id>"
     );
     return;
   }
@@ -3137,10 +3494,10 @@ async function handleQueryCommand(text) {
 }
 
 async function createQuery(question, options = {}) {
-  const text = String(question || "").trim();
+  const { text, reminderIntervalMs, error } = parseQueryReminderInput(question);
 
   if (!text) {
-    postLocalQueryMessage("Add a question after /query.");
+    postLocalQueryMessage(error || "Add a question after /query.");
     return;
   }
 
@@ -3157,7 +3514,7 @@ async function createQuery(question, options = {}) {
     responseText: null,
     taskId: options.task?.id || null,
     taskDescription: options.task?.description || null,
-    reminderIntervalMs: QUERY_REMINDER_MS,
+    reminderIntervalMs,
     lastReminderAt: null,
     reminderCount: 0,
   };
@@ -3182,10 +3539,10 @@ async function createQuery(question, options = {}) {
 
 async function createTaskLinkedQuery(input) {
   const [taskId = "", ...questionParts] = input.trim().split(/\s+/);
-  const question = questionParts.join(" ").trim();
+  const { text: question, error } = parseQueryReminderInput(questionParts.join(" "));
 
   if (!taskId || !question) {
-    postLocalQueryMessage("Use /query task <task-id> <question>.");
+    postLocalQueryMessage(error || "Use /query task <task-id> <question>.");
     return;
   }
 
@@ -3201,7 +3558,7 @@ async function createTaskLinkedQuery(input) {
 }
 
 async function postQueryList() {
-  const queries = await loadPendingOwnQueries();
+  const queries = await loadPendingRoomQueries();
 
   if (queries.length === 0) {
     postLocalQueryMessage("No pending queries.");
@@ -3349,6 +3706,95 @@ function formatQueryMessageText(queryData) {
   return `Query ${formatQueryId(queryData.id)}${taskText}: ${queryData.text}`;
 }
 
+function parseQueryReminderInput(value) {
+  const tokens = String(value || "").trim().split(/\s+/).filter(Boolean);
+
+  if (tokens.length === 0) {
+    return {
+      text: "",
+      reminderIntervalMs: QUERY_REMINDER_MS,
+      error: null,
+    };
+  }
+
+  const [firstToken = "", secondToken = ""] = tokens;
+  let reminderToken = "";
+  let textStartIndex = 0;
+
+  if (
+    ["after", "in", "remind", "reminder"].includes(firstToken.toLowerCase()) &&
+    isQueryReminderDurationToken(secondToken)
+  ) {
+    reminderToken = secondToken;
+    textStartIndex = 2;
+  } else if (isQueryReminderDurationToken(firstToken)) {
+    reminderToken = firstToken;
+    textStartIndex = 1;
+  }
+
+  if (!reminderToken) {
+    return {
+      text: tokens.join(" "),
+      reminderIntervalMs: QUERY_REMINDER_MS,
+      error: null,
+    };
+  }
+
+  const reminderIntervalMs = parseQueryReminderDuration(reminderToken);
+
+  if (!reminderIntervalMs) {
+    return {
+      text: "",
+      reminderIntervalMs: QUERY_REMINDER_MS,
+      error: "Use reminder duration like 10m, 1h, or 5d.",
+    };
+  }
+
+  if (reminderIntervalMs > QUERY_REMINDER_MAX_MS) {
+    return {
+      text: "",
+      reminderIntervalMs: QUERY_REMINDER_MS,
+      error: `Query reminder duration must be ${formatDuration(QUERY_REMINDER_MAX_MS)} or less.`,
+    };
+  }
+
+  return {
+    text: tokens.slice(textStartIndex).join(" ").trim(),
+    reminderIntervalMs,
+    error: null,
+  };
+}
+
+function isQueryReminderDurationToken(value) {
+  return /^\d+[mhd]$/i.test(String(value || "").trim());
+}
+
+function parseQueryReminderDuration(value) {
+  const match = String(value || "").trim().match(/^(\d+)([mhd])$/i);
+
+  if (!match) {
+    return null;
+  }
+
+  const amount = Number.parseInt(match[1], 10);
+
+  if (!Number.isInteger(amount) || amount <= 0) {
+    return null;
+  }
+
+  const unit = match[2].toLowerCase();
+
+  if (unit === "m") {
+    return amount * 60 * 1000;
+  }
+
+  if (unit === "h") {
+    return amount * 60 * 60 * 1000;
+  }
+
+  return amount * 24 * 60 * 60 * 1000;
+}
+
 async function addQueryTaskComment(taskId, text) {
   await addDoc(collection(state.db, "rooms", state.roomId, "tasks", taskId, "comments"), {
     taskId,
@@ -3381,6 +3827,7 @@ async function createTask(description) {
     activeTimerStartedAt: null,
     activeTimerStartedBy: null,
     activeTimerStartedByName: null,
+    reactions: [],
     subtasks: [],
   });
 
@@ -3448,10 +3895,13 @@ async function postCompletedTaskList(filterText = "") {
   }
 
   const maskIdentity = isPrivacyModeActive();
+  const privateAliases = createTaskPrivacyAliases(completedTasks);
   const taskLines = completedTasks.map((task) => {
     const completedAt = formatTaskTimestamp(task.completedAt);
-    const completedBy = task.completedByName || "Unknown";
-    const metadata = maskIdentity ? `completed ${completedAt}` : `${completedBy}, completed ${completedAt}`;
+    const completedBy = formatTaskPersonName(task.completedBy, task.completedByName || "Unknown", privateAliases, {
+      maskIdentity,
+    });
+    const metadata = `${completedBy}, completed ${completedAt}`;
     return `${formatTaskId(task.id)} - ${task.description}${formatTaskLabels(task.labels)}${formatTaskTimeSummary(task, { maskIdentity })} (${metadata})`;
   });
   const heading =
@@ -3463,14 +3913,282 @@ async function postCompletedTaskList(filterText = "") {
   postLocalTaskListMessage(
     heading.replace(/:$/, ""),
     completedTasks,
-    `${heading}\n${taskLines.join("\n")}\n${totalLine}`
+    `${heading}\n${taskLines.join("\n")}\n${totalLine}`,
+    { privateAliases }
   );
   setStatus(`${completedTasks.length} completed task${completedTasks.length === 1 ? "" : "s"} listed.`, "success");
+}
+
+async function handleTaskDayCommand(input = "") {
+  const trimmedInput = input.trim();
+  const [action = "", ...rest] = trimmedInput.split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+
+  if (!trimmedInput || normalizedAction === "help") {
+    postLocalTaskMessage(
+      "Task day commands:\n/task day today #abc123 #def456\n/task day tomorrow #abc123\n/task day 2026-06-26 #abc123\n/task day list [today|tomorrow|YYYY-MM-DD]\n/task day review"
+    );
+    return;
+  }
+
+  if (normalizedAction === "list") {
+    await postDailyTaskPlan(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "review") {
+    await postDailyTaskRolloverReview({ auto: false });
+    return;
+  }
+
+  await assignTasksToDay(trimmedInput);
+}
+
+async function assignTasksToDay(input) {
+  const parts = input.trim().split(/\s+/).filter(Boolean);
+  const requestedDateKey = parseDateKey(parts[0]);
+  const dateKey = requestedDateKey || getTodayKey();
+  const taskIdInputs = requestedDateKey ? parts.slice(1) : parts;
+
+  if (taskIdInputs.length === 0) {
+    postLocalTaskMessage("Use /task day today #abc123 #def456.");
+    return;
+  }
+
+  const resolved = await resolveTaskIdsForDailyPlan(taskIdInputs);
+  const pendingTasks = resolved.tasks.filter((task) => task.status !== "complete");
+  const completedTasks = resolved.tasks.filter((task) => task.status === "complete");
+
+  if (pendingTasks.length === 0) {
+    const lines = ["No pending tasks were assigned."];
+
+    if (resolved.notFound.length > 0) {
+      lines.push(`Not found: ${resolved.notFound.join(", ")}`);
+    }
+
+    if (completedTasks.length > 0) {
+      lines.push(`Already complete: ${completedTasks.map((task) => formatTaskId(task.id)).join(", ")}`);
+    }
+
+    postLocalTaskMessage(lines.join("\n"));
+    setStatus("No tasks assigned.", "error");
+    return;
+  }
+
+  const workDay = await getWorkDay(dateKey);
+  const plannedTaskIds = mergeUniqueIds(workDay?.plannedTaskIds, pendingTasks.map((task) => task.id));
+
+  await setDoc(
+    getWorkDayRef(dateKey),
+    {
+      userId: state.profile.id,
+      userName: state.profile.name,
+      dateKey,
+      plannedTaskIds,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  const lines = [
+    `Planned ${pendingTasks.length} task${pendingTasks.length === 1 ? "" : "s"} for ${formatTaskPlanDate(dateKey)}.`,
+    ...pendingTasks.map((task) => `- ${formatTaskId(task.id)} ${task.description || "Untitled task"}`),
+  ];
+
+  if (resolved.notFound.length > 0) {
+    lines.push(`Not found: ${resolved.notFound.join(", ")}`);
+  }
+
+  if (completedTasks.length > 0) {
+    lines.push(`Already complete: ${completedTasks.map((task) => formatTaskId(task.id)).join(", ")}`);
+  }
+
+  postLocalTaskMessage(lines.join("\n"));
+  setStatus("Daily task plan saved.", "success");
+}
+
+async function postDailyTaskPlan(dateInput = "") {
+  const dateKey = parseDateKey(dateInput.trim() || "today");
+
+  if (!dateKey) {
+    postLocalTaskMessage("Use /task day list [today|tomorrow|YYYY-MM-DD].");
+    setStatus("Invalid date.", "error");
+    return;
+  }
+
+  const workDay = await getWorkDay(dateKey);
+  const plannedTaskIds = normalizeIdList(workDay?.plannedTaskIds);
+  const tasks = await loadTasksByIds(plannedTaskIds);
+  const tasksWithComments = await Promise.all(tasks.map(loadTaskCommentSummary));
+
+  if (tasksWithComments.length === 0) {
+    postLocalTaskMessage(`No tasks planned for ${formatTaskPlanDate(dateKey)}.`);
+    setStatus("No planned tasks.", "success");
+    return;
+  }
+
+  postLocalTaskListMessage(
+    `Planned tasks for ${formatTaskPlanDate(dateKey)}`,
+    sortTasksByPlannedOrder(tasksWithComments, plannedTaskIds),
+    `Planned tasks for ${formatTaskPlanDate(dateKey)}:\n${tasksWithComments
+      .map((task) => `${formatTaskId(task.id)} - ${task.description || "Untitled task"}`)
+      .join("\n")}`,
+    { plannedDateKey: dateKey }
+  );
+  setStatus(`${tasksWithComments.length} planned task${tasksWithComments.length === 1 ? "" : "s"} listed.`, "success");
+}
+
+async function postDailyTaskRolloverReview(options = {}) {
+  const sourceDateKey = options.sourceDateKey || getPreviousDateKey(getTodayKey());
+  const sourceWorkDay = await getWorkDay(sourceDateKey);
+  const todayWorkDay = await getWorkDay(getTodayKey());
+  const plannedTaskIds = normalizeIdList(sourceWorkDay?.plannedTaskIds);
+  const skippedTaskIds = new Set(normalizeIdList(todayWorkDay?.rolloverSkippedTaskIds));
+  const todayPlannedTaskIds = new Set(normalizeIdList(todayWorkDay?.plannedTaskIds));
+
+  if (plannedTaskIds.length === 0) {
+    if (!options.auto) {
+      postLocalTaskMessage(`No unfinished planned tasks from ${formatTaskPlanDate(sourceDateKey)}.`);
+      setStatus("No rollover tasks.", "success");
+    }
+
+    return;
+  }
+
+  if (options.auto && todayWorkDay?.rolloverReviewSourceDateKey === sourceDateKey) {
+    return;
+  }
+
+  const tasks = (await loadTasksByIds(plannedTaskIds))
+    .filter((task) => task.status !== "complete")
+    .filter((task) => !skippedTaskIds.has(task.id))
+    .filter((task) => !todayPlannedTaskIds.has(task.id));
+  const tasksWithComments = await Promise.all(tasks.map(loadTaskCommentSummary));
+
+  if (tasksWithComments.length === 0) {
+    if (!options.auto) {
+      postLocalTaskMessage(`No unfinished planned tasks from ${formatTaskPlanDate(sourceDateKey)}.`);
+      setStatus("No rollover tasks.", "success");
+    }
+
+    await markDailyTaskRolloverReviewShown(sourceDateKey);
+    return;
+  }
+
+  postLocalDailyTaskReviewMessage(
+    `Unfinished planned tasks from ${formatTaskPlanDate(sourceDateKey)}`,
+    sortTasksByPlannedOrder(tasksWithComments, plannedTaskIds),
+    sourceDateKey
+  );
+  await markDailyTaskRolloverReviewShown(sourceDateKey);
+  setStatus(`${tasksWithComments.length} rollover task${tasksWithComments.length === 1 ? "" : "s"} ready.`, "success");
+}
+
+async function carryDailyTaskToToday(taskIdInput, sourceDateKey = "") {
+  const task = await findTaskById(taskIdInput);
+
+  if (!task) {
+    postLocalTaskMessage(`Task ${taskIdInput} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  if (task.status === "complete") {
+    postLocalTaskMessage(`Task ${formatTaskId(task.id)} is already complete.`);
+    setStatus("Task is already complete.", "success");
+    return;
+  }
+
+  const todayKey = getTodayKey();
+  const workDay = await getWorkDay(todayKey);
+  const plannedTaskIds = mergeUniqueIds(workDay?.plannedTaskIds, [task.id]);
+  const rolloverSkippedTaskIds = normalizeIdList(workDay?.rolloverSkippedTaskIds).filter((id) => id !== task.id);
+
+  await setDoc(
+    getWorkDayRef(todayKey),
+    {
+      userId: state.profile.id,
+      userName: state.profile.name,
+      dateKey: todayKey,
+      plannedTaskIds,
+      rolloverSkippedTaskIds,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  postLocalTaskMessage(`Carried Task ${formatTaskId(task.id)} to today: ${task.description || "Untitled task"}`);
+  setStatus("Task carried to today.", "success");
+
+  if (sourceDateKey) {
+    await postDailyTaskRolloverReview({ auto: false, sourceDateKey });
+  }
+}
+
+async function completeDailyTaskReviewItem(taskIdInput, sourceDateKey = "") {
+  await completeTask(taskIdInput);
+
+  if (sourceDateKey) {
+    await postDailyTaskRolloverReview({ auto: false, sourceDateKey });
+  }
+}
+
+async function skipDailyTaskReviewItem(taskIdInput, sourceDateKey = "") {
+  const task = await findTaskById(taskIdInput);
+
+  if (!task) {
+    postLocalTaskMessage(`Task ${taskIdInput} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  const todayKey = getTodayKey();
+  const workDay = await getWorkDay(todayKey);
+  const rolloverSkippedTaskIds = mergeUniqueIds(workDay?.rolloverSkippedTaskIds, [task.id]);
+
+  await setDoc(
+    getWorkDayRef(todayKey),
+    {
+      userId: state.profile.id,
+      userName: state.profile.name,
+      dateKey: todayKey,
+      rolloverSkippedTaskIds,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  postLocalTaskMessage(`Skipped Task ${formatTaskId(task.id)} for today's rollover review.`);
+  setStatus("Rollover task skipped.", "success");
+
+  if (sourceDateKey) {
+    await postDailyTaskRolloverReview({ auto: false, sourceDateKey });
+  }
+}
+
+async function markDailyTaskRolloverReviewShown(sourceDateKey) {
+  await setDoc(
+    getWorkDayRef(getTodayKey()),
+    {
+      userId: state.profile.id,
+      userName: state.profile.name,
+      dateKey: getTodayKey(),
+      rolloverReviewSourceDateKey: sourceDateKey,
+      rolloverReviewShownAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
 }
 
 async function handleTaskProcessCommand(input = "") {
   const trimmedInput = input.trim();
   const normalizedInput = trimmedInput.toLowerCase();
+
+  if (normalizedInput === "continue" || normalizedInput === "resume") {
+    await continueTaskProcess();
+    return;
+  }
 
   if (normalizedInput === "stop" || normalizedInput === "end" || normalizedInput === "cancel") {
     stopTaskProcess();
@@ -3488,7 +4206,26 @@ async function handleTaskProcessCommand(input = "") {
     skippedTaskIds: new Set(),
     currentTaskId: null,
   };
+  saveTaskProcessState();
 
+  await postNextTaskProcessItem();
+}
+
+async function continueTaskProcess() {
+  if (state.taskProcessSession) {
+    await postNextTaskProcessItem();
+    return;
+  }
+
+  const savedProcess = loadTaskProcessState();
+
+  if (!savedProcess) {
+    postLocalTaskMessage("No saved task process found. Start one with /task process.");
+    setStatus("No saved task process.", "error");
+    return;
+  }
+
+  state.taskProcessSession = savedProcess;
   await postNextTaskProcessItem();
 }
 
@@ -3517,6 +4254,7 @@ async function postNextTaskProcessItem(options = {}) {
     const labelText = requestedLabels.length > 0 ? ` with ${formatTaskLabels(requestedLabels).trim()}` : "";
     postLocalTaskMessage(`Task process finished. No more pending tasks${labelText}.`);
     state.taskProcessSession = null;
+    clearTaskProcessState();
     setStatus("Task process finished.", "success");
     return;
   }
@@ -3528,6 +4266,7 @@ async function postNextTaskProcessItem(options = {}) {
     commentCount: comments.length,
   };
   state.taskProcessSession.currentTaskId = task.id;
+  saveTaskProcessState();
   postLocalTaskProcessMessage(taskWithComments, pendingTasks.length, comments);
   setStatus(`Task process: ${pendingTasks.length} pending task${pendingTasks.length === 1 ? "" : "s"} left.`, "success");
 }
@@ -3544,6 +4283,7 @@ async function skipTaskProcessItem(taskId) {
   if (normalizedTaskId) {
     state.taskProcessSession.skippedTaskIds.add(normalizedTaskId);
   }
+  saveTaskProcessState();
 
   await postNextTaskProcessItem();
 }
@@ -3576,8 +4316,62 @@ function stopTaskProcess() {
   }
 
   state.taskProcessSession = null;
+  clearTaskProcessState();
   postLocalTaskMessage("Task process stopped. Start again with /task process.");
   setStatus("Task process stopped.", "success");
+}
+
+function saveTaskProcessState() {
+  if (!state.roomId || !state.profile?.id || !state.taskProcessSession) {
+    return;
+  }
+
+  localStorage.setItem(
+    getTaskProcessStorageKey(),
+    JSON.stringify({
+      filterLabels: state.taskProcessSession.filterLabels || [],
+      skippedTaskIds: [...(state.taskProcessSession.skippedTaskIds || new Set())],
+      currentTaskId: state.taskProcessSession.currentTaskId || null,
+      updatedAt: new Date().toISOString(),
+    })
+  );
+}
+
+function loadTaskProcessState() {
+  if (!state.roomId || !state.profile?.id) {
+    return null;
+  }
+
+  try {
+    const raw = localStorage.getItem(getTaskProcessStorageKey());
+
+    if (!raw) {
+      return null;
+    }
+
+    const saved = JSON.parse(raw);
+    return {
+      filterLabels: Array.isArray(saved.filterLabels) ? saved.filterLabels : [],
+      skippedTaskIds: new Set(Array.isArray(saved.skippedTaskIds) ? saved.skippedTaskIds : []),
+      currentTaskId: saved.currentTaskId || null,
+    };
+  } catch (error) {
+    console.error("Task process restore failed:", error);
+    clearTaskProcessState();
+    return null;
+  }
+}
+
+function clearTaskProcessState() {
+  if (!state.roomId || !state.profile?.id) {
+    return;
+  }
+
+  localStorage.removeItem(getTaskProcessStorageKey());
+}
+
+function getTaskProcessStorageKey() {
+  return `${TASK_PROCESS_STATE_KEY_PREFIX}:${state.roomId}:${state.profile.id}`;
 }
 
 async function completeTask(taskIdInput) {
@@ -3631,6 +4425,44 @@ async function completeTask(taskIdInput) {
   );
   scheduleDayIdleTaskReminder();
   setStatus("Task completed.", "success");
+}
+
+async function reopenTask(taskIdInput) {
+  const taskId = taskIdInput.trim();
+
+  if (!taskId) {
+    await postTaskMessage("Use /task reopen <id> to reopen a completed task.");
+    return;
+  }
+
+  const task = await findTaskById(taskId);
+
+  if (!task) {
+    await postTaskMessage(`Task ${taskId} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  if (task.status !== "complete") {
+    await postTaskMessage(`Task ${formatTaskId(task.id)} is already pending.`);
+    setStatus("Task is already pending.", "success");
+    return;
+  }
+
+  await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", task.id), {
+    status: "pending",
+    completedAt: null,
+    completedBy: null,
+    completedByName: null,
+    reopenedAt: serverTimestamp(),
+    reopenedBy: state.profile.id,
+    reopenedByName: state.profile.name,
+    updatedAt: serverTimestamp(),
+  });
+
+  await postTaskMessage(`Task ${formatTaskId(task.id)} reopened: ${task.description}`);
+  scheduleDayIdleTaskReminder();
+  setStatus("Task reopened.", "success");
 }
 
 async function editTask(input) {
@@ -3701,8 +4533,64 @@ async function addTaskComment(input) {
     createdByName: state.profile.name,
   });
 
-  await postTaskMessage(`Comment added to Task ${formatTaskId(task.id)}: ${commentText}`);
+  await postTaskMessage(
+    `Comment added to Task ${formatTaskId(task.id)} (${task.description || "Untitled task"}): ${commentText}`
+  );
   setStatus("Task comment added.", "success");
+}
+
+async function reactToTask(input) {
+  const [taskId = "", reaction = ""] = input.trim().split(/\s+/);
+
+  if (!taskId || !reaction) {
+    await postTaskMessage("Use /task react <id> <reaction>.");
+    return;
+  }
+
+  await toggleTaskReaction(taskId, reaction);
+}
+
+async function toggleTaskReaction(taskIdInput, reactionInput) {
+  const taskId = taskIdInput.trim();
+  const reaction = normalizeTaskReaction(reactionInput);
+
+  if (!taskId || !reaction) {
+    await postTaskMessage("Use /task react <id> <reaction>.");
+    return;
+  }
+
+  const task = await findTaskById(taskId);
+
+  if (!task) {
+    await postTaskMessage(`Task ${taskId} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  const reactions = normalizeTaskReactions(task.reactions);
+  const existingReaction = reactions.find(
+    (entry) => entry.userId === state.profile.id && entry.reaction === reaction
+  );
+  const nextReactions = existingReaction
+    ? reactions.filter((entry) => !(entry.userId === state.profile.id && entry.reaction === reaction))
+    : [
+        ...reactions,
+        {
+          reaction,
+          userId: state.profile.id,
+          userName: state.profile.name,
+          createdAt: new Date(),
+        },
+      ];
+
+  await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", task.id), {
+    reactions: nextReactions,
+    updatedAt: serverTimestamp(),
+  });
+
+  const actionText = existingReaction ? "removed" : "added";
+  await postTaskMessage(`Reaction ${reaction} ${actionText} on Task ${formatTaskId(task.id)}: ${task.description}`);
+  setStatus(`Task reaction ${actionText}.`, "success");
 }
 
 async function postTaskComments(taskIdInput) {
@@ -4214,7 +5102,9 @@ async function postActiveTimers() {
   if (activeGeneralTimers.length > 0) {
     lines.push("General:");
     activeGeneralTimers.forEach((workDay) => {
-      const ownerName = workDay.activeTimerStartedByName || workDay.userName || "Someone";
+      const ownerName = isPrivacyModeActive()
+        ? "User"
+        : workDay.activeTimerStartedByName || workDay.userName || "Someone";
       const elapsed = formatDuration(Date.now() - getTimestampMillis(workDay.activeTimerStartedAt));
       const command = isCurrentUserWorkDay(workDay) ? " - stop with /task stop" : "";
       lines.push(`- ${ownerName}: ${elapsed}${command}`);
@@ -4224,7 +5114,7 @@ async function postActiveTimers() {
   if (activeTaskTimers.length > 0) {
     lines.push("Tasks:");
     activeTaskTimers.forEach((task) => {
-      const ownerName = getTaskTimerOwnerName(task);
+      const ownerName = isPrivacyModeActive() ? "User" : getTaskTimerOwnerName(task);
       const elapsed = formatDuration(Date.now() - getTimestampMillis(task.activeTimerStartedAt));
       const taskId = formatTaskId(task.id);
       const command = isCurrentUserTaskTimerOwner(task)
@@ -4442,6 +5332,60 @@ async function handleBreakCommand(input = "") {
   postLocalDayMessage("Use /day break start, /day break stop, or /day break list.");
 }
 
+async function syncActiveBreakState() {
+  if (!state.db || !state.roomId || !state.profile) {
+    setActiveBreakState(null);
+    return;
+  }
+
+  const workDay = await getWorkDay();
+  setActiveBreakState(workDay?.activeBreakStartedAt || null);
+}
+
+function setActiveBreakState(startedAt) {
+  state.activeBreakStartedAt = startedAt || null;
+  syncBreakVisualState();
+}
+
+function syncBreakVisualState() {
+  document.body.classList.toggle("break-active", Boolean(state.activeBreakStartedAt));
+}
+
+function handleBreakActivity(event) {
+  if (!state.activeBreakStartedAt) {
+    return;
+  }
+
+  if (event?.target?.closest?.(".command-suggestions")) {
+    return;
+  }
+
+  maybePromptStopBreak();
+}
+
+function maybePromptStopBreak() {
+  if (!state.activeBreakStartedAt || !state.roomId) {
+    return;
+  }
+
+  const now = Date.now();
+  if (now - state.lastBreakActivityPromptAt < 60 * 1000) {
+    return;
+  }
+
+  state.lastBreakActivityPromptAt = now;
+  postLocalDayMessage(
+    `You are still on break (${formatDuration(now - getTimestampMillis(state.activeBreakStartedAt))}). Stop it before continuing work.`,
+    [
+      {
+        label: "Stop break",
+        action: "day-break-stop",
+      },
+    ]
+  );
+  setStatus("Break is still running.", "error");
+}
+
 async function startBreak() {
   const workDay = await getWorkDay();
 
@@ -4474,6 +5418,7 @@ async function startBreak() {
 
   await postDayMessage(`${state.profile.name} started a break.`);
   clearDayIdleTaskReminder();
+  setActiveBreakState(startedAt);
   setStatus("Break started.", "success");
 }
 
@@ -4481,6 +5426,7 @@ async function stopActiveBreak(options = {}) {
   const workDay = await getWorkDay();
 
   if (!workDay?.activeBreakStartedAt) {
+    setActiveBreakState(null);
     if (options.announce !== false) {
       postLocalDayMessage("No break is running.");
       setStatus("No break is running.", "error");
@@ -4521,6 +5467,7 @@ async function stopActiveBreak(options = {}) {
     setStatus("Break stopped.", "success");
   }
 
+  setActiveBreakState(null);
   return breakEntry;
 }
 
@@ -4749,6 +5696,10 @@ async function buildDailyTaskSummary(options = {}) {
   );
   const breakMs = getTotalBreakMs(workDay);
   const trackedMs = taskTrackedMs + generalTrackedMs;
+  const plannedTaskIds = normalizeIdList(workDay?.plannedTaskIds);
+  const plannedTasks = tasks.filter((task) => plannedTaskIds.includes(task.id));
+  const completedPlannedTasks = plannedTasks.filter((task) => task.status === "complete");
+  const unfinishedPlannedTasks = plannedTasks.filter((task) => task.status !== "complete");
   const lines = [
     `Work summary for ${formatSummaryDate(start)}`,
   ];
@@ -4767,6 +5718,14 @@ async function buildDailyTaskSummary(options = {}) {
   }
   if (breakMs > 0) {
     lines.push(`Break time: ${formatDuration(breakMs)}`);
+  }
+  if (plannedTasks.length > 0) {
+    lines.push(
+      `Planned tasks: ${plannedTasks.length} (${completedPlannedTasks.length} complete, ${unfinishedPlannedTasks.length} pending)`
+    );
+    unfinishedPlannedTasks.slice(0, 10).forEach((task) => {
+      lines.push(`- Pending planned: ${task.description}${formatTaskLabels(task.labels)}`);
+    });
   }
   lines.push(`Completed: ${completedToday.length}`);
 
@@ -4805,7 +5764,8 @@ async function buildDailyTaskSummary(options = {}) {
     activeTimers.length === 0 &&
     !activeGeneralTimer?.data?.activeTimerStartedAt &&
     breakMs === 0 &&
-    !workDay?.activeBreakStartedAt
+    !workDay?.activeBreakStartedAt &&
+    plannedTasks.length === 0
   ) {
     lines.push("No task activity recorded today.");
   }
@@ -4893,6 +5853,7 @@ function serializeTaskForMessage(task) {
     totalTrackedMs: Number.isFinite(task.totalTrackedMs) ? task.totalTrackedMs : 0,
     activeTimerStartedAt: task.activeTimerStartedAt || null,
     activeTimerStartedByName: task.activeTimerStartedByName || "",
+    reactions: normalizeTaskReactions(task.reactions),
     commentCount: Number.isFinite(task.commentCount) ? task.commentCount : 0,
   };
 }
@@ -4915,6 +5876,58 @@ function normalizeSubtasks(subtasks) {
       completedByName: subtask?.completedByName || "",
     }))
     .filter((subtask) => subtask.id && subtask.text);
+}
+
+function normalizeTaskReactions(reactions) {
+  if (!Array.isArray(reactions)) {
+    return [];
+  }
+
+  return reactions
+    .map((entry) => ({
+      reaction: normalizeTaskReaction(entry?.reaction),
+      userId: String(entry?.userId || "").trim(),
+      userName: String(entry?.userName || "").trim(),
+      createdAt: entry?.createdAt || null,
+    }))
+    .filter((entry) => entry.reaction && entry.userId);
+}
+
+function normalizeTaskReaction(reaction) {
+  return String(reaction || "").trim().slice(0, 8);
+}
+
+function summarizeTaskReactions(reactions) {
+  const grouped = new Map();
+
+  normalizeTaskReactions(reactions).forEach((entry) => {
+    if (!grouped.has(entry.reaction)) {
+      grouped.set(entry.reaction, {
+        reaction: entry.reaction,
+        count: 0,
+        userNames: [],
+      });
+    }
+
+    const summary = grouped.get(entry.reaction);
+    summary.count += 1;
+    summary.userNames.push(entry.userName || "Someone");
+  });
+
+  return [...grouped.values()].sort((left, right) => {
+    if (right.count !== left.count) {
+      return right.count - left.count;
+    }
+
+    return left.reaction.localeCompare(right.reaction);
+  });
+}
+
+function hasCurrentUserTaskReaction(reactions, reaction) {
+  const normalizedReaction = normalizeTaskReaction(reaction);
+  return normalizeTaskReactions(reactions).some(
+    (entry) => entry.userId === state.profile?.id && entry.reaction === normalizedReaction
+  );
 }
 
 function getSubtaskSummary(task) {
@@ -5016,10 +6029,9 @@ async function loadRoomQueries() {
   }));
 }
 
-async function loadPendingOwnQueries() {
+async function loadPendingRoomQueries() {
   const pendingQueries = query(
     collection(state.db, "rooms", state.roomId, "queries"),
-    where("createdBy", "==", state.profile.id),
     where("status", "==", "pending")
   );
   const queriesSnapshot = await getDocs(pendingQueries);
@@ -5037,6 +6049,20 @@ async function loadRoomTasks() {
     id: taskDoc.id,
     ...taskDoc.data(),
   }));
+}
+
+async function loadTasksByIds(taskIds) {
+  const tasks = [];
+
+  for (const taskId of normalizeIdList(taskIds)) {
+    const task = await findTaskById(taskId);
+
+    if (task) {
+      tasks.push(task);
+    }
+  }
+
+  return tasks;
 }
 
 async function loadRoomWorkDays() {
@@ -5091,8 +6117,8 @@ async function loadWorkDayTimeEntries() {
   }));
 }
 
-async function getWorkDay() {
-  const snapshot = await getDoc(getWorkDayRef());
+async function getWorkDay(dateKey = getTodayKey()) {
+  const snapshot = await getDoc(getWorkDayRef(dateKey));
   return snapshot.exists() ? snapshot.data() : null;
 }
 
@@ -5123,8 +6149,8 @@ async function findActiveGeneralTimer() {
   };
 }
 
-function getWorkDayRef() {
-  return doc(state.db, "rooms", state.roomId, "workDays", `${state.profile.id}_${getTodayKey()}`);
+function getWorkDayRef(dateKey = getTodayKey()) {
+  return doc(state.db, "rooms", state.roomId, "workDays", `${state.profile.id}_${dateKey}`);
 }
 
 function isCurrentUserWorkDay(workDay) {
@@ -5254,12 +6280,28 @@ function postLocalTaskMessage(text, actions = []) {
   postLocalMessage(text, "Tasks (only you)", "task", actions);
 }
 
-function postLocalTaskListMessage(heading, tasks, fallbackText) {
+function postLocalTaskListMessage(heading, tasks, fallbackText, options = {}) {
   postLocalMessage(fallbackText, "Tasks (only you)", "task-list", [], {
     heading,
     tasks,
     maskIdentity: isPrivacyModeActive(),
+    rolloverReview: Boolean(options.rolloverReview),
+    rolloverDateKey: options.rolloverDateKey || "",
+    plannedDateKey: options.plannedDateKey || "",
+    privateAliases: options.privateAliases || null,
   });
+}
+
+function postLocalDailyTaskReviewMessage(heading, tasks, sourceDateKey) {
+  postLocalTaskListMessage(
+    heading,
+    tasks,
+    `${heading}:\n${tasks.map((task) => `${formatTaskId(task.id)} - ${task.description || "Untitled task"}`).join("\n")}`,
+    {
+      rolloverReview: true,
+      rolloverDateKey: sourceDateKey,
+    }
+  );
 }
 
 function postLocalTaskProcessMessage(task, remainingCount, comments = []) {
@@ -5273,6 +6315,11 @@ function postLocalTaskProcessMessage(task, remainingCount, comments = []) {
     {
       label: "Comment",
       action: "task-comment-draft",
+      taskId: task.id,
+    },
+    {
+      label: "Query",
+      action: "task-query-draft",
       taskId: task.id,
     },
     {
@@ -5292,7 +6339,7 @@ function postLocalTaskProcessMessage(task, remainingCount, comments = []) {
   ];
 
   postLocalMessage(
-    `Task process\n${taskId} - ${task.description}\nOptions: complete, comment, view comments, start timer, skip, or stop.`,
+    `Task process\n${taskId} - ${task.description}\nOptions: complete, comment, query, start timer, skip, or stop.`,
     "Tasks (only you)",
     "task-process",
     actions,
@@ -5326,8 +6373,8 @@ function postLocalTaskCommentsMessage(task, comments) {
   );
 }
 
-function postLocalDayMessage(text) {
-  postLocalMessage(text, "Day (only you)", "day");
+function postLocalDayMessage(text, actions = [], extra = {}) {
+  postLocalMessage(text, "Day (only you)", "day", actions, extra);
 }
 
 function postLocalCodexMessage(text) {
@@ -5401,7 +6448,7 @@ async function syncQueryReminders() {
   }
 
   try {
-    const queries = await loadPendingOwnQueries();
+    const queries = (await loadPendingRoomQueries()).filter(shouldRemindCurrentUserForQuery);
     const activeQueryIds = new Set();
 
     queries.forEach((queryData) => {
@@ -5425,7 +6472,7 @@ async function syncQueryReminders() {
 function scheduleQueryReminder(queryData) {
   clearQueryReminder(queryData.id);
 
-  if (queryData.status === "answered" || queryData.createdBy !== state.profile?.id) {
+  if (queryData.status === "answered" || !shouldRemindCurrentUserForQuery(queryData)) {
     return;
   }
 
@@ -5444,18 +6491,12 @@ async function handleQueryReminder(queryId) {
 
   const queryData = await findQueryById(queryId);
 
-  if (!queryData || queryData.status === "answered" || queryData.createdBy !== state.profile?.id) {
+  if (!queryData || queryData.status === "answered" || !shouldRemindCurrentUserForQuery(queryData)) {
     return;
   }
 
-  const remindedAt = new Date();
   const reminderCount = Number.isFinite(queryData.reminderCount) ? queryData.reminderCount : 0;
-  await updateDoc(doc(state.db, "rooms", state.roomId, "queries", queryData.id), {
-    lastReminderAt: serverTimestamp(),
-    reminderCount: increment(1),
-    updatedAt: serverTimestamp(),
-  });
-
+  const remindedAt = new Date();
   const remindedQuery = {
     ...queryData,
     lastReminderAt: remindedAt,
@@ -5463,7 +6504,7 @@ async function handleQueryReminder(queryId) {
   };
 
   postLocalQueryMessage(
-    `Reminder: Query ${formatQueryId(queryData.id)} still needs a response.\n${queryData.text}\nRespond with /query respond ${formatQueryId(queryData.id)} <response> or close with /query close ${formatQueryId(queryData.id)}.`,
+    `${getQueryReminderLeadText(queryData)}\nQuery ${formatQueryId(queryData.id)}: ${queryData.text}\nRespond with /query respond ${formatQueryId(queryData.id)} <response>${queryData.createdBy === state.profile?.id ? ` or close with /query close ${formatQueryId(queryData.id)}` : ""}.`,
     [],
     {
       type: "query-view",
@@ -5519,6 +6560,31 @@ function getQueryReminderBaseTime(queryData) {
 
   const createdTime = getTimestampMillis(queryData.createdAt);
   return createdTime > 0 ? createdTime : Date.now();
+}
+
+function shouldRemindCurrentUserForQuery(queryData) {
+  if (!queryData || queryData.status === "answered" || !state.profile?.id) {
+    return false;
+  }
+
+  const audience = normalizeQueryReminderAudience(state.queryReminderAudience);
+  const isAsker = queryData.createdBy === state.profile.id;
+
+  if (audience === QUERY_REMINDER_AUDIENCE_ASKER) {
+    return isAsker;
+  }
+
+  if (audience === QUERY_REMINDER_AUDIENCE_OTHERS) {
+    return !isAsker;
+  }
+
+  return true;
+}
+
+function getQueryReminderLeadText(queryData) {
+  return queryData.createdBy === state.profile?.id
+    ? "Still waiting for a response."
+    : "Please respond to this query.";
 }
 
 function scheduleTaskTimerReminder(task) {
@@ -5954,6 +7020,33 @@ function draftTaskEdit(taskId, description) {
   setStatus("Edit the task and send when ready.", "success");
 }
 
+async function maybeHydrateTaskEditDraft() {
+  const match = messageInput.value.trim().match(/^\/task\s+edit\s+(#?[a-z0-9]{6,24})$/i);
+
+  if (!match || !state.db || !state.roomId) {
+    return;
+  }
+
+  const task = await findTaskById(match[1]);
+
+  if (!task || messageInput.value.trim() !== match[0]) {
+    return;
+  }
+
+  const draftValue = `/task edit ${formatTaskId(task.id)} ${task.description || ""}`.trimEnd();
+
+  if (messageInput.value === draftValue) {
+    return;
+  }
+
+  messageInput.value = draftValue;
+  messageInput.focus();
+  messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+  syncMessageMaskOverlay();
+  hideCommandAutocomplete();
+  setStatus("Task loaded for editing. Update the text and send.", "success");
+}
+
 function draftTaskComment(taskId) {
   if (!taskId) {
     return;
@@ -5964,6 +7057,18 @@ function draftTaskComment(taskId) {
   messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
   handleMessageInputChange();
   setStatus("Write the task comment and send when ready.", "success");
+}
+
+function draftTaskQuery(taskId) {
+  if (!taskId) {
+    return;
+  }
+
+  messageInput.value = `/query task ${formatTaskId(taskId)} `;
+  messageInput.focus();
+  messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+  handleMessageInputChange();
+  setStatus("Write the task query and send when ready.", "success");
 }
 
 function draftQueryResponse(queryId) {
@@ -6004,6 +7109,120 @@ function formatDayAvailabilityStatus(workDay) {
 
   const reason = String(workDay.availabilityReason || "").trim();
   return reason ? `Free: ${reason}` : "Free";
+}
+
+function createTaskPrivacyAliases(tasks) {
+  const aliases = new Map();
+  let index = 1;
+
+  tasks.forEach((task) => {
+    [task.createdBy, task.completedBy, task.activeTimerStartedBy].forEach((userId) => {
+      if (!userId || aliases.has(userId)) {
+        return;
+      }
+
+      aliases.set(userId, `User ${index}`);
+      index += 1;
+    });
+  });
+
+  return aliases;
+}
+
+function formatTaskPersonName(userId, fallbackName = "Unknown", privateAliases = null, options = {}) {
+  if (!options.maskIdentity) {
+    return fallbackName || "Unknown";
+  }
+
+  if (userId && privateAliases?.has?.(userId)) {
+    return privateAliases.get(userId);
+  }
+
+  return "User";
+}
+
+function normalizeIdList(ids) {
+  if (!Array.isArray(ids)) {
+    return [];
+  }
+
+  const seen = new Set();
+  const normalizedIds = [];
+
+  ids.forEach((id) => {
+    const normalizedId = String(id || "").trim();
+    const dedupeKey = normalizedId.toLowerCase();
+
+    if (!normalizedId || seen.has(dedupeKey)) {
+      return;
+    }
+
+    seen.add(dedupeKey);
+    normalizedIds.push(normalizedId);
+  });
+
+  return normalizedIds;
+}
+
+function mergeUniqueIds(existingIds, addedIds) {
+  return normalizeIdList([...normalizeIdList(existingIds), ...normalizeIdList(addedIds)]);
+}
+
+async function resolveTaskIdsForDailyPlan(taskIdInputs) {
+  const tasks = [];
+  const notFound = [];
+  const seenTaskIds = new Set();
+
+  for (const taskIdInput of taskIdInputs) {
+    const task = await findTaskById(taskIdInput);
+
+    if (!task) {
+      notFound.push(taskIdInput);
+      continue;
+    }
+
+    if (seenTaskIds.has(task.id)) {
+      continue;
+    }
+
+    seenTaskIds.add(task.id);
+    tasks.push(task);
+  }
+
+  return { tasks, notFound };
+}
+
+function sortTasksByPlannedOrder(tasks, plannedTaskIds) {
+  const order = new Map(normalizeIdList(plannedTaskIds).map((taskId, index) => [taskId, index]));
+
+  return [...tasks].sort((left, right) => {
+    const leftIndex = order.has(left.id) ? order.get(left.id) : Number.MAX_SAFE_INTEGER;
+    const rightIndex = order.has(right.id) ? order.get(right.id) : Number.MAX_SAFE_INTEGER;
+
+    if (leftIndex !== rightIndex) {
+      return leftIndex - rightIndex;
+    }
+
+    return compareTasksByCreatedAt(left, right);
+  });
+}
+
+function getPreviousDateKey(dateKey) {
+  const date = new Date(`${dateKey}T00:00:00`);
+  date.setDate(date.getDate() - 1);
+  return formatDateKey(date);
+}
+
+function formatTaskPlanDate(dateKey) {
+  if (dateKey === getTodayKey()) {
+    return "today";
+  }
+
+  if (dateKey === parseDateKey("tomorrow")) {
+    return "tomorrow";
+  }
+
+  return dateKey;
 }
 
 function formatTaskTimeSummary(task, options = {}) {
@@ -6719,7 +7938,7 @@ async function showQueryReminderNotification(queryData) {
 
   try {
     await showBrowserNotification("Query reminder", {
-      body: `${taskText}${queryData.text || "A query still needs a response."}`,
+      body: `${getQueryReminderLeadText(queryData)} ${taskText}${queryData.text || "A query still needs a response."}`,
       tag: `query-${state.roomId}-${queryData.id}`,
       renotify: true,
       badge: "./icons/icon-192.png",
@@ -7248,11 +8467,20 @@ function loadGroupRoomCommands(roomData) {
   return roomData?.commands && typeof roomData.commands === "object" ? roomData.commands : {};
 }
 
+function loadGroupQueryReminderAudience(roomData) {
+  return normalizeQueryReminderAudience(roomData?.settings?.queryReminderAudience);
+}
+
 function getEffectiveRoomCommands(roomId, groupCommands = {}) {
   return normalizeRoomCommands({
     ...groupCommands,
     ...loadRawLocalRoomCommands(roomId),
   });
+}
+
+function getEffectiveQueryReminderAudience(roomId, groupAudience = DEFAULT_QUERY_REMINDER_AUDIENCE) {
+  const localSettings = loadRawLocalRoomCommands(roomId);
+  return normalizeQueryReminderAudience(localSettings.queryReminderAudience, groupAudience);
 }
 
 function loadRawLocalRoomCommands(roomId) {
@@ -7274,12 +8502,12 @@ function loadRawLocalRoomCommands(roomId) {
   }
 }
 
-function saveLocalRoomCommands(roomId, commands) {
+function saveLocalRoomCommands(roomId, commands, groupAudience = state.groupQueryReminderAudience) {
   if (!roomId) {
     return;
   }
 
-  const sanitizedCommands = stripEmptyCommandFields(commands);
+  const sanitizedCommands = stripLocalAdvancedSettings(commands, groupAudience);
   localStorage.setItem(
     getRoomCommandsStorageKey(roomId),
     JSON.stringify(sanitizedCommands)
@@ -7287,10 +8515,12 @@ function saveLocalRoomCommands(roomId, commands) {
 }
 
 async function saveAdvancedSettings() {
+  const queryReminderAudience = normalizeQueryReminderAudience(queryReminderAudienceInput.value);
   const rawCommands = {
     enable: normalizeCommandPhrase(privacyCommandInput.value),
     reveal: normalizeCommandPhrase(revealCommandInput.value),
     disable: normalizeCommandPhrase(disableCommandInput.value),
+    queryReminderAudience,
   };
 
   setAdvancedSettingsVisibility(false);
@@ -7298,13 +8528,19 @@ async function saveAdvancedSettings() {
   try {
     if (commandScopeInput.value === GROUP_COMMAND_SCOPE) {
       await saveGroupRoomCommands(state.roomId, rawCommands);
-      state.groupRoomCommands = rawCommands;
+      state.groupRoomCommands = stripEmptyCommandFields(rawCommands);
+      state.groupQueryReminderAudience = queryReminderAudience;
       localStorage.removeItem(getRoomCommandsStorageKey(state.roomId));
     } else {
-      saveLocalRoomCommands(state.roomId, rawCommands);
+      saveLocalRoomCommands(state.roomId, rawCommands, state.groupQueryReminderAudience);
     }
 
     state.roomCommands = getEffectiveRoomCommands(state.roomId, state.groupRoomCommands);
+    state.queryReminderAudience = getEffectiveQueryReminderAudience(
+      state.roomId,
+      state.groupQueryReminderAudience
+    );
+    void syncQueryReminders();
     persistSession();
     setStatus("Advanced settings saved.", "success");
   } catch (error) {
@@ -7324,6 +8560,9 @@ async function saveGroupRoomCommands(roomId, commands) {
     roomRef,
     {
       commands: sanitizedCommands,
+      settings: {
+        queryReminderAudience: normalizeQueryReminderAudience(commands.queryReminderAudience),
+      },
     },
     { merge: true }
   );
@@ -7336,20 +8575,27 @@ function handleCommandScopeChange() {
 function populateAdvancedSettingsForScope(scope, cachedCommands = null) {
   const localCommands = cachedCommands?.localCommands ?? loadRawLocalRoomCommands(state.roomId);
   const groupCommands = cachedCommands?.groupCommands ?? state.groupRoomCommands;
+  const groupQueryReminderAudience =
+    cachedCommands?.groupQueryReminderAudience ?? state.groupQueryReminderAudience;
 
   if (scope === PERSONAL_COMMAND_SCOPE) {
     applyRoomCommandsToInputs(localCommands);
+    applyQueryReminderAudienceToInput(
+      normalizeQueryReminderAudience(localCommands.queryReminderAudience, groupQueryReminderAudience)
+    );
     return;
   }
 
   applyRoomCommandsToInputs(groupCommands);
+  applyQueryReminderAudienceToInput(groupQueryReminderAudience);
 }
 
 function hasCustomCommands(commands) {
   return Boolean(
     normalizeCommandPhrase(commands?.enable) ||
       normalizeCommandPhrase(commands?.reveal) ||
-      normalizeCommandPhrase(commands?.disable)
+      normalizeCommandPhrase(commands?.disable) ||
+      QUERY_REMINDER_AUDIENCES.has(commands?.queryReminderAudience)
   );
 }
 
@@ -7371,6 +8617,40 @@ function stripEmptyCommandFields(commands) {
   return sanitized;
 }
 
+function stripLocalAdvancedSettings(settings, groupAudience = DEFAULT_QUERY_REMINDER_AUDIENCE) {
+  const sanitized = stripEmptyCommandFields(settings);
+  const queryReminderAudience = normalizeQueryReminderAudience(settings?.queryReminderAudience);
+  const normalizedGroupAudience = normalizeQueryReminderAudience(groupAudience);
+
+  if (queryReminderAudience !== normalizedGroupAudience) {
+    sanitized.queryReminderAudience = queryReminderAudience;
+  }
+
+  return sanitized;
+}
+
+function normalizeQueryReminderAudience(value, fallback = DEFAULT_QUERY_REMINDER_AUDIENCE) {
+  const normalizedValue = String(value || "").trim().toLowerCase();
+
+  if (QUERY_REMINDER_AUDIENCES.has(normalizedValue)) {
+    return normalizedValue;
+  }
+
+  if (QUERY_REMINDER_AUDIENCES.has(fallback)) {
+    return fallback;
+  }
+
+  return DEFAULT_QUERY_REMINDER_AUDIENCE;
+}
+
+function applyQueryReminderAudienceToInput(audience) {
+  if (!queryReminderAudienceInput) {
+    return;
+  }
+
+  queryReminderAudienceInput.value = normalizeQueryReminderAudience(audience);
+}
+
 function setAdvancedSettingsVisibility(visible) {
   state.isAdvancedSettingsVisible = visible;
   advancedSettingsPanel.hidden = !visible;
@@ -7381,6 +8661,7 @@ function setAdvancedSettingsVisibility(visible) {
     setAdvancedCommandVisibility(false);
     const localCommands = loadRawLocalRoomCommands(state.roomId);
     const groupCommands = state.groupRoomCommands;
+    const groupQueryReminderAudience = state.groupQueryReminderAudience;
     const initialScope = hasCustomCommands(localCommands)
       ? PERSONAL_COMMAND_SCOPE
       : GROUP_COMMAND_SCOPE;
@@ -7388,6 +8669,7 @@ function setAdvancedSettingsVisibility(visible) {
     populateAdvancedSettingsForScope(initialScope, {
       localCommands,
       groupCommands,
+      groupQueryReminderAudience,
     });
     return;
   }
@@ -7534,6 +8816,8 @@ async function restoreSession() {
     }
     state.roomCommands = getEffectiveRoomCommands(saved.roomId);
     applyRoomCommandsToInputs(state.roomCommands);
+    state.queryReminderAudience = getEffectiveQueryReminderAudience(saved.roomId);
+    applyQueryReminderAudienceToInput(state.queryReminderAudience);
     state.isPrivacyEnabled = Boolean(saved.isPrivacyEnabled);
     state.visibleMessageLimit =
       Number.isInteger(saved.visibleMessageLimit) && saved.visibleMessageLimit > 0
