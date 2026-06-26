@@ -1680,6 +1680,7 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
 function renderMessage(message, context = {}) {
   const wrapper = document.createElement("article");
   wrapper.className = "message";
+  wrapper.dataset.messageId = message.id || "";
 
   if (message.isLocalOnly) {
     wrapper.classList.add("local-only");
@@ -1755,6 +1756,10 @@ function renderMessage(message, context = {}) {
         button.dataset.leadId = action.leadId;
       }
 
+      if (action.successText) {
+        button.dataset.successText = action.successText;
+      }
+
       actions.append(button);
     });
 
@@ -1783,6 +1788,18 @@ function renderMessageReactions(message) {
   const container = document.createElement("div");
   container.className = "message-reaction-bar";
 
+  const picker = document.createElement("details");
+  picker.className = "message-reaction-picker";
+
+  const trigger = document.createElement("summary");
+  trigger.className = "message-reaction-trigger";
+  trigger.textContent = "🙂";
+  trigger.title = "Add reaction";
+  picker.append(trigger);
+
+  const options = document.createElement("div");
+  options.className = "message-reaction-options";
+
   MESSAGE_REACTION_OPTIONS.forEach((reaction) => {
     const button = document.createElement("button");
     button.type = "button";
@@ -1793,8 +1810,11 @@ function renderMessageReactions(message) {
     button.dataset.messageId = message.id;
     button.dataset.reaction = reaction;
     button.classList.toggle("active", hasCurrentUserMessageReaction(message.reactions, reaction));
-    container.append(button);
+    options.append(button);
   });
+
+  picker.append(options);
+  container.append(picker);
 
   const summary = renderMessageReactionSummary(message.reactions);
 
@@ -2198,7 +2218,7 @@ function renderQueryPreviewCard(queryData, options = {}) {
 
   if (queryData.createdByName) {
     const creator = document.createElement("span");
-    creator.textContent = `Asked by ${queryData.createdByName}`;
+    creator.textContent = `Asked by ${formatQueryPersonName(queryData.createdBy, queryData.createdByName)}`;
     meta.append(creator);
   }
 
@@ -2228,12 +2248,13 @@ function renderQueryPreviewCard(queryData, options = {}) {
   if (queryData.status === "answered") {
     const response = document.createElement("div");
     response.className = "query-response";
+    const answeredByName = formatQueryPersonName(queryData.answeredBy, queryData.answeredByName || "someone");
 
     const label = document.createElement("strong");
-    label.textContent = queryData.responseText ? `Response from ${queryData.answeredByName || "Someone"}` : "Closed";
+    label.textContent = queryData.responseText ? `Response from ${answeredByName}` : "Closed";
 
     const body = document.createElement("p");
-    body.textContent = queryData.responseText || `Closed by ${queryData.answeredByName || "someone"}.`;
+    body.textContent = queryData.responseText || `Closed by ${answeredByName}.`;
 
     response.append(label, body);
     card.append(response);
@@ -2650,7 +2671,7 @@ function renderTaskCommentsPanel(task, comments, options = {}) {
 
     const text = document.createElement("p");
     text.className = "task-comment-text";
-    text.textContent = comment.text || "";
+    text.textContent = formatTaskCommentText(comment, privateAliases, { maskIdentity });
 
     item.append(meta, text);
     list.append(item);
@@ -2668,38 +2689,35 @@ function handleMessageActionClick(event) {
   }
 
   if (actionButton.dataset.action === "task-continue") {
-    actionButton.disabled = true;
-    void continueTaskTimer(actionButton.dataset.taskId || "");
+    runLocalAction(actionButton, () => continueTaskTimer(actionButton.dataset.taskId || ""), "Timer continued.");
   }
 
   if (actionButton.dataset.action === "day-break-stop") {
-    actionButton.disabled = true;
-    void stopActiveBreak().finally(() => {
-      actionButton.disabled = false;
-    });
+    runLocalAction(actionButton, () => stopActiveBreak(), (breakEntry) =>
+      breakEntry
+        ? `Break stopped after ${formatDuration(breakEntry.durationMs)}.`
+        : "No break is running."
+    );
   }
 
   if (actionButton.dataset.action === "task-start") {
-    actionButton.disabled = true;
-    void startTaskTimer(actionButton.dataset.taskId || "").finally(() => {
-      actionButton.disabled = false;
-    });
+    runLocalAction(actionButton, () => startTaskTimer(actionButton.dataset.taskId || ""), "Timer started.");
   }
 
   if (actionButton.dataset.action === "task-complete") {
-    actionButton.disabled = true;
-    void completeTask(actionButton.dataset.taskId || "");
+    runLocalAction(actionButton, () => completeTask(actionButton.dataset.taskId || ""), "Task completed.");
   }
 
   if (actionButton.dataset.action === "task-reopen") {
-    actionButton.disabled = true;
-    void reopenTask(actionButton.dataset.taskId || "").finally(() => {
-      actionButton.disabled = false;
-    });
+    runLocalAction(actionButton, () => reopenTask(actionButton.dataset.taskId || ""), "Task reopened.");
   }
 
   if (actionButton.dataset.action === "message-react") {
     actionButton.disabled = true;
+    const picker = actionButton.closest("details");
+    if (picker) {
+      picker.open = false;
+    }
     void toggleMessageReaction(actionButton.dataset.messageId || "", actionButton.dataset.reaction || "").finally(() => {
       actionButton.disabled = false;
     });
@@ -2711,6 +2729,10 @@ function handleMessageActionClick(event) {
 
   if (actionButton.dataset.action === "task-comment-draft") {
     draftTaskComment(actionButton.dataset.taskId || "");
+  }
+
+  if (actionButton.dataset.action === "task-subtask-draft") {
+    draftTaskSubtask(actionButton.dataset.taskId || "");
   }
 
   if (actionButton.dataset.action === "task-query-draft") {
@@ -2732,51 +2754,51 @@ function handleMessageActionClick(event) {
   }
 
   if (actionButton.dataset.action === "task-day-carry") {
-    actionButton.disabled = true;
-    void carryDailyTaskToToday(actionButton.dataset.taskId || "", actionButton.dataset.sourceDateKey || "").finally(() => {
-      actionButton.disabled = false;
-    });
+    runLocalAction(
+      actionButton,
+      () => carryDailyTaskToToday(actionButton.dataset.taskId || "", actionButton.dataset.sourceDateKey || ""),
+      "Task carried to today."
+    );
   }
 
   if (actionButton.dataset.action === "task-day-complete") {
-    actionButton.disabled = true;
-    void completeDailyTaskReviewItem(actionButton.dataset.taskId || "", actionButton.dataset.sourceDateKey || "");
+    runLocalAction(
+      actionButton,
+      () => completeDailyTaskReviewItem(actionButton.dataset.taskId || "", actionButton.dataset.sourceDateKey || ""),
+      "Task completed."
+    );
   }
 
   if (actionButton.dataset.action === "task-day-skip") {
-    actionButton.disabled = true;
-    void skipDailyTaskReviewItem(actionButton.dataset.taskId || "", actionButton.dataset.sourceDateKey || "").finally(() => {
-      actionButton.disabled = false;
-    });
+    runLocalAction(
+      actionButton,
+      () => skipDailyTaskReviewItem(actionButton.dataset.taskId || "", actionButton.dataset.sourceDateKey || ""),
+      "Task skipped."
+    );
   }
 
   if (actionButton.dataset.action === "task-process-complete") {
-    actionButton.disabled = true;
-    void completeTaskProcessItem(actionButton.dataset.taskId || "");
+    runLocalAction(actionButton, () => completeTaskProcessItem(actionButton.dataset.taskId || ""), "Task completed.");
   }
 
   if (actionButton.dataset.action === "task-process-skip") {
-    actionButton.disabled = true;
-    void skipTaskProcessItem(actionButton.dataset.taskId || "");
+    runLocalAction(actionButton, () => skipTaskProcessItem(actionButton.dataset.taskId || ""), "Task skipped.");
   }
 
   if (actionButton.dataset.action === "task-process-stop") {
-    stopTaskProcess();
+    runLocalAction(actionButton, () => stopTaskProcess(), "Task process stopped.");
   }
 
   if (actionButton.dataset.action === "task-stop") {
-    actionButton.disabled = true;
-    void stopTaskTimer(actionButton.dataset.taskId || "");
+    runLocalAction(actionButton, () => stopTaskTimer(actionButton.dataset.taskId || ""), "Timer stopped.");
   }
 
   if (actionButton.dataset.action === "general-timer-continue") {
-    actionButton.disabled = true;
-    void continueGeneralTimer();
+    runLocalAction(actionButton, () => continueGeneralTimer(), "General timer continued.");
   }
 
   if (actionButton.dataset.action === "general-timer-stop") {
-    actionButton.disabled = true;
-    void stopGeneralTimer();
+    runLocalAction(actionButton, () => stopGeneralTimer(), "General timer stopped.");
   }
 
   if (actionButton.dataset.action === "query-respond-draft") {
@@ -2784,10 +2806,7 @@ function handleMessageActionClick(event) {
   }
 
   if (actionButton.dataset.action === "query-close") {
-    actionButton.disabled = true;
-    void closeQuery(actionButton.dataset.queryId || "").finally(() => {
-      actionButton.disabled = false;
-    });
+    runLocalAction(actionButton, () => closeQuery(actionButton.dataset.queryId || ""), "Query closed.");
   }
 
   if (actionButton.dataset.action === "lead-update-draft") {
@@ -3949,7 +3968,7 @@ async function respondToQuery(input) {
   if (queryData.taskId) {
     await addQueryTaskComment(
       queryData.taskId,
-      `Response to Query ${formatQueryId(queryData.id)} from ${getProfileDisplayName()}: ${responseText}`
+      `Response to Query ${formatQueryId(queryData.id)}: ${responseText}`
     );
   }
 
@@ -6876,6 +6895,11 @@ function postLocalTaskProcessMessage(task, remainingCount, comments = []) {
       taskId: task.id,
     },
     {
+      label: "Subtask",
+      action: "task-subtask-draft",
+      taskId: task.id,
+    },
+    {
       label: "Query",
       action: "task-query-draft",
       taskId: task.id,
@@ -6897,7 +6921,7 @@ function postLocalTaskProcessMessage(task, remainingCount, comments = []) {
   ];
 
   postLocalMessage(
-    `Task process\n${taskId} - ${task.description}\nOptions: complete, comment, query, start timer, skip, or stop.`,
+    `Task process\n${taskId} - ${task.description}\nOptions: complete, comment, subtask, query, start timer, skip, or stop.`,
     "Tasks (only you)",
     "task-process",
     actions,
@@ -6964,6 +6988,74 @@ function postLocalMessage(text, senderName, type, actions = [], extra = {}) {
     createdAt: new Date(),
     ...extra,
   });
+  syncStealthLayout();
+  updatePrivacyIndicator();
+  updateLocalMessagesUi();
+  renderMessages();
+}
+
+function runLocalAction(actionButton, action, successText) {
+  const messageId = actionButton.closest(".message")?.dataset.messageId || "";
+  const actionGroup = actionButton.closest(".message-actions");
+  const actionButtons = actionGroup ? [...actionGroup.querySelectorAll("button")] : [actionButton];
+  const originalText = actionButton.textContent;
+
+  actionButtons.forEach((button) => {
+    button.disabled = true;
+  });
+  actionButton.textContent = "Working...";
+
+  let actionPromise;
+
+  try {
+    actionPromise = typeof action === "function" ? action() : action;
+  } catch (error) {
+    console.error("Local action failed:", error);
+    actionButton.textContent = originalText;
+    actionButtons.forEach((button) => {
+      button.disabled = false;
+    });
+    setStatus("Action failed. Try again.", "error");
+    return;
+  }
+
+  void Promise.resolve(actionPromise)
+    .then((result) => {
+      const replacementText =
+        typeof successText === "function" ? successText(result) : successText || actionButton.dataset.successText;
+
+      if (replacementText) {
+        replaceLocalMessage(messageId, replacementText);
+        return;
+      }
+
+      renderMessages();
+    })
+    .catch((error) => {
+      console.error("Local action failed:", error);
+      actionButton.textContent = originalText;
+      actionButtons.forEach((button) => {
+        button.disabled = false;
+      });
+      setStatus("Action failed. Try again.", "error");
+    });
+}
+
+function replaceLocalMessage(messageId, text, extra = {}) {
+  const index = state.localMessages.findIndex((message) => message.id === messageId);
+
+  if (index === -1) {
+    postLocalMessage(text, extra.senderName || "App (only you)", extra.type || "local");
+    return;
+  }
+
+  state.localMessages[index] = {
+    ...state.localMessages[index],
+    ...extra,
+    text,
+    actions: [],
+    createdAt: new Date(),
+  };
   syncStealthLayout();
   updatePrivacyIndicator();
   updateLocalMessagesUi();
@@ -7637,6 +7729,18 @@ function draftTaskComment(taskId) {
   setStatus("Write the task comment and send when ready.", "success");
 }
 
+function draftTaskSubtask(taskId) {
+  if (!taskId) {
+    return;
+  }
+
+  messageInput.value = `/task subtask ${formatTaskId(taskId)} `;
+  messageInput.focus();
+  messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+  handleMessageInputChange();
+  setStatus("Write the subtask and send when ready.", "success");
+}
+
 function draftTaskQuery(taskId) {
   if (!taskId) {
     return;
@@ -7770,6 +7874,27 @@ function formatTaskPersonName(userId, fallbackName = "Unknown", privateAliases =
 
 function formatTaskCommentAuthor(comment, privateAliases = null, options = {}) {
   return formatTaskPersonName(comment.createdBy, comment.createdByName || "Unknown", privateAliases, options);
+}
+
+function formatTaskCommentText(comment, privateAliases = null, options = {}) {
+  const text = comment.text || "";
+
+  if (!options.maskIdentity) {
+    return text;
+  }
+
+  const author = formatTaskCommentAuthor(comment, privateAliases, options);
+  const storedName = escapeRegExp(comment.createdByName || state.profile?.name || "");
+
+  if (!storedName) {
+    return text;
+  }
+
+  return text.replace(new RegExp(`\\bfrom\\s+${storedName}:`, "gi"), `from ${author}:`);
+}
+
+function formatQueryPersonName(userId, fallbackName = "Unknown") {
+  return formatTaskPersonName(userId, fallbackName, null, { maskIdentity: isPrivacyModeActive() });
 }
 
 function normalizeIdList(ids) {

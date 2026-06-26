@@ -1021,15 +1021,66 @@ button:disabled {
 }
 
 .message-reaction-bar,
-.message-reactions {
+.message-reactions,
+.message-reaction-options {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
 .message-reaction-bar {
+  position: relative;
   margin-top: 8px;
   align-items: center;
+}
+
+.message-reaction-picker {
+  position: relative;
+}
+
+.message-reaction-trigger {
+  min-width: 32px;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  border: 1px solid rgba(214, 208, 194, 0.86);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.74);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.84rem;
+  line-height: 1;
+  cursor: pointer;
+  list-style: none;
+}
+
+.message-reaction-trigger::-webkit-details-marker {
+  display: none;
+}
+
+.message-reaction-trigger:hover,
+.message-reaction-trigger:focus-visible,
+.message-reaction-picker[open] .message-reaction-trigger {
+  transform: none;
+  border-color: rgba(15, 118, 110, 0.42);
+  background: var(--accent-soft);
+  outline: none;
+}
+
+.message-reaction-options {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 6px);
+  width: max-content;
+  max-width: 190px;
+  padding: 6px;
+  border: 1px solid rgba(214, 208, 194, 0.86);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 10px 22px rgba(22, 34, 31, 0.16);
+  z-index: 3;
 }
 
 .message-reaction-button,
