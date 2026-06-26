@@ -96,7 +96,7 @@ const COMMAND_AUTOCOMPLETE_LIMIT = 8;
 const TASK_LIST_LIMIT = 50;
 const LEAD_LIST_LIMIT = 25;
 const TASK_PREVIEW_LIMIT = 3;
-const TASK_REACTION_OPTIONS = ["👍", "✅", "👀", "🙌"];
+const MESSAGE_REACTION_OPTIONS = ["👍", "✅", "👀", "🙌"];
 const TASK_TIMER_REMINDER_MS = 25 * 60 * 1000;
 const TASK_TIMER_REPEAT_REMINDER_MS = 5 * 60 * 1000;
 const TASK_TIMER_MAX_UNANSWERED_REMINDERS = 2;
@@ -166,11 +166,6 @@ const BASE_SLASH_COMMANDS = [
     label: "/task reopen <id>",
     insertText: "/task reopen ",
     hint: "Reopen task",
-  },
-  {
-    label: "/task react <id> <reaction>",
-    insertText: "/task react ",
-    hint: "React to task",
   },
   {
     label: "/task completed",
@@ -1766,6 +1761,10 @@ function renderMessage(message, context = {}) {
     wrapper.append(actions);
   }
 
+  if (!message.isLocalOnly) {
+    wrapper.append(renderMessageReactions(message));
+  }
+
   if (!message.isLocalOnly && message.senderId === state.profile?.id) {
     const readBy = getMessageReadByNames(message);
 
@@ -1778,6 +1777,53 @@ function renderMessage(message, context = {}) {
   }
 
   return wrapper;
+}
+
+function renderMessageReactions(message) {
+  const container = document.createElement("div");
+  container.className = "message-reaction-bar";
+
+  MESSAGE_REACTION_OPTIONS.forEach((reaction) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "message-reaction-button";
+    button.textContent = reaction;
+    button.title = `React ${reaction}`;
+    button.dataset.action = "message-react";
+    button.dataset.messageId = message.id;
+    button.dataset.reaction = reaction;
+    button.classList.toggle("active", hasCurrentUserMessageReaction(message.reactions, reaction));
+    container.append(button);
+  });
+
+  const summary = renderMessageReactionSummary(message.reactions);
+
+  if (summary) {
+    container.append(summary);
+  }
+
+  return container;
+}
+
+function renderMessageReactionSummary(reactions) {
+  const entries = summarizeMessageReactions(reactions);
+
+  if (entries.length === 0) {
+    return null;
+  }
+
+  const list = document.createElement("div");
+  list.className = "message-reactions";
+
+  entries.forEach((entry) => {
+    const item = document.createElement("span");
+    item.className = "message-reaction-summary";
+    item.textContent = `${entry.reaction} ${entry.count}`;
+    item.title = entry.userNames.join(", ");
+    list.append(item);
+  });
+
+  return list;
 }
 
 function renderMessages(options = {}) {
@@ -1873,7 +1919,6 @@ function renderTaskListItem(task, options = {}) {
 
   const commentCount = Number.isFinite(task.commentCount) ? task.commentCount : 0;
   const subtaskSummary = getSubtaskSummary(task);
-  const reactionSummary = summarizeTaskReactions(task.reactions);
 
   main.append(id, title);
 
@@ -1906,22 +1951,6 @@ function renderTaskListItem(task, options = {}) {
     viewButton.textContent = "View";
     viewButton.dataset.action = "task-view";
     viewButton.dataset.taskId = task.id;
-
-    const reactionButtons = document.createElement("div");
-    reactionButtons.className = "task-reaction-actions";
-
-    TASK_REACTION_OPTIONS.forEach((reaction) => {
-      const reactionButton = document.createElement("button");
-      reactionButton.type = "button";
-      reactionButton.className = "task-reaction-button";
-      reactionButton.textContent = reaction;
-      reactionButton.title = `React ${reaction}`;
-      reactionButton.dataset.action = "task-react";
-      reactionButton.dataset.taskId = task.id;
-      reactionButton.dataset.reaction = reaction;
-      reactionButton.classList.toggle("active", hasCurrentUserTaskReaction(task.reactions, reaction));
-      reactionButtons.append(reactionButton);
-    });
 
     const actions = document.createElement("div");
     actions.className = "task-list-actions";
@@ -1965,7 +1994,7 @@ function renderTaskListItem(task, options = {}) {
     }
 
     actions.append(viewButton, editButton, commentButton, commentsButton);
-    main.append(actions, reactionButtons);
+    main.append(actions);
   }
 
   const meta = document.createElement("div");
@@ -2036,10 +2065,6 @@ function renderTaskListItem(task, options = {}) {
 
   item.append(main, meta);
 
-  if (reactionSummary.length > 0) {
-    item.append(renderTaskReactions(task.reactions));
-  }
-
   if (Array.isArray(task.labels) && task.labels.length > 0) {
     const labels = document.createElement("div");
     labels.className = "task-list-labels";
@@ -2082,6 +2107,7 @@ function renderTaskViewMessage(message) {
       renderTaskCommentsPanel(message.task, message.comments, {
         emptyText: "No comments yet.",
         title: "Comments",
+        maskIdentity: Boolean(message.maskIdentity),
       })
     );
   }
@@ -2439,10 +2465,6 @@ function renderTaskPreviewCard(task, options = {}) {
 
   card.append(meta);
 
-  if (summarizeTaskReactions(task.reactions).length > 0) {
-    card.append(renderTaskReactions(task.reactions));
-  }
-
   card.append(renderTaskSubtasksPanel(task, { compact: true }));
 
   if (Array.isArray(task.labels) && task.labels.length > 0) {
@@ -2510,27 +2532,6 @@ function renderTaskSubtasksPanel(task, options = {}) {
   return panel;
 }
 
-function renderTaskReactions(reactions) {
-  const summary = summarizeTaskReactions(reactions);
-
-  if (summary.length === 0) {
-    return document.createDocumentFragment();
-  }
-
-  const list = document.createElement("div");
-  list.className = "task-reactions";
-
-  summary.forEach((entry) => {
-    const item = document.createElement("span");
-    item.className = "task-reaction-summary";
-    item.textContent = `${entry.reaction} ${entry.count}`;
-    item.title = entry.userNames.join(", ");
-    list.append(item);
-  });
-
-  return list;
-}
-
 function renderTaskProcessMessage(message) {
   const container = document.createElement("div");
   container.className = "task-process-message";
@@ -2559,6 +2560,7 @@ function renderTaskProcessMessage(message) {
     renderTaskCommentsPanel(message.task, message.comments || [], {
       emptyText: "No comments yet.",
       title: "Comments",
+      maskIdentity: Boolean(message.maskIdentity),
     })
   );
 
@@ -2592,12 +2594,19 @@ function renderTaskCommentsMessage(message) {
   taskTitle.textContent = message.task.description || "Untitled task";
   container.append(taskTitle);
 
-  container.append(renderTaskCommentsPanel(message.task, message.comments, { title: "Thread" }));
+  container.append(
+    renderTaskCommentsPanel(message.task, message.comments, {
+      title: "Thread",
+      maskIdentity: Boolean(message.maskIdentity),
+    })
+  );
 
   return container;
 }
 
 function renderTaskCommentsPanel(task, comments, options = {}) {
+  const maskIdentity = Boolean(options.maskIdentity);
+  const privateAliases = maskIdentity ? createTaskCommentPrivacyAliases(comments) : null;
   const panel = document.createElement("section");
   panel.className = "task-comments-panel";
 
@@ -2632,7 +2641,7 @@ function renderTaskCommentsPanel(task, comments, options = {}) {
     meta.className = "task-comment-meta";
 
     const author = document.createElement("strong");
-    author.textContent = comment.createdByName || "Unknown";
+    author.textContent = formatTaskCommentAuthor(comment, privateAliases, { maskIdentity });
 
     const time = document.createElement("span");
     time.textContent = formatTaskTimestamp(comment.createdAt);
@@ -2689,9 +2698,9 @@ function handleMessageActionClick(event) {
     });
   }
 
-  if (actionButton.dataset.action === "task-react") {
+  if (actionButton.dataset.action === "message-react") {
     actionButton.disabled = true;
-    void toggleTaskReaction(actionButton.dataset.taskId || "", actionButton.dataset.reaction || "").finally(() => {
+    void toggleMessageReaction(actionButton.dataset.messageId || "", actionButton.dataset.reaction || "").finally(() => {
       actionButton.disabled = false;
     });
   }
@@ -3034,7 +3043,7 @@ async function sendSubmittedText(text) {
     const messagePayload = {
       text,
       senderId: state.profile.id,
-      senderName: state.profile.name,
+      senderName: getProfileDisplayName(),
       createdAt: serverTimestamp(),
     };
 
@@ -3497,7 +3506,7 @@ async function handleTaskCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     await postTaskMessage(
-      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task completed\n/task completed #bug\n/task day today #abc123 #def456\n/task day tomorrow #abc123\n/task day list [today|tomorrow|YYYY-MM-DD]\n/task day review\n/task view <id>\n/task process\n/task process #bug\n/task process continue\n/task process stop\n/task edit <id> <description> #label\n/task comment <id> <comment>\n/task comments <id>\n/task react <id> <reaction>\n/task subtask <id> <description>\n/task subtasks <id>\n/task subtask done <id> <subtask>\n/task subtask reopen <id> <subtask>\n/task subtask remove <id> <subtask>\n/task start\n/task start <id>\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task timers\n/task summary\n/task summary share\n/task complete <id>\n/task reopen <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nMention a task id like #abc123 in a message to preview it.\nUse /day for attendance and leave commands."
+      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task completed\n/task completed #bug\n/task day today #abc123 #def456\n/task day tomorrow #abc123\n/task day list [today|tomorrow|YYYY-MM-DD]\n/task day review\n/task view <id>\n/task process\n/task process #bug\n/task process continue\n/task process stop\n/task edit <id> <description> #label\n/task comment <id> <comment>\n/task comments <id>\n/task subtask <id> <description>\n/task subtasks <id>\n/task subtask done <id> <subtask>\n/task subtask reopen <id> <subtask>\n/task subtask remove <id> <subtask>\n/task start\n/task start <id>\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task timers\n/task summary\n/task summary share\n/task complete <id>\n/task reopen <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nMention a task id like #abc123 in a message to preview it.\nUse /day for attendance and leave commands."
     );
     return;
   }
@@ -3551,11 +3560,6 @@ async function handleTaskCommand(text) {
 
   if (normalizedAction === "comments") {
     await postTaskComments(rest.join(" "));
-    return;
-  }
-
-  if (normalizedAction === "react" || normalizedAction === "reaction") {
-    await reactToTask(rest.join(" "));
     return;
   }
 
@@ -3676,7 +3680,7 @@ async function handleCodexCommand(text) {
     prompt,
     status: "queued",
     requestedBy: state.profile.id,
-    requestedByName: state.profile.name,
+    requestedByName: getProfileDisplayName(),
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
     startedAt: null,
@@ -3686,7 +3690,7 @@ async function handleCodexCommand(text) {
   });
 
   await postCodexMessage(
-    `Queued Codex command ${formatCodexCommandId(commandRef.id)} from ${state.profile.name}.\n${prompt}`
+    `Queued Codex command ${formatCodexCommandId(commandRef.id)} from ${getProfileDisplayName()}.\n${prompt}`
   );
   setStatus("Codex command queued.", "success");
 }
@@ -3828,7 +3832,7 @@ async function createQuery(question, options = {}) {
     status: "pending",
     createdAt: serverTimestamp(),
     createdBy: state.profile.id,
-    createdByName: state.profile.name,
+    createdByName: getProfileDisplayName(),
     answeredAt: null,
     answeredBy: null,
     answeredByName: null,
@@ -3928,7 +3932,7 @@ async function respondToQuery(input) {
     status: "answered",
     answeredAt: serverTimestamp(),
     answeredBy: state.profile.id,
-    answeredByName: state.profile.name,
+    answeredByName: getProfileDisplayName(),
     responseText,
     updatedAt: serverTimestamp(),
   });
@@ -3938,14 +3942,14 @@ async function respondToQuery(input) {
     status: "answered",
     answeredAt,
     answeredBy: state.profile.id,
-    answeredByName: state.profile.name,
+    answeredByName: getProfileDisplayName(),
     responseText,
   };
 
   if (queryData.taskId) {
     await addQueryTaskComment(
       queryData.taskId,
-      `Response to Query ${formatQueryId(queryData.id)} from ${state.profile.name}: ${responseText}`
+      `Response to Query ${formatQueryId(queryData.id)} from ${getProfileDisplayName()}: ${responseText}`
     );
   }
 
@@ -3987,7 +3991,7 @@ async function closeQuery(queryIdInput) {
     status: "answered",
     answeredAt: serverTimestamp(),
     answeredBy: state.profile.id,
-    answeredByName: state.profile.name,
+    answeredByName: getProfileDisplayName(),
     responseText: null,
     updatedAt: serverTimestamp(),
   });
@@ -3998,7 +4002,7 @@ async function closeQuery(queryIdInput) {
     status: "answered",
     answeredAt,
     answeredBy: state.profile.id,
-    answeredByName: state.profile.name,
+    answeredByName: getProfileDisplayName(),
     responseText: null,
   });
   setStatus("Query closed.", "success");
@@ -4031,14 +4035,14 @@ async function createLead(input) {
     company: parsedLead.company,
     source: parsedLead.source,
     status: parsedLead.status || "new",
-    owner: parsedLead.owner || state.profile.name,
+    owner: parsedLead.owner || getProfileDisplayName(),
     notes: parsedLead.notes,
     createdAt: serverTimestamp(),
     createdBy: state.profile.id,
-    createdByName: state.profile.name,
+    createdByName: getProfileDisplayName(),
     updatedAt: serverTimestamp(),
     updatedBy: state.profile.id,
-    updatedByName: state.profile.name,
+    updatedByName: getProfileDisplayName(),
   };
   const leadRef = await addDoc(collection(state.db, "rooms", state.roomId, "leads"), leadPayload);
   const leadData = {
@@ -4088,7 +4092,7 @@ async function updateLead(input) {
     ...leadUpdates,
     updatedAt: serverTimestamp(),
     updatedBy: state.profile.id,
-    updatedByName: state.profile.name,
+    updatedByName: getProfileDisplayName(),
   });
 
   await postLeadViewMessage({
@@ -4096,7 +4100,7 @@ async function updateLead(input) {
     ...leadUpdates,
     updatedAt,
     updatedBy: state.profile.id,
-    updatedByName: state.profile.name,
+    updatedByName: getProfileDisplayName(),
   }, "updated");
   setStatus("Lead updated.", "success");
 }
@@ -4320,7 +4324,7 @@ async function addQueryTaskComment(taskId, text) {
     text,
     createdAt: serverTimestamp(),
     createdBy: state.profile.id,
-    createdByName: state.profile.name,
+    createdByName: getProfileDisplayName(),
   });
 }
 
@@ -4338,7 +4342,7 @@ async function createTask(description) {
     status: "pending",
     createdAt: serverTimestamp(),
     createdBy: state.profile.id,
-    createdByName: state.profile.name,
+    createdByName: getProfileDisplayName(),
     completedAt: null,
     completedBy: null,
     completedByName: null,
@@ -4346,7 +4350,6 @@ async function createTask(description) {
     activeTimerStartedAt: null,
     activeTimerStartedBy: null,
     activeTimerStartedByName: null,
-    reactions: [],
     subtasks: [],
   });
 
@@ -4501,7 +4504,7 @@ async function assignTasksToDay(input) {
     getWorkDayRef(dateKey),
     {
       userId: state.profile.id,
-      userName: state.profile.name,
+      userName: getProfileDisplayName(),
       dateKey,
       plannedTaskIds,
       updatedAt: serverTimestamp(),
@@ -4627,7 +4630,7 @@ async function carryDailyTaskToToday(taskIdInput, sourceDateKey = "") {
     getWorkDayRef(todayKey),
     {
       userId: state.profile.id,
-      userName: state.profile.name,
+      userName: getProfileDisplayName(),
       dateKey: todayKey,
       plannedTaskIds,
       rolloverSkippedTaskIds,
@@ -4669,7 +4672,7 @@ async function skipDailyTaskReviewItem(taskIdInput, sourceDateKey = "") {
     getWorkDayRef(todayKey),
     {
       userId: state.profile.id,
-      userName: state.profile.name,
+      userName: getProfileDisplayName(),
       dateKey: todayKey,
       rolloverSkippedTaskIds,
       updatedAt: serverTimestamp(),
@@ -4690,7 +4693,7 @@ async function markDailyTaskRolloverReviewShown(sourceDateKey) {
     getWorkDayRef(getTodayKey()),
     {
       userId: state.profile.id,
-      userName: state.profile.name,
+      userName: getProfileDisplayName(),
       dateKey: getTodayKey(),
       rolloverReviewSourceDateKey: sourceDateKey,
       rolloverReviewShownAt: serverTimestamp(),
@@ -4919,7 +4922,7 @@ async function completeTask(taskIdInput) {
     status: "complete",
     completedAt: serverTimestamp(),
     completedBy: state.profile.id,
-    completedByName: state.profile.name,
+    completedByName: getProfileDisplayName(),
   };
   const timerElapsedMs = task.activeTimerStartedAt
     ? Math.max(0, Date.now() - getTimestampMillis(task.activeTimerStartedAt))
@@ -4975,7 +4978,7 @@ async function reopenTask(taskIdInput) {
     completedByName: null,
     reopenedAt: serverTimestamp(),
     reopenedBy: state.profile.id,
-    reopenedByName: state.profile.name,
+    reopenedByName: getProfileDisplayName(),
     updatedAt: serverTimestamp(),
   });
 
@@ -5012,7 +5015,7 @@ async function editTask(input) {
     description: trimmedDescription,
     updatedAt: serverTimestamp(),
     updatedBy: state.profile.id,
-    updatedByName: state.profile.name,
+    updatedByName: getProfileDisplayName(),
   };
 
   if (labels.length > 0) {
@@ -5049,7 +5052,7 @@ async function addTaskComment(input) {
     text: commentText,
     createdAt: serverTimestamp(),
     createdBy: state.profile.id,
-    createdByName: state.profile.name,
+    createdByName: getProfileDisplayName(),
   });
 
   await postTaskMessage(
@@ -5058,35 +5061,21 @@ async function addTaskComment(input) {
   setStatus("Task comment added.", "success");
 }
 
-async function reactToTask(input) {
-  const [taskId = "", reaction = ""] = input.trim().split(/\s+/);
+async function toggleMessageReaction(messageId, reactionInput) {
+  const reaction = normalizeMessageReaction(reactionInput);
 
-  if (!taskId || !reaction) {
-    await postTaskMessage("Use /task react <id> <reaction>.");
+  if (!messageId || !reaction || !state.profile) {
     return;
   }
 
-  await toggleTaskReaction(taskId, reaction);
-}
+  const message = state.messages.find((entry) => entry.id === messageId);
 
-async function toggleTaskReaction(taskIdInput, reactionInput) {
-  const taskId = taskIdInput.trim();
-  const reaction = normalizeTaskReaction(reactionInput);
-
-  if (!taskId || !reaction) {
-    await postTaskMessage("Use /task react <id> <reaction>.");
+  if (!message) {
+    setStatus("Message not found.", "error");
     return;
   }
 
-  const task = await findTaskById(taskId);
-
-  if (!task) {
-    await postTaskMessage(`Task ${taskId} was not found.`);
-    setStatus("Task not found.", "error");
-    return;
-  }
-
-  const reactions = normalizeTaskReactions(task.reactions);
+  const reactions = normalizeMessageReactions(message.reactions);
   const existingReaction = reactions.find(
     (entry) => entry.userId === state.profile.id && entry.reaction === reaction
   );
@@ -5097,19 +5086,17 @@ async function toggleTaskReaction(taskIdInput, reactionInput) {
         {
           reaction,
           userId: state.profile.id,
-          userName: state.profile.name,
+          userName: getProfileDisplayName(),
           createdAt: new Date(),
         },
       ];
 
-  await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", task.id), {
+  await updateDoc(doc(state.db, "rooms", state.roomId, "messages", message.id), {
     reactions: nextReactions,
-    updatedAt: serverTimestamp(),
   });
 
   const actionText = existingReaction ? "removed" : "added";
-  await postTaskMessage(`Reaction ${reaction} ${actionText} on Task ${formatTaskId(task.id)}: ${task.description}`);
-  setStatus(`Task reaction ${actionText}.`, "success");
+  setStatus(`Message reaction ${actionText}.`, "success");
 }
 
 async function postTaskComments(taskIdInput) {
@@ -5189,7 +5176,7 @@ async function addSubtask(input) {
     status: "pending",
     createdAt: new Date(),
     createdBy: state.profile.id,
-    createdByName: state.profile.name,
+    createdByName: getProfileDisplayName(),
     completedAt: null,
     completedBy: null,
     completedByName: null,
@@ -5199,7 +5186,7 @@ async function addSubtask(input) {
     subtasks: [...subtasks, subtask],
     updatedAt: serverTimestamp(),
     updatedBy: state.profile.id,
-    updatedByName: state.profile.name,
+    updatedByName: getProfileDisplayName(),
   });
 
   await postTaskMessage(
@@ -5279,7 +5266,7 @@ async function updateSubtaskStatus(input, status) {
       status,
       completedAt: isComplete ? new Date() : null,
       completedBy: isComplete ? state.profile.id : null,
-      completedByName: isComplete ? state.profile.name : null,
+      completedByName: isComplete ? getProfileDisplayName() : null,
     };
   });
 
@@ -5287,7 +5274,7 @@ async function updateSubtaskStatus(input, status) {
     subtasks: updatedSubtasks,
     updatedAt: serverTimestamp(),
     updatedBy: state.profile.id,
-    updatedByName: state.profile.name,
+    updatedByName: getProfileDisplayName(),
   });
 
   await postTaskMessage(
@@ -5325,7 +5312,7 @@ async function removeSubtask(input) {
     subtasks: subtasks.filter((subtask) => subtask.id !== targetSubtask.id),
     updatedAt: serverTimestamp(),
     updatedBy: state.profile.id,
-    updatedByName: state.profile.name,
+    updatedByName: getProfileDisplayName(),
   });
 
   await postTaskMessage(
@@ -5363,6 +5350,7 @@ async function postTaskView(taskIdInput) {
     type: "task-view",
     task: taskPreview,
     comments: comments.map(serializeTaskCommentForMessage),
+    maskIdentity: isPrivacyModeActive(),
     createdAt: serverTimestamp(),
   });
   setStatus("Task shared.", "success");
@@ -5402,7 +5390,7 @@ async function startTaskTimer(taskIdInput) {
   await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", task.id), {
     activeTimerStartedAt: startedAt,
     activeTimerStartedBy: state.profile.id,
-    activeTimerStartedByName: state.profile.name,
+    activeTimerStartedByName: getProfileDisplayName(),
   });
 
   scheduleTaskTimerReminder({
@@ -5478,11 +5466,11 @@ async function startGeneralTimer() {
     getWorkDayRef(),
     {
       userId: state.profile.id,
-      userName: state.profile.name,
+      userName: getProfileDisplayName(),
       dateKey: getTodayKey(),
       activeTimerStartedAt: startedAt,
       activeTimerStartedBy: state.profile.id,
-      activeTimerStartedByName: state.profile.name,
+      activeTimerStartedByName: getProfileDisplayName(),
       updatedAt: serverTimestamp(),
     },
     { merge: true }
@@ -5518,7 +5506,7 @@ async function stopGeneralTimer() {
     activeTimerStartedBy: null,
     activeTimerStartedByName: null,
     userId: state.profile.id,
-    userName: state.profile.name,
+    userName: getProfileDisplayName(),
     updatedAt: serverTimestamp(),
     },
     { merge: true }
@@ -5699,7 +5687,7 @@ async function startWorkDay() {
     getWorkDayRef(),
     {
       userId: state.profile.id,
-      userName: state.profile.name,
+      userName: getProfileDisplayName(),
       dateKey: getTodayKey(),
       startedAt: existingDay?.startedAt || serverTimestamp(),
       endedAt: null,
@@ -5710,7 +5698,7 @@ async function startWorkDay() {
   );
 
   await postDayMessage(
-    `${state.profile.name} started the day.\nPlan can be shared with /day plan <plan>.`
+    `${getProfileDisplayName()} started the day.\nPlan can be shared with /day plan <plan>.`
   );
   scheduleDayIdleTaskReminder();
   setStatus("Day started.", "success");
@@ -5728,7 +5716,7 @@ async function saveWorkDayPlan(planInput) {
     getWorkDayRef(),
     {
       userId: state.profile.id,
-      userName: state.profile.name,
+      userName: getProfileDisplayName(),
       dateKey: getTodayKey(),
       plan,
       updatedAt: serverTimestamp(),
@@ -5736,7 +5724,7 @@ async function saveWorkDayPlan(planInput) {
     { merge: true }
   );
 
-  await postDayMessage(`${state.profile.name}'s plan for today:\n${plan}`);
+  await postDayMessage(`${getProfileDisplayName()}'s plan for today:\n${plan}`);
   setStatus("Day plan saved.", "success");
 }
 
@@ -5747,7 +5735,7 @@ async function endWorkDay() {
     getWorkDayRef(),
     {
       userId: state.profile.id,
-      userName: state.profile.name,
+      userName: getProfileDisplayName(),
       dateKey: getTodayKey(),
       endedAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
@@ -5768,19 +5756,19 @@ async function setFreeDayStatus(reasonInput = "") {
     getWorkDayRef(),
     {
       userId: state.profile.id,
-      userName: state.profile.name,
+      userName: getProfileDisplayName(),
       dateKey: getTodayKey(),
       availabilityStatus: "free",
       availabilityReason: reason || null,
       availabilityUpdatedAt: serverTimestamp(),
       availabilityUpdatedBy: state.profile.id,
-      availabilityUpdatedByName: state.profile.name,
+      availabilityUpdatedByName: getProfileDisplayName(),
       updatedAt: serverTimestamp(),
     },
     { merge: true }
   );
 
-  await postDayMessage(`${state.profile.name} is free${reason ? `: ${reason}` : "."}`);
+  await postDayMessage(`${getProfileDisplayName()} is free${reason ? `: ${reason}` : "."}`);
   setStatus("Free status saved.", "success");
 }
 
@@ -5922,20 +5910,20 @@ async function startBreak() {
     getWorkDayRef(),
     {
       userId: state.profile.id,
-      userName: state.profile.name,
+      userName: getProfileDisplayName(),
       dateKey: getTodayKey(),
       startedAt: workDay?.startedAt || serverTimestamp(),
       endedAt: null,
       activeBreakStartedAt: startedAt,
       activeBreakStartedBy: state.profile.id,
-      activeBreakStartedByName: state.profile.name,
+      activeBreakStartedByName: getProfileDisplayName(),
       breaks: Array.isArray(workDay?.breaks) ? workDay.breaks : [],
       updatedAt: serverTimestamp(),
     },
     { merge: true }
   );
 
-  await postDayMessage(`${state.profile.name} started a break.`);
+  await postDayMessage(`${getProfileDisplayName()} started a break.`);
   clearDayIdleTaskReminder();
   setActiveBreakState(startedAt);
   setStatus("Break started.", "success");
@@ -5958,7 +5946,7 @@ async function stopActiveBreak(options = {}) {
   const breakEntry = {
     id: generateBreakId(),
     userId: state.profile.id,
-    userName: state.profile.name,
+    userName: getProfileDisplayName(),
     startedAt: normalizeTimestampDate(workDay.activeBreakStartedAt),
     stoppedAt,
     durationMs,
@@ -5969,7 +5957,7 @@ async function stopActiveBreak(options = {}) {
     getWorkDayRef(),
     {
       userId: state.profile.id,
-      userName: state.profile.name,
+      userName: getProfileDisplayName(),
       dateKey: getTodayKey(),
       breaks: [...breaks, breakEntry],
       activeBreakStartedAt: null,
@@ -5981,7 +5969,7 @@ async function stopActiveBreak(options = {}) {
   );
 
   if (options.announce !== false) {
-    await postDayMessage(`${state.profile.name} ended a break after ${formatDuration(durationMs)}.`);
+    await postDayMessage(`${getProfileDisplayName()} ended a break after ${formatDuration(durationMs)}.`);
     scheduleDayIdleTaskReminder();
     setStatus("Break stopped.", "success");
   }
@@ -6051,7 +6039,7 @@ async function scheduleLeave(input) {
 
   const leaveRef = await addDoc(collection(state.db, "rooms", state.roomId, "leaves"), {
     userId: state.profile.id,
-    userName: state.profile.name,
+    userName: getProfileDisplayName(),
     startDateKey: parsedLeave.startDateKey,
     endDateKey: parsedLeave.endDateKey,
     reason: parsedLeave.reason,
@@ -6061,7 +6049,7 @@ async function scheduleLeave(input) {
   });
 
   await postDayMessage(
-    `${state.profile.name} scheduled leave ${formatDateRange(parsedLeave.startDateKey, parsedLeave.endDateKey)}: ${parsedLeave.reason} (${formatLeaveId(leaveRef.id)})`
+    `${getProfileDisplayName()} scheduled leave ${formatDateRange(parsedLeave.startDateKey, parsedLeave.endDateKey)}: ${parsedLeave.reason} (${formatLeaveId(leaveRef.id)})`
   );
   setStatus("Leave scheduled.", "success");
 }
@@ -6124,7 +6112,7 @@ async function cancelLeave(leaveIdInput) {
   });
 
   await postDayMessage(
-    `${state.profile.name} canceled leave ${formatDateRange(leave.startDateKey, leave.endDateKey)}: ${leave.reason} (${formatLeaveId(leave.id)})`
+    `${getProfileDisplayName()} canceled leave ${formatDateRange(leave.startDateKey, leave.endDateKey)}: ${leave.reason} (${formatLeaveId(leave.id)})`
   );
   setStatus("Leave canceled.", "success");
 }
@@ -6372,7 +6360,6 @@ function serializeTaskForMessage(task) {
     totalTrackedMs: Number.isFinite(task.totalTrackedMs) ? task.totalTrackedMs : 0,
     activeTimerStartedAt: task.activeTimerStartedAt || null,
     activeTimerStartedByName: task.activeTimerStartedByName || "",
-    reactions: normalizeTaskReactions(task.reactions),
     commentCount: Number.isFinite(task.commentCount) ? task.commentCount : 0,
   };
 }
@@ -6397,14 +6384,14 @@ function normalizeSubtasks(subtasks) {
     .filter((subtask) => subtask.id && subtask.text);
 }
 
-function normalizeTaskReactions(reactions) {
+function normalizeMessageReactions(reactions) {
   if (!Array.isArray(reactions)) {
     return [];
   }
 
   return reactions
     .map((entry) => ({
-      reaction: normalizeTaskReaction(entry?.reaction),
+      reaction: normalizeMessageReaction(entry?.reaction),
       userId: String(entry?.userId || "").trim(),
       userName: String(entry?.userName || "").trim(),
       createdAt: entry?.createdAt || null,
@@ -6412,14 +6399,14 @@ function normalizeTaskReactions(reactions) {
     .filter((entry) => entry.reaction && entry.userId);
 }
 
-function normalizeTaskReaction(reaction) {
+function normalizeMessageReaction(reaction) {
   return String(reaction || "").trim().slice(0, 8);
 }
 
-function summarizeTaskReactions(reactions) {
+function summarizeMessageReactions(reactions) {
   const grouped = new Map();
 
-  normalizeTaskReactions(reactions).forEach((entry) => {
+  normalizeMessageReactions(reactions).forEach((entry) => {
     if (!grouped.has(entry.reaction)) {
       grouped.set(entry.reaction, {
         reaction: entry.reaction,
@@ -6442,9 +6429,9 @@ function summarizeTaskReactions(reactions) {
   });
 }
 
-function hasCurrentUserTaskReaction(reactions, reaction) {
-  const normalizedReaction = normalizeTaskReaction(reaction);
-  return normalizeTaskReactions(reactions).some(
+function hasCurrentUserMessageReaction(reactions, reaction) {
+  const normalizedReaction = normalizeMessageReaction(reaction);
+  return normalizeMessageReactions(reactions).some(
     (entry) => entry.userId === state.profile?.id && entry.reaction === normalizedReaction
   );
 }
@@ -6496,6 +6483,7 @@ function serializeTaskCommentForMessage(comment) {
     id: comment.id,
     text: comment.text || "",
     createdAt: comment.createdAt || null,
+    createdBy: comment.createdBy || null,
     createdByName: comment.createdByName || "",
   };
 }
@@ -6826,7 +6814,7 @@ async function recordTaskTimeEntry(task, startedAt, stoppedAt, durationMs) {
     taskId: task.id,
     taskDescription: task.description,
     userId: state.profile.id,
-    userName: state.profile.name,
+    userName: getProfileDisplayName(),
     startedAt: normalizeTimestampDate(startedAt),
     stoppedAt,
     durationMs,
@@ -6838,7 +6826,7 @@ async function recordGeneralTimeEntry(startedAt, stoppedAt, durationMs) {
   await addDoc(collection(getWorkDayRef(), "timeEntries"), {
     description: "General work",
     userId: state.profile.id,
-    userName: state.profile.name,
+    userName: getProfileDisplayName(),
     startedAt: normalizeTimestampDate(startedAt),
     stoppedAt,
     durationMs,
@@ -6939,6 +6927,7 @@ function postLocalTaskCommentsMessage(task, comments) {
     {
       task,
       comments,
+      maskIdentity: isPrivacyModeActive(),
     }
   );
 }
@@ -7382,7 +7371,7 @@ async function autoStopUnansweredGeneralTimer(timer, unattendedSince) {
       activeTimerStartedBy: null,
       activeTimerStartedByName: null,
       userId: state.profile.id,
-      userName: state.profile.name,
+      userName: getProfileDisplayName(),
       updatedAt: serverTimestamp(),
     },
     { merge: true }
@@ -7751,6 +7740,22 @@ function createTaskPrivacyAliases(tasks) {
   return aliases;
 }
 
+function createTaskCommentPrivacyAliases(comments) {
+  const aliases = new Map();
+  let index = 1;
+
+  comments.forEach((comment) => {
+    if (!comment.createdBy || aliases.has(comment.createdBy)) {
+      return;
+    }
+
+    aliases.set(comment.createdBy, `User ${index}`);
+    index += 1;
+  });
+
+  return aliases;
+}
+
 function formatTaskPersonName(userId, fallbackName = "Unknown", privateAliases = null, options = {}) {
   if (!options.maskIdentity) {
     return fallbackName || "Unknown";
@@ -7761,6 +7766,10 @@ function formatTaskPersonName(userId, fallbackName = "Unknown", privateAliases =
   }
 
   return "User";
+}
+
+function formatTaskCommentAuthor(comment, privateAliases = null, options = {}) {
+  return formatTaskPersonName(comment.createdBy, comment.createdByName || "Unknown", privateAliases, options);
 }
 
 function normalizeIdList(ids) {
@@ -7874,6 +7883,14 @@ function formatTaskTimeSummary(task, options = {}) {
 
 function isPrivacyModeActive() {
   return Boolean(state.isPrivacyEnabled);
+}
+
+function getProfileDisplayName() {
+  if (isPrivacyModeActive()) {
+    return getPrivateAlias(state.profile?.id);
+  }
+
+  return state.profile?.name || "Anonymous";
 }
 
 function isCurrentUserTaskTimerOwner(task) {
@@ -8262,7 +8279,7 @@ async function syncReadReceipt(message) {
       receiptRef,
       {
         userId: state.profile.id,
-        displayName: state.profile.name,
+        displayName: getProfileDisplayName(),
         lastReadMessageId: message.id,
         lastReadCreatedAt: message.createdAt,
         updatedAt: serverTimestamp(),

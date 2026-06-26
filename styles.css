@@ -1020,15 +1020,20 @@ button:disabled {
   gap: 6px;
 }
 
-.task-reaction-actions,
-.task-reactions {
+.message-reaction-bar,
+.message-reactions {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
 }
 
-.task-reaction-button,
-.task-reaction-summary {
+.message-reaction-bar {
+  margin-top: 8px;
+  align-items: center;
+}
+
+.message-reaction-button,
+.message-reaction-summary {
   min-width: 32px;
   min-height: 28px;
   display: inline-flex;
@@ -1044,20 +1049,20 @@ button:disabled {
   line-height: 1;
 }
 
-.task-reaction-button {
+.message-reaction-button {
   cursor: pointer;
 }
 
-.task-reaction-button:hover,
-.task-reaction-button:focus-visible,
-.task-reaction-button.active {
+.message-reaction-button:hover,
+.message-reaction-button:focus-visible,
+.message-reaction-button.active {
   transform: none;
   border-color: rgba(15, 118, 110, 0.42);
   background: var(--accent-soft);
   outline: none;
 }
 
-.task-reaction-summary {
+.message-reaction-summary {
   width: fit-content;
   font-weight: 700;
 }

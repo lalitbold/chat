@@ -168,7 +168,7 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 - Typing `#` in the composer suggests task IDs and task labels. In `/task edit <id>`, selecting or typing a task ID loads the current task text into the composer for easier editing.
 - `/task comment <id> <comment>` adds a comment to a task.
 - `/task comments <id>` shows task comments only to you.
-- `/task react <id> <reaction>` toggles your reaction on a task. Task cards also include quick reaction buttons.
+- Message bubbles include quick reaction buttons.
 - `/task day today #abc123 #def456` adds existing pending tasks to today's plan.
 - `/task day tomorrow #abc123` or `/task day 2026-06-26 #abc123` plans tasks for another day.
 - `/task day list [today|tomorrow|YYYY-MM-DD]` shows planned tasks only to you.
