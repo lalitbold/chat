@@ -133,8 +133,8 @@ const BASE_SLASH_COMMANDS = [
     hint: "Group plugins",
   },
   {
-    label: "/task <description> #label",
-    insertText: "/task ",
+    label: "/task create <description> #label",
+    insertText: "/task create ",
     hint: "Create task",
   },
   {
@@ -171,6 +171,11 @@ const BASE_SLASH_COMMANDS = [
     label: "/task completed",
     insertText: "/task completed",
     hint: "Completed tasks",
+  },
+  {
+    label: "/task current",
+    insertText: "/task current",
+    hint: "Current task",
   },
   {
     label: "/task day today <ids>",
@@ -359,6 +364,7 @@ const BASE_SLASH_COMMANDS = [
   },
 ];
 const PRIVACY_INVITE_COMMAND = "/privacy invite";
+const PRIVACY_HIDE_ALL_COMMANDS = new Set(["/privacy hideall", "/privacy hide all"]);
 const PRIVACY_PREVIEW_MS = 10000;
 const SESSION_KEY = "firestore-chat-session";
 const JOINED_ROOMS_KEY = "openbox-joined-rooms";
@@ -1793,7 +1799,7 @@ function renderMessageReactions(message) {
 
   const trigger = document.createElement("summary");
   trigger.className = "message-reaction-trigger";
-  trigger.textContent = "🙂";
+  trigger.textContent = "\u{1f642}";
   trigger.title = "Add reaction";
   picker.append(trigger);
 
@@ -2104,6 +2110,46 @@ function renderTaskListItem(task, options = {}) {
   return item;
 }
 
+function renderTaskActionButtons(task) {
+  const actions = document.createElement("div");
+  actions.className = "task-list-actions";
+
+  const buttonDefinitions = [];
+
+  if (task.status === "complete") {
+    buttonDefinitions.push({ label: "Reopen", action: "task-reopen" });
+  } else {
+    buttonDefinitions.push({ label: "Complete", action: "task-complete" });
+
+    if (task.activeTimerStartedAt && isCurrentUserTaskTimerOwner(task)) {
+      buttonDefinitions.push(
+        { label: "Continue", action: "task-continue" },
+        { label: "Stop timer", action: "task-stop" }
+      );
+    } else if (!task.activeTimerStartedAt) {
+      buttonDefinitions.push({ label: "Start timer", action: "task-start" });
+    }
+  }
+
+  buttonDefinitions.push(
+    { label: "Comment", action: "task-comment-draft" },
+    { label: "Subtask", action: "task-subtask-draft" },
+    { label: "Query", action: "task-query-draft" }
+  );
+
+  buttonDefinitions.forEach((definition) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "task-list-edit";
+    button.textContent = definition.label;
+    button.dataset.action = definition.action;
+    button.dataset.taskId = task.id;
+    actions.append(button);
+  });
+
+  return actions;
+}
+
 function renderTaskViewMessage(message) {
   const container = document.createElement("div");
   container.className = "task-view-message";
@@ -2112,7 +2158,7 @@ function renderTaskViewMessage(message) {
   header.className = "task-list-header";
 
   const title = document.createElement("strong");
-  title.textContent = "Task";
+  title.textContent = message.heading || "Task";
 
   const id = document.createElement("span");
   id.className = "task-list-count";
@@ -2121,6 +2167,7 @@ function renderTaskViewMessage(message) {
   header.append(title, id);
   container.append(header);
   container.append(renderTaskPreviewCard(message.task, { showDescription: true }));
+  container.append(renderTaskActionButtons(message.task));
 
   if (Array.isArray(message.comments)) {
     container.append(
@@ -3274,6 +3321,11 @@ function getAvailableSlashCommands() {
         insertText: `${PRIVACY_INVITE_COMMAND} `,
         hint: "Grant privacy",
       },
+      {
+        label: "/privacy hideall",
+        insertText: "/privacy hideall",
+        hint: "Hide all messages",
+      },
     ];
 
     commands.unshift(
@@ -3441,6 +3493,16 @@ function handleLocalCommand(text) {
     return true;
   }
 
+  if (PRIVACY_HIDE_ALL_COMMANDS.has(normalized)) {
+    if (!state.canUsePrivacyFeature) {
+      setStatus("Privacy mode needs to be invited for this account before it can be used here.", "error");
+      return true;
+    }
+
+    hideAllPrivacyMessages();
+    return true;
+  }
+
   if (matchesCommand(normalizedWithoutSlash, DEFAULT_ROOM_COMMANDS.enable, roomCommands.enable)) {
     if (!state.canUsePrivacyFeature) {
       setStatus("Privacy mode needs to be invited for this account before it can be used here.", "error");
@@ -3525,8 +3587,13 @@ async function handleTaskCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     await postTaskMessage(
-      "Task commands:\n/task fix that issue #bug\n/task list\n/task list #bug\n/task completed\n/task completed #bug\n/task day today #abc123 #def456\n/task day tomorrow #abc123\n/task day list [today|tomorrow|YYYY-MM-DD]\n/task day review\n/task view <id>\n/task process\n/task process #bug\n/task process continue\n/task process stop\n/task edit <id> <description> #label\n/task comment <id> <comment>\n/task comments <id>\n/task subtask <id> <description>\n/task subtasks <id>\n/task subtask done <id> <subtask>\n/task subtask reopen <id> <subtask>\n/task subtask remove <id> <subtask>\n/task start\n/task start <id>\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task timers\n/task summary\n/task summary share\n/task complete <id>\n/task reopen <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nMention a task id like #abc123 in a message to preview it.\nUse /day for attendance and leave commands."
+      "Task commands:\n/task create fix that issue #bug\n/task list\n/task list #bug\n/task completed\n/task completed #bug\n/task current\n/task day today #abc123 #def456\n/task day tomorrow #abc123\n/task day list [today|tomorrow|YYYY-MM-DD]\n/task day review\n/task view <id>\n/task process\n/task process #bug\n/task process continue\n/task process stop\n/task edit <id> <description> #label\n/task comment <id> <comment>\n/task comments <id>\n/task subtask <id> <description>\n/task subtasks <id>\n/task subtask done <id> <subtask>\n/task subtask reopen <id> <subtask>\n/task subtask remove <id> <subtask>\n/task start\n/task start <id>\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task timers\n/task summary\n/task summary share\n/task complete <id>\n/task reopen <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nMention a task id like #abc123 in a message to preview it.\nUse /day for attendance and leave commands."
     );
+    return;
+  }
+
+  if (normalizedAction === "create") {
+    await createTask(rest.join(" "));
     return;
   }
 
@@ -3537,6 +3604,11 @@ async function handleTaskCommand(text) {
 
   if (normalizedAction === "completed") {
     await postCompletedTaskList(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "current") {
+    await postCurrentTask();
     return;
   }
 
@@ -3630,7 +3702,7 @@ async function handleTaskCommand(text) {
     return;
   }
 
-  await createTask(payload);
+  await postTaskMessage("Unknown task command. Use /task create <description> to add a task, or /task help.");
 }
 
 async function handleDayCommand(text) {
@@ -4351,7 +4423,7 @@ async function createTask(description) {
   const { text: trimmedDescription, labels } = extractLabels(description);
 
   if (!trimmedDescription) {
-    await postTaskMessage("Add a task description after /task.");
+    await postTaskMessage("Add a task description after /task create.");
     return;
   }
 
@@ -5375,8 +5447,47 @@ async function postTaskView(taskIdInput) {
   setStatus("Task shared.", "success");
 }
 
+async function postCurrentTask() {
+  const currentTask = (await loadRoomTasks())
+    .filter((task) => task.activeTimerStartedAt && isCurrentUserTaskTimerOwner(task))
+    .sort(compareActiveTimersByStartedAt)[0];
+
+  if (!currentTask) {
+    postLocalTaskMessage("No current active task.");
+    setStatus("No current active task.", "success");
+    return;
+  }
+
+  const comments = await loadTaskComments(currentTask.id);
+  const taskPreview = serializeTaskForMessage({
+    ...currentTask,
+    commentCount: comments.length,
+  });
+
+  postLocalMessage(
+    `Current task\n${formatTaskId(currentTask.id)} - ${currentTask.description || "Untitled task"}`,
+    "Tasks (only you)",
+    "task-view",
+    [],
+    {
+      heading: "Current task",
+      task: taskPreview,
+      comments: comments.map(serializeTaskCommentForMessage),
+      maskIdentity: isPrivacyModeActive(),
+    }
+  );
+  setStatus("Current task shown.", "success");
+}
+
 async function startTaskTimer(taskIdInput) {
   const taskId = taskIdInput.trim();
+  const unavailableReason = await getTimerUnavailableReason();
+
+  if (unavailableReason) {
+    await postTaskMessage(unavailableReason);
+    setStatus("Timer cannot start right now.", "error");
+    return;
+  }
 
   if (!taskId) {
     await startGeneralTimer();
@@ -5471,6 +5582,14 @@ async function stopTaskTimer(taskIdInput) {
 }
 
 async function startGeneralTimer() {
+  const unavailableReason = await getTimerUnavailableReason();
+
+  if (unavailableReason) {
+    await postTaskMessage(unavailableReason);
+    setStatus("Timer cannot start right now.", "error");
+    return;
+  }
+
   const activeTimer = await findActiveGeneralTimer();
 
   if (activeTimer) {
@@ -5536,6 +5655,89 @@ async function stopGeneralTimer() {
   scheduleDayIdleTaskReminder();
   await postTaskMessage(`General timer stopped after ${formatDuration(elapsedMs)}.`);
   setStatus("General timer stopped.", "success");
+}
+
+async function getTimerUnavailableReason() {
+  const workDay = await getWorkDay();
+
+  if (!workDay?.startedAt) {
+    return "Start your day with /day start before starting a timer.";
+  }
+
+  if (workDay.endedAt) {
+    return "Your day has ended. Start the day again before starting a timer.";
+  }
+
+  if (workDay.activeBreakStartedAt) {
+    return "You are on break. Stop the break with /day break stop before starting a timer.";
+  }
+
+  return "";
+}
+
+async function pauseActiveTimersForCurrentUser(reason = "pause") {
+  const stoppedAt = new Date();
+  const [tasks, activeGeneralTimer] = await Promise.all([loadRoomTasks(), findActiveGeneralTimer()]);
+  const activeTasks = tasks.filter((task) => task.activeTimerStartedAt && isCurrentUserTaskTimerOwner(task));
+  let pausedCount = 0;
+
+  for (const task of activeTasks) {
+    const elapsedMs = Math.max(0, stoppedAt.getTime() - getTimestampMillis(task.activeTimerStartedAt));
+
+    await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", task.id), {
+      totalTrackedMs: increment(elapsedMs),
+      activeTimerStartedAt: null,
+      activeTimerStartedBy: null,
+      activeTimerStartedByName: null,
+    });
+
+    if (elapsedMs > 0) {
+      await recordTaskTimeEntry(task, task.activeTimerStartedAt, stoppedAt, elapsedMs);
+    }
+
+    clearTaskTimerReminder(task.id);
+    pausedCount += 1;
+  }
+
+  if (activeGeneralTimer?.data?.activeTimerStartedAt) {
+    const elapsedMs = Math.max(
+      0,
+      stoppedAt.getTime() - getTimestampMillis(activeGeneralTimer.data.activeTimerStartedAt)
+    );
+
+    await setDoc(
+      activeGeneralTimer.ref,
+      {
+        activeTimerStartedAt: null,
+        activeTimerStartedBy: null,
+        activeTimerStartedByName: null,
+        userId: state.profile.id,
+        userName: getProfileDisplayName(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    if (elapsedMs > 0) {
+      await recordGeneralTimeEntry(
+        activeGeneralTimer.data.activeTimerStartedAt,
+        stoppedAt,
+        elapsedMs,
+        activeGeneralTimer.ref
+      );
+    }
+
+    clearGeneralTimerReminders();
+    pausedCount += 1;
+  }
+
+  if (pausedCount > 0) {
+    postLocalTaskMessage(
+      `${pausedCount} active timer${pausedCount === 1 ? "" : "s"} paused for ${reason}.`
+    );
+  }
+
+  return pausedCount;
 }
 
 async function continueGeneralTimer() {
@@ -5749,6 +5951,7 @@ async function saveWorkDayPlan(planInput) {
 
 async function endWorkDay() {
   await stopActiveBreak({ announce: false });
+  await pauseActiveTimersForCurrentUser("day end");
 
   await setDoc(
     getWorkDayRef(),
@@ -5924,6 +6127,7 @@ async function startBreak() {
   }
 
   const startedAt = new Date();
+  const pausedTimerCount = await pauseActiveTimersForCurrentUser("break");
 
   await setDoc(
     getWorkDayRef(),
@@ -5942,7 +6146,9 @@ async function startBreak() {
     { merge: true }
   );
 
-  await postDayMessage(`${getProfileDisplayName()} started a break.`);
+  await postDayMessage(
+    `${getProfileDisplayName()} started a break.${pausedTimerCount > 0 ? ` Paused ${pausedTimerCount} active timer${pausedTimerCount === 1 ? "" : "s"}.` : ""}`
+  );
   clearDayIdleTaskReminder();
   setActiveBreakState(startedAt);
   setStatus("Break started.", "success");
@@ -6378,6 +6584,7 @@ function serializeTaskForMessage(task) {
     completedByName: task.completedByName || "",
     totalTrackedMs: Number.isFinite(task.totalTrackedMs) ? task.totalTrackedMs : 0,
     activeTimerStartedAt: task.activeTimerStartedAt || null,
+    activeTimerStartedBy: task.activeTimerStartedBy || "",
     activeTimerStartedByName: task.activeTimerStartedByName || "",
     commentCount: Number.isFinite(task.commentCount) ? task.commentCount : 0,
   };
@@ -6841,8 +7048,8 @@ async function recordTaskTimeEntry(task, startedAt, stoppedAt, durationMs) {
   });
 }
 
-async function recordGeneralTimeEntry(startedAt, stoppedAt, durationMs) {
-  await addDoc(collection(getWorkDayRef(), "timeEntries"), {
+async function recordGeneralTimeEntry(startedAt, stoppedAt, durationMs, workDayRef = getWorkDayRef()) {
+  await addDoc(collection(workDayRef, "timeEntries"), {
     description: "General work",
     userId: state.profile.id,
     userName: getProfileDisplayName(),
@@ -7277,6 +7484,14 @@ async function syncActiveTaskTimerReminders() {
   }
 
   try {
+    const unavailableReason = await getTimerUnavailableReason();
+
+    if (unavailableReason) {
+      await pauseActiveTimersForCurrentUser("non-work time");
+      clearTaskTimerReminders();
+      return;
+    }
+
     const [tasks, activeGeneralTimer] = await Promise.all([
       loadRoomTasks(),
       findActiveGeneralTimer(),
@@ -7584,7 +7799,7 @@ async function handleDayIdleTaskReminder() {
   }
 
   postLocalDayMessage(
-    `Reminder: Your day is started, but no timer is running.\nStart a general timer with /task start, start a task with /task start <id>, or create one with /task <description>.`
+    `Reminder: Your day is started, but no timer is running.\nStart a general timer with /task start, start a task with /task start <id>, or create one with /task create <description>.`
   );
   scheduleDayIdleTaskReminder();
   setStatus("No task running reminder.", "success");
@@ -7595,6 +7810,10 @@ async function shouldRemindForIdleWorkDay() {
     const workDay = await getWorkDay();
 
     if (!workDay?.startedAt || workDay.endedAt) {
+      return false;
+    }
+
+    if (workDay.activeBreakStartedAt) {
       return false;
     }
 
@@ -8281,6 +8500,29 @@ function enablePrivacyMode() {
   setStatus("", "");
 }
 
+function hideAllPrivacyMessages() {
+  if (!state.isPrivacyEnabled) {
+    enablePrivacyMode();
+  }
+
+  if (!state.isPrivacyEnabled) {
+    return;
+  }
+
+  state.hiddenMessageIds = state.messages.map((message) => message.id);
+  state.previewMessageIds = [];
+  state.isPrivacyPreviewVisible = false;
+  state.unreadMessageIds = [];
+  clearPrivacyPreviewTimer();
+  syncStealthLayout();
+  updatePrivacyIndicator();
+  updateDocumentTitle();
+  updateAppBadge();
+  renderMessages();
+  persistSession();
+  setStatus("All messages hidden.", "success");
+}
+
 function disablePrivacyMode(messageLimit = null) {
   state.isPrivacyEnabled = false;
   state.isPrivacyPreviewVisible = false;
@@ -8553,9 +8795,15 @@ function getMessageReadByNames(message) {
 
       return receipt.lastReadCreatedAt.toMillis() >= messageTime;
     })
-    .map((receipt) => receipt.displayName || "Someone")
+    .map((receipt) => formatReadReceiptName(receipt))
     .filter((name, index, names) => names.indexOf(name) === index)
     .sort((left, right) => left.localeCompare(right));
+}
+
+function formatReadReceiptName(receipt) {
+  return formatTaskPersonName(receipt.userId, receipt.displayName || "Someone", null, {
+    maskIdentity: isPrivacyModeActive(),
+  });
 }
 
 function formatNameList(names) {
@@ -9004,11 +9252,26 @@ function getVisibleMessages() {
       return state.messages.slice(-state.visibleMessageLimit);
     }
 
+    if (state.isPrivacyEnabled) {
+      const hiddenIds = new Set(state.hiddenMessageIds);
+      return state.messages.filter(
+        (message) => !hiddenIds.has(message.id) && (!isOwnMessage(message) || isTaskCreatedMessage(message))
+      );
+    }
+
     return state.messages;
   }
 
   const previewIds = new Set(state.previewMessageIds);
   return state.messages.filter((message) => previewIds.has(message.id));
+}
+
+function isOwnMessage(message) {
+  return Boolean(message.senderId && message.senderId === state.profile?.id);
+}
+
+function isTaskCreatedMessage(message) {
+  return message.type === "task" && /^Task\s+#[a-z0-9]+\s+created:/i.test(message.text || "");
 }
 
 function getVisibleMessagesWithLocal() {

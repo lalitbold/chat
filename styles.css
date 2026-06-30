@@ -580,6 +580,7 @@ button:disabled {
 }
 
 .message {
+  position: relative;
   max-width: min(80%, 32rem);
   padding: 12px 14px;
   border-radius: 18px;
@@ -1029,9 +1030,18 @@ button:disabled {
 }
 
 .message-reaction-bar {
-  position: relative;
-  margin-top: 8px;
+  position: absolute;
+  top: 50%;
+  right: -42px;
+  margin-top: 0;
   align-items: center;
+  transform: translateY(-50%);
+  z-index: 2;
+}
+
+.message.own .message-reaction-bar {
+  right: auto;
+  left: -42px;
 }
 
 .message-reaction-picker {
@@ -1039,21 +1049,30 @@ button:disabled {
 }
 
 .message-reaction-trigger {
-  min-width: 32px;
+  min-width: 28px;
   min-height: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 4px 8px;
+  padding: 0;
   border: 1px solid rgba(214, 208, 194, 0.86);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.74);
+  background: rgba(255, 255, 255, 0.72);
   color: var(--ink);
   font: inherit;
-  font-size: 0.84rem;
+  font-size: 1rem;
+  font-weight: 700;
   line-height: 1;
   cursor: pointer;
   list-style: none;
+  opacity: 0;
+  transition: opacity 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+
+.message:hover .message-reaction-trigger,
+.message:focus-within .message-reaction-trigger,
+.message-reaction-picker[open] .message-reaction-trigger {
+  opacity: 0.58;
 }
 
 .message-reaction-trigger::-webkit-details-marker {
@@ -1067,12 +1086,14 @@ button:disabled {
   border-color: rgba(15, 118, 110, 0.42);
   background: var(--accent-soft);
   outline: none;
+  opacity: 1;
 }
 
 .message-reaction-options {
   position: absolute;
-  left: 0;
-  bottom: calc(100% + 6px);
+  top: 50%;
+  left: calc(100% + 6px);
+  transform: translateY(-50%);
   width: max-content;
   max-width: 190px;
   padding: 6px;
@@ -1081,6 +1102,11 @@ button:disabled {
   background: #ffffff;
   box-shadow: 0 10px 22px rgba(22, 34, 31, 0.16);
   z-index: 3;
+}
+
+.message.own .message-reaction-options {
+  right: calc(100% + 6px);
+  left: auto;
 }
 
 .message-reaction-button,

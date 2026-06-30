@@ -161,9 +161,10 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 
 ## Task commands
 
-- `/task fix that issue #bug #urgent` creates a pending task with optional labels.
+- `/task create fix that issue #bug #urgent` creates a pending task with optional labels.
 - `/task list` shows the pending task list only to you. Completed tasks are hidden by default.
 - `/task list #bug` shows pending tasks with that label only to you.
+- `/task current` shows your current active task with quick action buttons.
 - `/task edit <id> <description> #bug` updates a task description. Labels are replaced only when new labels are included.
 - Typing `#` in the composer suggests task IDs and task labels. In `/task edit <id>`, selecting or typing a task ID loads the current task text into the composer for easier editing.
 - `/task comment <id> <comment>` adds a comment to a task.
