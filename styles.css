@@ -1176,6 +1176,16 @@ button:disabled {
   color: var(--accent-strong);
 }
 
+.task-list-badge.planned {
+  background: rgba(109, 40, 217, 0.1);
+  color: #6d28d9;
+}
+
+.task-list-badge.reset {
+  background: rgba(180, 83, 9, 0.1);
+  color: #92400e;
+}
+
 .task-label {
   background: rgba(130, 108, 55, 0.12);
   color: #6f5b24;

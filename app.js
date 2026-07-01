@@ -273,6 +273,11 @@ const BASE_SLASH_COMMANDS = [
     hint: "Day status",
   },
   {
+    label: "/day summary",
+    insertText: "/day summary",
+    hint: "Day summary",
+  },
+  {
     label: "/day end",
     insertText: "/day end",
     hint: "End day",
@@ -1911,6 +1916,7 @@ function renderTaskListMessage(message) {
         maskIdentity: Boolean(message.maskIdentity),
         rolloverReview: Boolean(message.rolloverReview),
         rolloverDateKey: message.rolloverDateKey || "",
+        showTodayPlanActions: Boolean(message.showTodayPlanActions),
         privateAliases: message.privateAliases || {},
       })
     );
@@ -1920,7 +1926,8 @@ function renderTaskListMessage(message) {
 
   const footer = document.createElement("div");
   footer.className = "task-list-footer";
-  footer.textContent = `Total: ${message.tasks.length} task${message.tasks.length === 1 ? "" : "s"}`;
+  const totalText = `Total: ${message.tasks.length} task${message.tasks.length === 1 ? "" : "s"}`;
+  footer.textContent = message.todayPlanInfo ? `${totalText}. ${message.todayPlanInfo}` : totalText;
   container.append(footer);
 
   return container;
@@ -2019,6 +2026,16 @@ function renderTaskListItem(task, options = {}) {
       actions.append(carryButton, completeButton, skipButton);
     }
 
+    if (options.showTodayPlanActions && task.status !== "complete") {
+      const todayPlanButton = document.createElement("button");
+      todayPlanButton.type = "button";
+      todayPlanButton.className = "task-list-edit";
+      todayPlanButton.textContent = task.plannedToday ? "Remove today" : "Plan today";
+      todayPlanButton.dataset.action = task.plannedToday ? "task-day-remove-today" : "task-day-add-today";
+      todayPlanButton.dataset.taskId = task.id;
+      actions.append(todayPlanButton);
+    }
+
     actions.append(viewButton, editButton, commentButton, commentsButton);
     main.append(actions);
   }
@@ -2087,6 +2104,20 @@ function renderTaskListItem(task, options = {}) {
     subtasks.className = "task-list-badge";
     subtasks.textContent = `${subtaskSummary.completed}/${subtaskSummary.total} subtasks`;
     meta.append(subtasks);
+  }
+
+  if (task.plannedToday) {
+    const planned = document.createElement("span");
+    planned.className = "task-list-badge planned";
+    planned.textContent = "Today";
+    meta.append(planned);
+  }
+
+  if (task.todayPlanResetNote) {
+    const reset = document.createElement("span");
+    reset.className = "task-list-badge reset";
+    reset.textContent = task.todayPlanResetNote;
+    meta.append(reset);
   }
 
   item.append(main, meta);
@@ -2808,6 +2839,18 @@ function handleMessageActionClick(event) {
     );
   }
 
+  if (actionButton.dataset.action === "task-day-add-today") {
+    runLocalAction(actionButton, () => addTaskToTodayPlan(actionButton.dataset.taskId || ""), "Task planned for today.");
+  }
+
+  if (actionButton.dataset.action === "task-day-remove-today") {
+    runLocalAction(
+      actionButton,
+      () => removeTaskFromTodayPlan(actionButton.dataset.taskId || ""),
+      "Task removed from today's plan."
+    );
+  }
+
   if (actionButton.dataset.action === "task-day-complete") {
     runLocalAction(
       actionButton,
@@ -2955,8 +2998,8 @@ function getMaskedOverlayText() {
 
   return characters
     .map((character, index) => {
-      if (character === "\n") {
-        return "\n";
+      if (/\s/.test(character)) {
+        return character;
       }
 
       if (index === state.messageMaskRevealIndex) {
@@ -3713,7 +3756,7 @@ async function handleDayCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     postLocalDayMessage(
-      "Day commands:\n/day start\n/day plan <plan>\n/day free <reason>\n/day status\n/day break start\n/day break stop\n/day break list\n/day end\n/day leave <date-or-range> <reason>\n/day leave list\n/day leave cancel <id>"
+      "Day commands:\n/day start\n/day plan <plan>\n/day free <reason>\n/day status\n/day summary\n/day break start\n/day break stop\n/day break list\n/day end\n/day leave <date-or-range> <reason>\n/day leave list\n/day leave cancel <id>"
     );
     return;
   }
@@ -3740,6 +3783,11 @@ async function handleDayCommand(text) {
 
   if (normalizedAction === "status") {
     await postDayStatus();
+    return;
+  }
+
+  if (normalizedAction === "summary") {
+    await postDaySummary();
     return;
   }
 
@@ -4457,6 +4505,8 @@ async function postTaskList(filterText = "") {
     .sort(compareTasksByCreatedAt)
     .slice(0, TASK_LIST_LIMIT)
     .map(loadTaskCommentSummary));
+  const pendingTasksWithPlanState = await attachTodayPlanState(pendingTasks);
+  const todayPlanResetHint = await buildTodayPlanResetHint();
 
   if (pendingTasks.length === 0) {
     postLocalTaskMessage(
@@ -4469,7 +4519,7 @@ async function postTaskList(filterText = "") {
   }
 
   const maskIdentity = isPrivacyModeActive();
-  const taskLines = pendingTasks.map((task) => {
+  const taskLines = pendingTasksWithPlanState.map((task) => {
     const createdAt = formatTaskTimestamp(task.createdAt);
     const createdBy = task.createdByName || "Unknown";
     const metadata = maskIdentity ? `created ${createdAt}` : `${createdBy}, ${createdAt}`;
@@ -4480,13 +4530,14 @@ async function postTaskList(filterText = "") {
     requestedLabels.length > 0
       ? `Pending tasks ${formatTaskLabels(requestedLabels).trim()}:`
       : "Pending tasks:";
-  const totalLine = `Total: ${pendingTasks.length} task${pendingTasks.length === 1 ? "" : "s"}`;
+  const totalLine = `Total: ${pendingTasksWithPlanState.length} task${pendingTasksWithPlanState.length === 1 ? "" : "s"}`;
   postLocalTaskListMessage(
     heading.replace(/:$/, ""),
-    pendingTasks,
-    `${heading}\n${taskLines.join("\n")}\n${totalLine}`
+    pendingTasksWithPlanState,
+    `${heading}\n${taskLines.join("\n")}\n${totalLine}`,
+    { showTodayPlanActions: true, todayPlanResetHint }
   );
-  setStatus(`${pendingTasks.length} pending task${pendingTasks.length === 1 ? "" : "s"} listed.`, "success");
+  setStatus(`${pendingTasksWithPlanState.length} pending task${pendingTasksWithPlanState.length === 1 ? "" : "s"} listed.`, "success");
 }
 
 async function postCompletedTaskList(filterText = "") {
@@ -4620,6 +4671,70 @@ async function assignTasksToDay(input) {
   setStatus("Daily task plan saved.", "success");
 }
 
+async function addTaskToTodayPlan(taskIdInput) {
+  const task = await findTaskById(taskIdInput);
+
+  if (!task) {
+    postLocalTaskMessage(`Task ${taskIdInput} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  if (task.status === "complete") {
+    postLocalTaskMessage(`Task ${formatTaskId(task.id)} is already complete.`);
+    setStatus("Task is already complete.", "success");
+    return;
+  }
+
+  const todayKey = getTodayKey();
+  const workDay = await getWorkDay(todayKey);
+  const plannedTaskIds = mergeUniqueIds(workDay?.plannedTaskIds, [task.id]);
+
+  await setDoc(
+    getWorkDayRef(todayKey),
+    {
+      userId: state.profile.id,
+      userName: getProfileDisplayName(),
+      dateKey: todayKey,
+      plannedTaskIds,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  postLocalTaskMessage(`Planned Task ${formatTaskId(task.id)} for today: ${task.description || "Untitled task"}`);
+  setStatus("Task planned for today.", "success");
+}
+
+async function removeTaskFromTodayPlan(taskIdInput) {
+  const task = await findTaskById(taskIdInput);
+
+  if (!task) {
+    postLocalTaskMessage(`Task ${taskIdInput} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  const todayKey = getTodayKey();
+  const workDay = await getWorkDay(todayKey);
+  const plannedTaskIds = normalizeIdList(workDay?.plannedTaskIds).filter((taskId) => taskId !== task.id);
+
+  await setDoc(
+    getWorkDayRef(todayKey),
+    {
+      userId: state.profile.id,
+      userName: getProfileDisplayName(),
+      dateKey: todayKey,
+      plannedTaskIds,
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  postLocalTaskMessage(`Removed Task ${formatTaskId(task.id)} from today's plan.`);
+  setStatus("Task removed from today's plan.", "success");
+}
+
 async function postDailyTaskPlan(dateInput = "") {
   const dateKey = parseDateKey(dateInput.trim() || "today");
 
@@ -4633,22 +4748,26 @@ async function postDailyTaskPlan(dateInput = "") {
   const plannedTaskIds = normalizeIdList(workDay?.plannedTaskIds);
   const tasks = await loadTasksByIds(plannedTaskIds);
   const tasksWithComments = await Promise.all(tasks.map(loadTaskCommentSummary));
+  const tasksWithPlanState = await attachTodayPlanState(tasksWithComments);
+  const todayPlanResetHint = dateKey === getTodayKey() ? await buildTodayPlanResetHint() : "";
 
-  if (tasksWithComments.length === 0) {
-    postLocalTaskMessage(`No tasks planned for ${formatTaskPlanDate(dateKey)}.`);
+  if (tasksWithPlanState.length === 0) {
+    postLocalTaskMessage(
+      [`No tasks planned for ${formatTaskPlanDate(dateKey)}.`, todayPlanResetHint].filter(Boolean).join("\n")
+    );
     setStatus("No planned tasks.", "success");
     return;
   }
 
   postLocalTaskListMessage(
     `Planned tasks for ${formatTaskPlanDate(dateKey)}`,
-    sortTasksByPlannedOrder(tasksWithComments, plannedTaskIds),
-    `Planned tasks for ${formatTaskPlanDate(dateKey)}:\n${tasksWithComments
+    sortTasksByPlannedOrder(tasksWithPlanState, plannedTaskIds),
+    `Planned tasks for ${formatTaskPlanDate(dateKey)}:\n${tasksWithPlanState
       .map((task) => `${formatTaskId(task.id)} - ${task.description || "Untitled task"}`)
       .join("\n")}`,
-    { plannedDateKey: dateKey }
+    { plannedDateKey: dateKey, showTodayPlanActions: dateKey === getTodayKey(), todayPlanResetHint }
   );
-  setStatus(`${tasksWithComments.length} planned task${tasksWithComments.length === 1 ? "" : "s"} listed.`, "success");
+  setStatus(`${tasksWithPlanState.length} planned task${tasksWithPlanState.length === 1 ? "" : "s"} listed.`, "success");
 }
 
 async function postDailyTaskRolloverReview(options = {}) {
@@ -4872,7 +4991,7 @@ async function postNextTaskProcessItem(options = {}) {
     return;
   }
 
-  const [task] = pendingTasks;
+  const [task] = await attachTodayPlanState([pendingTasks[0]]);
   const comments = await loadTaskComments(task.id);
   const taskWithComments = {
     ...task,
@@ -4880,7 +4999,7 @@ async function postNextTaskProcessItem(options = {}) {
   };
   state.taskProcessSession.currentTaskId = task.id;
   saveTaskProcessState();
-  postLocalTaskProcessMessage(taskWithComments, pendingTasks.length, comments);
+  postLocalTaskProcessMessage(taskWithComments, pendingTasks.length, comments, await buildTodayPlanResetHint());
   setStatus(`Task process: ${pendingTasks.length} pending task${pendingTasks.length === 1 ? "" : "s"} left.`, "success");
 }
 
@@ -5913,6 +6032,7 @@ async function startWorkDay() {
       startedAt: existingDay?.startedAt || serverTimestamp(),
       endedAt: null,
       breaks: Array.isArray(existingDay?.breaks) ? existingDay.breaks : [],
+      dayIdleReminderCount: getDayIdleReminderCount(existingDay),
       updatedAt: serverTimestamp(),
     },
     { merge: true }
@@ -6035,8 +6155,16 @@ async function postDayStatus() {
     );
   }
 
+  lines.push(`Idle reminders today: ${getDayIdleReminderCount(workDay)}`);
+
   postLocalDayMessage(lines.join("\n"));
   setStatus("Day status ready.", "success");
+}
+
+async function postDaySummary() {
+  const summary = await buildDailyTaskSummary({ includePlan: true });
+  postLocalDayMessage(summary);
+  setStatus("Day summary ready.", "success");
 }
 
 async function handleBreakCommand(input = "") {
@@ -6451,6 +6579,7 @@ async function buildDailyTaskSummary(options = {}) {
   if (breakMs > 0) {
     lines.push(`Break time: ${formatDuration(breakMs)}`);
   }
+  lines.push(`Idle reminders: ${getDayIdleReminderCount(workDay)}`);
   if (plannedTasks.length > 0) {
     lines.push(
       `Planned tasks: ${plannedTasks.length} (${completedPlannedTasks.length} complete, ${unfinishedPlannedTasks.length} pending)`
@@ -7072,8 +7201,56 @@ function postLocalTaskListMessage(heading, tasks, fallbackText, options = {}) {
     rolloverReview: Boolean(options.rolloverReview),
     rolloverDateKey: options.rolloverDateKey || "",
     plannedDateKey: options.plannedDateKey || "",
+    showTodayPlanActions: Boolean(options.showTodayPlanActions),
+    todayPlanInfo: options.todayPlanResetHint || "",
     privateAliases: options.privateAliases || null,
   });
+}
+
+async function attachTodayPlanState(tasks) {
+  const todayKey = getTodayKey();
+  const sourceDateKey = getPreviousDateKey(todayKey);
+  const [todayWorkDay, sourceWorkDay] = await Promise.all([getWorkDay(todayKey), getWorkDay(sourceDateKey)]);
+  const plannedTaskIds = new Set(normalizeIdList(todayWorkDay?.plannedTaskIds));
+  const sourcePlannedTaskIds = new Set(normalizeIdList(sourceWorkDay?.plannedTaskIds));
+  const skippedTaskIds = new Set(normalizeIdList(todayWorkDay?.rolloverSkippedTaskIds));
+
+  return tasks.map((task) => ({
+    ...task,
+    plannedToday: plannedTaskIds.has(task.id),
+    todayPlanResetNote:
+      task.status !== "complete" &&
+      sourcePlannedTaskIds.has(task.id) &&
+      !plannedTaskIds.has(task.id) &&
+      !skippedTaskIds.has(task.id)
+        ? `Removed from today's plan after ${formatTaskPlanDate(sourceDateKey)} reset`
+        : "",
+  }));
+}
+
+async function buildTodayPlanResetHint() {
+  const todayKey = getTodayKey();
+  const sourceDateKey = getPreviousDateKey(todayKey);
+  const sourceWorkDay = await getWorkDay(sourceDateKey);
+  const todayWorkDay = await getWorkDay(todayKey);
+  const sourcePlannedTaskIds = normalizeIdList(sourceWorkDay?.plannedTaskIds);
+
+  if (sourcePlannedTaskIds.length === 0) {
+    return "";
+  }
+
+  const todayPlannedTaskIds = new Set(normalizeIdList(todayWorkDay?.plannedTaskIds));
+  const skippedTaskIds = new Set(normalizeIdList(todayWorkDay?.rolloverSkippedTaskIds));
+  const resetTasks = (await loadTasksByIds(sourcePlannedTaskIds))
+    .filter((task) => task.status !== "complete")
+    .filter((task) => !todayPlannedTaskIds.has(task.id))
+    .filter((task) => !skippedTaskIds.has(task.id));
+
+  if (resetTasks.length === 0) {
+    return "";
+  }
+
+  return `Yesterday's plan reset: ${resetTasks.length} unfinished task${resetTasks.length === 1 ? "" : "s"} no longer marked Today. Affected tasks are tagged below; use /task day review to carry them.`;
 }
 
 function postLocalDailyTaskReviewMessage(heading, tasks, sourceDateKey) {
@@ -7088,7 +7265,7 @@ function postLocalDailyTaskReviewMessage(heading, tasks, sourceDateKey) {
   );
 }
 
-function postLocalTaskProcessMessage(task, remainingCount, comments = []) {
+function postLocalTaskProcessMessage(task, remainingCount, comments = [], todayPlanResetHint = "") {
   const taskId = formatTaskId(task.id);
   const actions = [
     {
@@ -7117,6 +7294,11 @@ function postLocalTaskProcessMessage(task, remainingCount, comments = []) {
       taskId: task.id,
     },
     {
+      label: task.plannedToday ? "Remove today" : "Plan today",
+      action: task.plannedToday ? "task-day-remove-today" : "task-day-add-today",
+      taskId: task.id,
+    },
+    {
       label: "Skip",
       action: "task-process-skip",
       taskId: task.id,
@@ -7138,7 +7320,12 @@ function postLocalTaskProcessMessage(task, remainingCount, comments = []) {
       comments,
       remainingCount,
       maskIdentity: isPrivacyModeActive(),
-      hint: `Send /task process next to skip this task, or /task process stop to end the process.`,
+      hint: [
+        todayPlanResetHint,
+        "Send /task process next to skip this task, or /task process stop to end the process.",
+      ]
+        .filter(Boolean)
+        .join(" "),
     }
   );
 }
@@ -7578,8 +7765,13 @@ async function handleTaskTimerReminder(task, isFollowUp = false) {
     return;
   }
 
+  const elapsedMs = Math.max(
+    0,
+    Date.now() - getTimestampMillis(latestTask.activeTimerStartedAt || latestTask.startedAt)
+  );
+
   postLocalTaskMessage(
-    `Reminder: Task ${formatTaskId(latestTask.id)} has been running for more than ${formatDuration(TASK_TIMER_REMINDER_MS)}: ${latestTask.description}\nContinue with /task continue ${formatTaskId(latestTask.id)}, complete with /task complete ${formatTaskId(latestTask.id)}, or stop with /task stop ${formatTaskId(latestTask.id)}.`,
+    `Reminder: Task ${formatTaskId(latestTask.id)} has been running for ${formatDuration(elapsedMs)}: ${latestTask.description}`,
     [
       {
         label: "Continue",
@@ -7621,8 +7813,13 @@ async function handleGeneralTimerReminder(timer, isFollowUp = false) {
     return;
   }
 
+  const elapsedMs = Math.max(
+    0,
+    Date.now() - getTimestampMillis(latestTimer.activeTimerStartedAt || latestTimer.startedAt)
+  );
+
   postLocalTaskMessage(
-    `Reminder: General timer has been running for more than ${formatDuration(TASK_TIMER_REMINDER_MS)}.\nContinue with /task continue or stop with /task stop.`,
+    `Reminder: General timer has been running for ${formatDuration(elapsedMs)}.`,
     [
       {
         label: "Continue",
@@ -7792,28 +7989,31 @@ function scheduleDayIdleTaskReminder() {
 async function handleDayIdleTaskReminder() {
   state.dayIdleTaskReminderTimeoutId = null;
 
-  const shouldRemind = await shouldRemindForIdleWorkDay();
+  const workDay = await getWorkDay();
+  const shouldRemind = await shouldRemindForIdleWorkDay(workDay);
 
   if (!shouldRemind) {
     return;
   }
 
+  const reminderCount = await recordDayIdleTaskReminder(workDay);
+
   postLocalDayMessage(
-    `Reminder: Your day is started, but no timer is running.\nStart a general timer with /task start, start a task with /task start <id>, or create one with /task create <description>.`
+    `Reminder #${reminderCount}: Your day is started, but no timer is running.\nStart a general timer with /task start, start a task with /task start <id>, or create one with /task create <description>.`
   );
   scheduleDayIdleTaskReminder();
   setStatus("No task running reminder.", "success");
 }
 
-async function shouldRemindForIdleWorkDay() {
+async function shouldRemindForIdleWorkDay(workDay = null) {
   try {
-    const workDay = await getWorkDay();
+    const currentWorkDay = workDay || (await getWorkDay());
 
-    if (!workDay?.startedAt || workDay.endedAt) {
+    if (!currentWorkDay?.startedAt || currentWorkDay.endedAt) {
       return false;
     }
 
-    if (workDay.activeBreakStartedAt) {
+    if (currentWorkDay.activeBreakStartedAt) {
       return false;
     }
 
@@ -7827,6 +8027,29 @@ async function shouldRemindForIdleWorkDay() {
     console.error("Idle task reminder check failed:", error);
     return false;
   }
+}
+
+async function recordDayIdleTaskReminder(workDay) {
+  const reminderCount = getDayIdleReminderCount(workDay) + 1;
+
+  await setDoc(
+    getWorkDayRef(),
+    {
+      userId: state.profile.id,
+      userName: getProfileDisplayName(),
+      dateKey: getTodayKey(),
+      dayIdleReminderCount: increment(1),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
+  const updatedWorkDay = await getWorkDay();
+  return getDayIdleReminderCount(updatedWorkDay) || reminderCount;
+}
+
+function getDayIdleReminderCount(workDay) {
+  return Number.isFinite(workDay?.dayIdleReminderCount) ? workDay.dayIdleReminderCount : 0;
 }
 
 function clearDayIdleTaskReminder() {
