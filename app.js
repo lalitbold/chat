@@ -88,12 +88,14 @@ const ADVANCED_SETTINGS_COMMANDS = new Set(["advancesetting", "advancedsetting"]
 const GET_LINK_COMMAND = "getlink";
 const TASK_COMMAND = "/task";
 const DAY_COMMAND = "/day";
+const CHANGE_COMMAND = "/change";
 const CODEX_COMMAND = "/codex";
 const QUERY_COMMAND = "/query";
 const PLUGIN_COMMAND = "/plugin";
 const LEAD_COMMAND = "/lead";
 const COMMAND_AUTOCOMPLETE_LIMIT = 8;
 const TASK_LIST_LIMIT = 50;
+const CHANGELOG_LIST_LIMIT = 50;
 const LEAD_LIST_LIMIT = 25;
 const TASK_PREVIEW_LIMIT = 3;
 const MESSAGE_REACTION_OPTIONS = ["👍", "✅", "👀", "🙌"];
@@ -178,18 +180,18 @@ const BASE_SLASH_COMMANDS = [
     hint: "Current task",
   },
   {
-    label: "/task day today <ids>",
-    insertText: "/task day today ",
+    label: "/task today <ids>",
+    insertText: "/task today ",
     hint: "Plan tasks",
   },
   {
-    label: "/task day list",
-    insertText: "/task day list",
+    label: "/task today list",
+    insertText: "/task today list",
     hint: "Planned tasks",
   },
   {
-    label: "/task day review",
-    insertText: "/task day review",
+    label: "/task today review",
+    insertText: "/task today review",
     hint: "Rollover review",
   },
   {
@@ -223,7 +225,7 @@ const BASE_SLASH_COMMANDS = [
     hint: "Complete subtask",
   },
   {
-    label: "/task start [id]",
+    label: "/task start [id] [description]",
     insertText: "/task start ",
     hint: "Start timer",
   },
@@ -278,6 +280,11 @@ const BASE_SLASH_COMMANDS = [
     hint: "Day summary",
   },
   {
+    label: "/day timesheet [date] [@handle]",
+    insertText: "/day timesheet ",
+    hint: "Timesheet",
+  },
+  {
     label: "/day end",
     insertText: "/day end",
     hint: "End day",
@@ -311,6 +318,26 @@ const BASE_SLASH_COMMANDS = [
     label: "/day leave cancel <id>",
     insertText: "/day leave cancel ",
     hint: "Cancel leave",
+  },
+  {
+    label: "/change add <summary> #label",
+    insertText: "/change add ",
+    hint: "Log change",
+  },
+  {
+    label: "/change list",
+    insertText: "/change list",
+    hint: "Recent changes",
+  },
+  {
+    label: "/change summary",
+    insertText: "/change summary",
+    hint: "Change summary",
+  },
+  {
+    label: "/change summary share",
+    insertText: "/change summary share",
+    hint: "Share changes",
   },
   {
     label: "/codex <instruction>",
@@ -1941,10 +1968,16 @@ function renderTaskListItem(task, options = {}) {
   const main = document.createElement("div");
   main.className = "task-list-main";
 
-  const id = document.createElement("span");
+  const summary = document.createElement("div");
+  summary.className = "task-list-summary";
+
+  const id = document.createElement("button");
+  id.type = "button";
   id.className = "task-list-id";
   id.textContent = formatTaskId(task.id);
   id.title = task.id;
+  id.dataset.action = "task-view";
+  id.dataset.taskId = task.id;
 
   const title = document.createElement("span");
   title.className = "task-list-title";
@@ -1953,7 +1986,8 @@ function renderTaskListItem(task, options = {}) {
   const commentCount = Number.isFinite(task.commentCount) ? task.commentCount : 0;
   const subtaskSummary = getSubtaskSummary(task);
 
-  main.append(id, title);
+  summary.append(id, title);
+  main.append(summary);
 
   if (!options.hideActions) {
     const editButton = document.createElement("button");
@@ -1964,13 +1998,6 @@ function renderTaskListItem(task, options = {}) {
     editButton.dataset.taskId = task.id;
     editButton.dataset.taskDescription = task.description || "";
 
-    const commentButton = document.createElement("button");
-    commentButton.type = "button";
-    commentButton.className = "task-list-edit";
-    commentButton.textContent = "Comment";
-    commentButton.dataset.action = "task-comment-draft";
-    commentButton.dataset.taskId = task.id;
-
     const commentsButton = document.createElement("button");
     commentsButton.type = "button";
     commentsButton.className = "task-list-edit";
@@ -1978,12 +2005,12 @@ function renderTaskListItem(task, options = {}) {
     commentsButton.dataset.action = "task-comments-list";
     commentsButton.dataset.taskId = task.id;
 
-    const viewButton = document.createElement("button");
-    viewButton.type = "button";
-    viewButton.className = "task-list-edit";
-    viewButton.textContent = "View";
-    viewButton.dataset.action = "task-view";
-    viewButton.dataset.taskId = task.id;
+    const queryButton = document.createElement("button");
+    queryButton.type = "button";
+    queryButton.className = "task-list-edit";
+    queryButton.textContent = "Query";
+    queryButton.dataset.action = "task-query-draft";
+    queryButton.dataset.taskId = task.id;
 
     const actions = document.createElement("div");
     actions.className = "task-list-actions";
@@ -2030,13 +2057,13 @@ function renderTaskListItem(task, options = {}) {
       const todayPlanButton = document.createElement("button");
       todayPlanButton.type = "button";
       todayPlanButton.className = "task-list-edit";
-      todayPlanButton.textContent = task.plannedToday ? "Remove today" : "Plan today";
+      todayPlanButton.textContent = task.plannedToday ? "Remove today" : "Today";
       todayPlanButton.dataset.action = task.plannedToday ? "task-day-remove-today" : "task-day-add-today";
       todayPlanButton.dataset.taskId = task.id;
       actions.append(todayPlanButton);
     }
 
-    actions.append(viewButton, editButton, commentButton, commentsButton);
+    actions.append(editButton, commentsButton, queryButton);
     main.append(actions);
   }
 
@@ -2088,7 +2115,7 @@ function renderTaskListItem(task, options = {}) {
     running.className = "task-list-badge running";
     running.textContent = maskIdentity
       ? "Running"
-      : `Running by ${task.activeTimerStartedByName || "someone"}`;
+      : `Running by ${task.activeTimerStartedByName || "someone"}${task.activeTimerDescription ? ` - ${task.activeTimerDescription}` : ""}`;
     meta.append(running);
   }
 
@@ -2558,7 +2585,7 @@ function renderTaskPreviewCard(task, options = {}) {
 
   if (task.activeTimerStartedAt) {
     const running = document.createElement("span");
-    running.textContent = `Running by ${task.activeTimerStartedByName || "someone"}`;
+    running.textContent = `Running by ${task.activeTimerStartedByName || "someone"}${task.activeTimerDescription ? ` - ${task.activeTimerDescription}` : ""}`;
     meta.append(running);
   }
 
@@ -2692,6 +2719,19 @@ function renderTaskCommentsMessage(message) {
   taskTitle.className = "task-comments-task";
   taskTitle.textContent = message.task.description || "Untitled task";
   container.append(taskTitle);
+
+  const actions = document.createElement("div");
+  actions.className = "task-list-actions";
+
+  const queryButton = document.createElement("button");
+  queryButton.type = "button";
+  queryButton.className = "task-list-edit";
+  queryButton.textContent = "Query";
+  queryButton.dataset.action = "task-query-draft";
+  queryButton.dataset.taskId = message.task.id;
+
+  actions.append(queryButton);
+  container.append(actions);
 
   container.append(
     renderTaskCommentsPanel(message.task, message.comments, {
@@ -3128,6 +3168,11 @@ async function sendSubmittedText(text) {
       return;
     }
 
+    if (isChangeCommand(text)) {
+      await handleChangeCommand(text);
+      return;
+    }
+
     if (isCodexCommand(text)) {
       await handleCodexCommand(text);
       return;
@@ -3172,6 +3217,8 @@ async function sendSubmittedText(text) {
         ? "Task command failed. Check the command and room permissions."
         : isDayCommand(text)
           ? "Day command failed. Check the command and room permissions."
+        : isChangeCommand(text)
+          ? "Change command failed. Check the command and room permissions."
         : isCodexCommand(text)
           ? "Codex command failed. Check the command and room permissions."
         : isQueryCommand(text)
@@ -3602,6 +3649,11 @@ function isDayCommand(text) {
   return normalized === DAY_COMMAND || normalized.startsWith(`${DAY_COMMAND} `);
 }
 
+function isChangeCommand(text) {
+  const normalized = text.trim().toLowerCase();
+  return normalized === CHANGE_COMMAND || normalized.startsWith(`${CHANGE_COMMAND} `);
+}
+
 function isCodexCommand(text) {
   const normalized = text.trim().toLowerCase();
   return normalized === CODEX_COMMAND || normalized.startsWith(`${CODEX_COMMAND} `);
@@ -3630,7 +3682,7 @@ async function handleTaskCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     await postTaskMessage(
-      "Task commands:\n/task create fix that issue #bug\n/task list\n/task list #bug\n/task completed\n/task completed #bug\n/task current\n/task day today #abc123 #def456\n/task day tomorrow #abc123\n/task day list [today|tomorrow|YYYY-MM-DD]\n/task day review\n/task view <id>\n/task process\n/task process #bug\n/task process continue\n/task process stop\n/task edit <id> <description> #label\n/task comment <id> <comment>\n/task comments <id>\n/task subtask <id> <description>\n/task subtasks <id>\n/task subtask done <id> <subtask>\n/task subtask reopen <id> <subtask>\n/task subtask remove <id> <subtask>\n/task start\n/task start <id>\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task timers\n/task summary\n/task summary share\n/task complete <id>\n/task reopen <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nMention a task id like #abc123 in a message to preview it.\nUse /day for attendance and leave commands."
+      "Task commands:\n/task create fix that issue #bug\n/task list\n/task list #bug\n/task completed\n/task completed #bug\n/task current\n/task today #abc123 #def456\n/task today list\n/task today review\n/task view <id>\n/task process\n/task process #bug\n/task process continue\n/task process stop\n/task edit <id> <description> #label\n/task comment <id> <comment>\n/task comments <id>\n/task subtask <id> <description>\n/task subtasks <id>\n/task subtask done <id> <subtask>\n/task subtask reopen <id> <subtask>\n/task subtask remove <id> <subtask>\n/task start [description]\n/task start <id> [description]\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task timers\n/task summary\n/task summary share\n/task complete <id>\n/task reopen <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nMention a task id like #abc123 in a message to preview it.\nUse /day for attendance and leave commands."
     );
     return;
   }
@@ -3655,8 +3707,8 @@ async function handleTaskCommand(text) {
     return;
   }
 
-  if (normalizedAction === "day") {
-    await handleTaskDayCommand(rest.join(" "));
+  if (normalizedAction === "today") {
+    await handleTaskTodayCommand(rest.join(" "));
     return;
   }
 
@@ -3756,7 +3808,7 @@ async function handleDayCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     postLocalDayMessage(
-      "Day commands:\n/day start\n/day plan <plan>\n/day free <reason>\n/day status\n/day summary\n/day break start\n/day break stop\n/day break list\n/day end\n/day leave <date-or-range> <reason>\n/day leave list\n/day leave cancel <id>"
+      "Day commands:\n/day start\n/day plan <plan>\n/day free <reason>\n/day status\n/day summary\n/day timesheet [today|yesterday|YYYY-MM-DD] [@handle]\n/day break start\n/day break stop\n/day break list\n/day end\n/day leave <date-or-range> <reason>\n/day leave list\n/day leave cancel <id>"
     );
     return;
   }
@@ -3791,6 +3843,11 @@ async function handleDayCommand(text) {
     return;
   }
 
+  if (normalizedAction === "timesheet" || normalizedAction === "sheet") {
+    await postTimesheet(rest.join(" "));
+    return;
+  }
+
   if (normalizedAction === "break") {
     await handleBreakCommand(rest.join(" "));
     return;
@@ -3802,6 +3859,37 @@ async function handleDayCommand(text) {
   }
 
   postLocalDayMessage(`Unknown day command: /day ${payload}`);
+}
+
+async function handleChangeCommand(text) {
+  const rawCommand = text.trim();
+  const payload = rawCommand.slice(CHANGE_COMMAND.length).trim();
+  const [action = "", ...rest] = payload.split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+
+  if (!payload || normalizedAction === "help") {
+    postLocalChangeMessage(
+      "Change commands:\n/change add <summary> #label\n/change list\n/change summary\n/change summary share"
+    );
+    return;
+  }
+
+  if (["add", "log", "record"].includes(normalizedAction)) {
+    await addChangeLogEntry(rest.join(" "));
+    return;
+  }
+
+  if (["list", "recent"].includes(normalizedAction)) {
+    await postChangeLogList();
+    return;
+  }
+
+  if (normalizedAction === "summary") {
+    await postChangeLogSummary(rest.join(" "));
+    return;
+  }
+
+  postLocalChangeMessage("Unknown change command. Use /change help.");
 }
 
 async function handleCodexCommand(text) {
@@ -4368,6 +4456,56 @@ function normalizeLeadFieldValue(value) {
     .replace(/\s+/g, " ");
 }
 
+async function addChangeLogEntry(input) {
+  const { text, labels } = extractLabels(input);
+
+  if (!text) {
+    postLocalChangeMessage("Use /change add <summary> #label.");
+    return;
+  }
+
+  const changeRef = await addDoc(collection(state.db, "rooms", state.roomId, "changelog"), {
+    text,
+    labels,
+    createdAt: serverTimestamp(),
+    createdBy: state.profile.id,
+    createdByName: getProfileDisplayName(),
+  });
+
+  await postChangeMessage(
+    `Change ${formatChangeId(changeRef.id)} logged: ${text}${formatTaskLabels(labels)}`
+  );
+  setStatus("Change logged.", "success");
+}
+
+async function postChangeLogList() {
+  const changes = await loadRoomChanges();
+
+  if (changes.length === 0) {
+    postLocalChangeMessage("No changes logged yet.");
+    setStatus("No changes logged.", "success");
+    return;
+  }
+
+  postLocalChangeMessage(formatChangeLogList(changes.slice(0, CHANGELOG_LIST_LIMIT)));
+  setStatus(`${changes.length} change${changes.length === 1 ? "" : "s"} found.`, "success");
+}
+
+async function postChangeLogSummary(input = "") {
+  const shouldShare = ["share", "send", "group"].includes(input.trim().toLowerCase());
+  const changes = await loadRoomChanges();
+  const summary = formatChangeLogSummary(changes);
+
+  if (shouldShare) {
+    await postChangeMessage(summary);
+    setStatus("Change summary shared with the group.", "success");
+    return;
+  }
+
+  postLocalChangeMessage(summary);
+  setStatus("Change summary ready.", "success");
+}
+
 function parseQueryReminderInput(value) {
   const tokens = String(value || "").trim().split(/\s+/).filter(Boolean);
 
@@ -4583,20 +4721,20 @@ async function postCompletedTaskList(filterText = "") {
   setStatus(`${completedTasks.length} completed task${completedTasks.length === 1 ? "" : "s"} listed.`, "success");
 }
 
-async function handleTaskDayCommand(input = "") {
+async function handleTaskTodayCommand(input = "") {
   const trimmedInput = input.trim();
   const [action = "", ...rest] = trimmedInput.split(/\s+/);
   const normalizedAction = action.toLowerCase();
 
   if (!trimmedInput || normalizedAction === "help") {
     postLocalTaskMessage(
-      "Task day commands:\n/task day today #abc123 #def456\n/task day tomorrow #abc123\n/task day 2026-06-26 #abc123\n/task day list [today|tomorrow|YYYY-MM-DD]\n/task day review"
+      "Today task commands:\n/task today #abc123 #def456\n/task today list\n/task today review"
     );
     return;
   }
 
   if (normalizedAction === "list") {
-    await postDailyTaskPlan(rest.join(" "));
+    await postDailyTaskPlan("today");
     return;
   }
 
@@ -4605,17 +4743,16 @@ async function handleTaskDayCommand(input = "") {
     return;
   }
 
-  await assignTasksToDay(trimmedInput);
+  await assignTasksToToday(trimmedInput);
 }
 
-async function assignTasksToDay(input) {
+async function assignTasksToToday(input) {
   const parts = input.trim().split(/\s+/).filter(Boolean);
-  const requestedDateKey = parseDateKey(parts[0]);
-  const dateKey = requestedDateKey || getTodayKey();
-  const taskIdInputs = requestedDateKey ? parts.slice(1) : parts;
+  const dateKey = getTodayKey();
+  const taskIdInputs = parts;
 
   if (taskIdInputs.length === 0) {
-    postLocalTaskMessage("Use /task day today #abc123 #def456.");
+    postLocalTaskMessage("Use /task today #abc123 #def456.");
     return;
   }
 
@@ -4739,7 +4876,7 @@ async function postDailyTaskPlan(dateInput = "") {
   const dateKey = parseDateKey(dateInput.trim() || "today");
 
   if (!dateKey) {
-    postLocalTaskMessage("Use /task day list [today|tomorrow|YYYY-MM-DD].");
+    postLocalTaskMessage("Use /task today list.");
     setStatus("Invalid date.", "error");
     return;
   }
@@ -5143,6 +5280,7 @@ async function completeTask(taskIdInput) {
     completionUpdate.activeTimerStartedAt = null;
     completionUpdate.activeTimerStartedBy = null;
     completionUpdate.activeTimerStartedByName = null;
+    completionUpdate.activeTimerDescription = null;
     clearTaskTimerReminder(task.id);
   }
 
@@ -5153,7 +5291,7 @@ async function completeTask(taskIdInput) {
   }
 
   await postTaskMessage(
-    `Task ${formatTaskId(task.id)} completed${timerElapsedMs > 0 ? ` and timer stopped after ${formatDuration(timerElapsedMs)}` : ""}: ${task.description}`
+    `Task ${formatTaskId(task.id)} completed${timerElapsedMs > 0 ? ` and timer stopped after ${formatDuration(timerElapsedMs)}` : ""}: ${getTaskTimerDisplayDescription(task)}`
   );
   scheduleDayIdleTaskReminder();
   setStatus("Task completed.", "success");
@@ -5584,7 +5722,7 @@ async function postCurrentTask() {
   });
 
   postLocalMessage(
-    `Current task\n${formatTaskId(currentTask.id)} - ${currentTask.description || "Untitled task"}`,
+    `Current task\n${formatTaskId(currentTask.id)} - ${getTaskTimerDisplayDescription(currentTask)}`,
     "Tasks (only you)",
     "task-view",
     [],
@@ -5598,8 +5736,8 @@ async function postCurrentTask() {
   setStatus("Current task shown.", "success");
 }
 
-async function startTaskTimer(taskIdInput) {
-  const taskId = taskIdInput.trim();
+async function startTaskTimer(input) {
+  const timerRequest = await parseTimerStartInput(input);
   const unavailableReason = await getTimerUnavailableReason();
 
   if (unavailableReason) {
@@ -5608,18 +5746,19 @@ async function startTaskTimer(taskIdInput) {
     return;
   }
 
-  if (!taskId) {
-    await startGeneralTimer();
-    return;
-  }
-
-  const task = await findTaskById(taskId);
-
-  if (!task) {
-    await postTaskMessage(`Task ${taskId} was not found.`);
+  if (timerRequest.error) {
+    await postTaskMessage(timerRequest.error);
     setStatus("Task not found.", "error");
     return;
   }
+
+  if (!timerRequest.task) {
+    await startGeneralTimer(timerRequest.description);
+    return;
+  }
+
+  const task = timerRequest.task;
+  const timerDescription = timerRequest.description;
 
   if (task.status === "complete") {
     await postTaskMessage(`Task ${formatTaskId(task.id)} is already complete.`);
@@ -5640,16 +5779,58 @@ async function startTaskTimer(taskIdInput) {
     activeTimerStartedAt: startedAt,
     activeTimerStartedBy: state.profile.id,
     activeTimerStartedByName: getProfileDisplayName(),
+    activeTimerDescription: timerDescription || null,
   });
 
   scheduleTaskTimerReminder({
     id: task.id,
-    description: task.description,
+    description: getTaskTimerDisplayDescription(task, timerDescription),
     startedAt,
+    timerDescription,
   });
   clearDayIdleTaskReminder();
-  await postTaskMessage(`Task ${formatTaskId(task.id)} timer started: ${task.description}`);
+  await postTaskMessage(
+    `Task ${formatTaskId(task.id)} timer started: ${getTaskTimerDisplayDescription(task, timerDescription)}`
+  );
   setStatus("Task timer started.", "success");
+}
+
+async function parseTimerStartInput(input = "") {
+  const trimmedInput = input.trim();
+
+  if (!trimmedInput) {
+    return {
+      task: null,
+      description: "",
+    };
+  }
+
+  const [firstToken = "", ...descriptionParts] = trimmedInput.split(/\s+/);
+  const task = await findTaskById(firstToken);
+
+  if (!task) {
+    if (firstToken.startsWith("#")) {
+      return {
+        task: null,
+        description: "",
+        error: `Task ${firstToken} was not found.`,
+      };
+    }
+
+    return {
+      task: null,
+      description: sanitizeTimerDescription(trimmedInput),
+    };
+  }
+
+  return {
+    task,
+    description: sanitizeTimerDescription(descriptionParts.join(" ")),
+  };
+}
+
+function sanitizeTimerDescription(description) {
+  return String(description || "").trim().slice(0, 200);
 }
 
 async function stopTaskTimer(taskIdInput) {
@@ -5689,18 +5870,19 @@ async function stopTaskTimer(taskIdInput) {
     activeTimerStartedAt: null,
     activeTimerStartedBy: null,
     activeTimerStartedByName: null,
+    activeTimerDescription: null,
   });
 
   await recordTaskTimeEntry(task, task.activeTimerStartedAt, stoppedAt, elapsedMs);
   clearTaskTimerReminder(task.id);
   scheduleDayIdleTaskReminder();
   await postTaskMessage(
-    `Task ${formatTaskId(task.id)} timer stopped after ${formatDuration(elapsedMs)}: ${task.description}`
+    `Task ${formatTaskId(task.id)} timer stopped after ${formatDuration(elapsedMs)}: ${getTaskTimerDisplayDescription(task)}`
   );
   setStatus("Task timer stopped.", "success");
 }
 
-async function startGeneralTimer() {
+async function startGeneralTimer(description = "") {
   const unavailableReason = await getTimerUnavailableReason();
 
   if (unavailableReason) {
@@ -5718,6 +5900,7 @@ async function startGeneralTimer() {
   }
 
   const startedAt = new Date();
+  const timerDescription = sanitizeTimerDescription(description);
 
   await setDoc(
     getWorkDayRef(),
@@ -5728,6 +5911,7 @@ async function startGeneralTimer() {
       activeTimerStartedAt: startedAt,
       activeTimerStartedBy: state.profile.id,
       activeTimerStartedByName: getProfileDisplayName(),
+      activeTimerDescription: timerDescription || null,
       updatedAt: serverTimestamp(),
     },
     { merge: true }
@@ -5735,12 +5919,13 @@ async function startGeneralTimer() {
 
   scheduleTaskTimerReminder({
     id: getGeneralTimerReminderId(),
-    description: "General work",
+    description: getGeneralTimerDisplayDescription(timerDescription),
     startedAt,
     isGeneralTimer: true,
+    timerDescription,
   });
   clearDayIdleTaskReminder();
-  await postTaskMessage("General timer started.");
+  await postTaskMessage(`General timer started${timerDescription ? `: ${timerDescription}` : ""}.`);
   setStatus("General timer started.", "success");
 }
 
@@ -5759,20 +5944,29 @@ async function stopGeneralTimer() {
   await setDoc(
     activeTimer.ref,
     {
-    activeTimerStartedAt: null,
-    activeTimerStartedBy: null,
-    activeTimerStartedByName: null,
-    userId: state.profile.id,
-    userName: getProfileDisplayName(),
-    updatedAt: serverTimestamp(),
+      activeTimerStartedAt: null,
+      activeTimerStartedBy: null,
+      activeTimerStartedByName: null,
+      activeTimerDescription: null,
+      userId: state.profile.id,
+      userName: getProfileDisplayName(),
+      updatedAt: serverTimestamp(),
     },
     { merge: true }
   );
 
-  await recordGeneralTimeEntry(activeTimer.data.activeTimerStartedAt, stoppedAt, elapsedMs);
+  await recordGeneralTimeEntry(
+    activeTimer.data.activeTimerStartedAt,
+    stoppedAt,
+    elapsedMs,
+    activeTimer.ref,
+    activeTimer.data.activeTimerDescription
+  );
   clearGeneralTimerReminders();
   scheduleDayIdleTaskReminder();
-  await postTaskMessage(`General timer stopped after ${formatDuration(elapsedMs)}.`);
+  await postTaskMessage(
+    `General timer stopped after ${formatDuration(elapsedMs)}${activeTimer.data.activeTimerDescription ? `: ${activeTimer.data.activeTimerDescription}` : ""}.`
+  );
   setStatus("General timer stopped.", "success");
 }
 
@@ -5808,6 +6002,7 @@ async function pauseActiveTimersForCurrentUser(reason = "pause") {
       activeTimerStartedAt: null,
       activeTimerStartedBy: null,
       activeTimerStartedByName: null,
+      activeTimerDescription: null,
     });
 
     if (elapsedMs > 0) {
@@ -5830,6 +6025,7 @@ async function pauseActiveTimersForCurrentUser(reason = "pause") {
         activeTimerStartedAt: null,
         activeTimerStartedBy: null,
         activeTimerStartedByName: null,
+        activeTimerDescription: null,
         userId: state.profile.id,
         userName: getProfileDisplayName(),
         updatedAt: serverTimestamp(),
@@ -5842,7 +6038,8 @@ async function pauseActiveTimersForCurrentUser(reason = "pause") {
         activeGeneralTimer.data.activeTimerStartedAt,
         stoppedAt,
         elapsedMs,
-        activeGeneralTimer.ref
+        activeGeneralTimer.ref,
+        activeGeneralTimer.data.activeTimerDescription
       );
     }
 
@@ -5870,9 +6067,12 @@ async function continueGeneralTimer() {
 
   scheduleTaskTimerReminder({
     id: getGeneralTimerReminderId(),
-    description: "General work",
+    description: getGeneralTimerDisplayDescription(activeTimer.data.activeTimerDescription),
     startedAt: new Date(),
     isGeneralTimer: true,
+    timerDescription: activeTimer.data.activeTimerDescription || "",
+    activeTimerDescription: activeTimer.data.activeTimerDescription || "",
+    ref: activeTimer.ref,
   });
   postLocalTaskMessage(
     `Continuing general timer. I will remind you again in ${formatDuration(TASK_TIMER_REMINDER_MS)} if it is still running.`
@@ -5917,8 +6117,9 @@ async function continueTaskTimer(taskIdInput) {
 
   scheduleTaskTimerReminder({
     id: task.id,
-    description: task.description,
+    description: getTaskTimerDisplayDescription(task),
     startedAt: new Date(),
+    timerDescription: task.activeTimerDescription || "",
   });
   postLocalTaskMessage(
     `Continuing Task ${formatTaskId(task.id)}. I will remind you again in ${formatDuration(TASK_TIMER_REMINDER_MS)} if it is still running.`
@@ -5945,6 +6146,7 @@ async function postActiveTimers() {
   }
 
   const lines = ["Active timers:"];
+  const actions = [];
 
   if (activeGeneralTimers.length > 0) {
     lines.push("General:");
@@ -5953,8 +6155,15 @@ async function postActiveTimers() {
         ? "User"
         : workDay.activeTimerStartedByName || workDay.userName || "Someone";
       const elapsed = formatDuration(Date.now() - getTimestampMillis(workDay.activeTimerStartedAt));
-      const command = isCurrentUserWorkDay(workDay) ? " - stop with /task stop" : "";
-      lines.push(`- ${ownerName}: ${elapsed}${command}`);
+      const description = getGeneralTimerDisplayDescription(workDay.activeTimerDescription);
+      lines.push(`- ${ownerName}: ${elapsed}${description !== "General work" ? ` - ${description}` : ""}`);
+
+      if (isCurrentUserWorkDay(workDay)) {
+        actions.push({
+          label: "Stop general",
+          action: "general-timer-stop",
+        });
+      }
     });
   }
 
@@ -5964,14 +6173,26 @@ async function postActiveTimers() {
       const ownerName = isPrivacyModeActive() ? "User" : getTaskTimerOwnerName(task);
       const elapsed = formatDuration(Date.now() - getTimestampMillis(task.activeTimerStartedAt));
       const taskId = formatTaskId(task.id);
-      const command = isCurrentUserTaskTimerOwner(task)
-        ? ` - stop with /task stop ${taskId}, complete with /task complete ${taskId}`
-        : "";
-      lines.push(`- ${taskId} ${task.description || "Untitled task"} (${ownerName}, ${elapsed})${command}`);
+      lines.push(`- ${taskId} ${getTaskTimerDisplayDescription(task)} (${ownerName}, ${elapsed})`);
+
+      if (isCurrentUserTaskTimerOwner(task)) {
+        actions.push(
+          {
+            label: `Stop ${taskId}`,
+            action: "task-stop",
+            taskId: task.id,
+          },
+          {
+            label: `Complete ${taskId}`,
+            action: "task-complete",
+            taskId: task.id,
+          }
+        );
+      }
     });
   }
 
-  postLocalTaskMessage(lines.join("\n"));
+  postLocalTaskMessage(lines.join("\n"), actions);
   setStatus(
     `${activeTaskTimers.length + activeGeneralTimers.length} active timer${activeTaskTimers.length + activeGeneralTimers.length === 1 ? "" : "s"} listed.`,
     "success"
@@ -6135,8 +6356,9 @@ async function postDayStatus() {
   }
 
   if (activeGeneralTimer?.data?.activeTimerStartedAt) {
+    const generalTimerDescription = getGeneralTimerDisplayDescription(activeGeneralTimer.data.activeTimerDescription);
     lines.push(
-      `General timer: running ${formatDuration(Date.now() - getTimestampMillis(activeGeneralTimer.data.activeTimerStartedAt))}`
+      `General timer: running ${formatDuration(Date.now() - getTimestampMillis(activeGeneralTimer.data.activeTimerStartedAt))}${generalTimerDescription !== "General work" ? ` - ${generalTimerDescription}` : ""}`
     );
   }
 
@@ -6144,7 +6366,7 @@ async function postDayStatus() {
     lines.push(`Task timers: ${activeTaskTimers.length} running`);
     activeTaskTimers.slice(0, 5).forEach((task) => {
       lines.push(
-        `- ${formatTaskId(task.id)} ${task.description || "Untitled task"} (${formatDuration(Date.now() - getTimestampMillis(task.activeTimerStartedAt))})`
+        `- ${formatTaskId(task.id)} ${getTaskTimerDisplayDescription(task)} (${formatDuration(Date.now() - getTimestampMillis(task.activeTimerStartedAt))})`
       );
     });
   }
@@ -6165,6 +6387,137 @@ async function postDaySummary() {
   const summary = await buildDailyTaskSummary({ includePlan: true });
   postLocalDayMessage(summary);
   setStatus("Day summary ready.", "success");
+}
+
+async function postTimesheet(input = "") {
+  const request = parseTimesheetRequest(input);
+
+  if (!request) {
+    postLocalDayMessage("Use /day timesheet [today|yesterday|YYYY-MM-DD] [@handle].");
+    setStatus("Timesheet request needs a valid date.", "error");
+    return;
+  }
+
+  const timesheet = await buildTimesheet(request);
+  postLocalDayMessage(timesheet);
+  setStatus("Timesheet ready.", "success");
+}
+
+async function buildTimesheet({ dateKey, handle }) {
+  const { start, end } = getDateBounds(dateKey);
+  const tasks = await loadRoomTasks();
+  const roomWorkDays = await loadRoomWorkDays();
+  const matchingWorkDays = roomWorkDays.filter(
+    (workDay) => workDay.dateKey === dateKey && workDayMatchesHandle(workDay, handle)
+  );
+  const workDay = selectTimesheetWorkDay(matchingWorkDays, handle);
+  const taskEntriesByTask = await loadTimesheetTaskEntries(tasks, start, end, handle);
+  const generalEntries = workDay
+    ? (await loadWorkDayTimeEntries(workDay.ref)).filter((entry) => timesheetEntryMatches(entry, start, end, handle))
+    : [];
+  const breakEntries = workDay ? getTimesheetBreakEntries(workDay, start, end, handle) : [];
+  const shouldShowRunningState = dateKey === getTodayKey();
+  const activeTaskTimers = shouldShowRunningState
+    ? tasks
+        .filter((task) => task.activeTimerStartedAt && taskTimerMatchesHandle(task, handle))
+        .sort(compareActiveTimersByStartedAt)
+    : [];
+  const taskTrackedMs = [...taskEntriesByTask.values()]
+    .flat()
+    .reduce((total, entry) => total + getTimeEntryDurationMs(entry), 0);
+  const generalTrackedMs = generalEntries.reduce((total, entry) => total + getTimeEntryDurationMs(entry), 0);
+  const breakMs = breakEntries.reduce((total, breakEntry) => total + getBreakDurationMs(breakEntry), 0);
+  const personLabel = getTimesheetPersonLabel({ handle, workDay, taskEntriesByTask, generalEntries, breakEntries });
+  const lines = [`Timesheet for ${personLabel} on ${dateKey}`];
+
+  appendWorkDayStartEndLines(lines, workDay);
+  lines.push(`Task time: ${formatDuration(taskTrackedMs)}`);
+  lines.push(`General time: ${formatDuration(generalTrackedMs)}`);
+  lines.push(`Break time: ${formatDuration(breakMs)}`);
+  lines.push(`Total work time: ${formatDuration(taskTrackedMs + generalTrackedMs)}`);
+
+  if (workDay?.availabilityStatus === "free") {
+    lines.push(`Availability: ${formatDayAvailabilityStatus(workDay)}`);
+  }
+
+  const taskEntryGroups = [...taskEntriesByTask.entries()].filter(([, entries]) => entries.length > 0);
+  if (taskEntryGroups.length > 0) {
+    lines.push("Tasks:");
+    taskEntryGroups.forEach(([task, entries]) => {
+      const totalMs = entries.reduce((total, entry) => total + getTimeEntryDurationMs(entry), 0);
+      lines.push(`- ${formatTaskId(task.id)} ${task.description || "Untitled task"}: ${formatDuration(totalMs)}`);
+      entries.forEach((entry) => {
+        lines.push(
+          `  ${formatTimeEntryRange(entry)} (${formatDuration(getTimeEntryDurationMs(entry))})${entry.timerDescription ? ` - ${entry.timerDescription}` : ""}`
+        );
+      });
+    });
+  }
+
+  if (generalEntries.length > 0) {
+    lines.push("General entries:");
+    generalEntries.forEach((entry) => {
+      lines.push(
+        `- ${formatTimeEntryRange(entry)} (${formatDuration(getTimeEntryDurationMs(entry))})${entry.timerDescription ? ` - ${entry.timerDescription}` : ""}`
+      );
+    });
+  }
+
+  if (breakEntries.length > 0) {
+    lines.push("Breaks:");
+    breakEntries.forEach((breakEntry) => {
+      lines.push(`- ${formatBreakTimeRange(breakEntry)} (${formatDuration(getBreakDurationMs(breakEntry))})`);
+    });
+  }
+
+  if (shouldShowRunningState && workDay?.activeTimerStartedAt) {
+    const generalTimerDescription = getGeneralTimerDisplayDescription(workDay.activeTimerDescription);
+    lines.push(
+      `General timer running: ${formatDuration(Date.now() - getTimestampMillis(workDay.activeTimerStartedAt))}${generalTimerDescription !== "General work" ? ` - ${generalTimerDescription}` : ""}`
+    );
+  }
+
+  if (shouldShowRunningState && workDay?.activeBreakStartedAt) {
+    lines.push(`Break running: ${formatDuration(Date.now() - getTimestampMillis(workDay.activeBreakStartedAt))}`);
+  }
+
+  if (activeTaskTimers.length > 0) {
+    lines.push("Running task timers:");
+    activeTaskTimers.slice(0, 10).forEach((task) => {
+      lines.push(
+        `- ${formatTaskId(task.id)} ${getTaskTimerDisplayDescription(task)} (${formatDuration(Date.now() - getTimestampMillis(task.activeTimerStartedAt))})`
+      );
+    });
+  }
+
+  if (
+    taskTrackedMs === 0 &&
+    generalTrackedMs === 0 &&
+    breakMs === 0 &&
+    (!shouldShowRunningState || !workDay?.activeTimerStartedAt) &&
+    (!shouldShowRunningState || !workDay?.activeBreakStartedAt) &&
+    activeTaskTimers.length === 0
+  ) {
+    lines.push("No timesheet activity found.");
+  }
+
+  return lines.join("\n");
+}
+
+function appendWorkDayStartEndLines(lines, workDay) {
+  if (workDay?.startedAt) {
+    lines.push(`Day started: ${formatTaskTimestamp(workDay.startedAt)}`);
+  } else {
+    lines.push("Day started: not started");
+  }
+
+  if (workDay?.endedAt) {
+    lines.push(`Day ended: ${formatTaskTimestamp(workDay.endedAt)}`);
+  } else if (workDay?.startedAt) {
+    lines.push("Day ended: not ended yet");
+  } else {
+    lines.push("Day ended: not ended");
+  }
 }
 
 async function handleBreakCommand(input = "") {
@@ -6564,6 +6917,8 @@ async function buildDailyTaskSummary(options = {}) {
     `Work summary for ${formatSummaryDate(start)}`,
   ];
 
+  appendWorkDayStartEndLines(lines, workDay);
+
   if (options.includePlan && workDay?.plan) {
     lines.push(`Plan: ${workDay.plan}`);
   }
@@ -6600,8 +6955,9 @@ async function buildDailyTaskSummary(options = {}) {
   });
 
   if (activeGeneralTimer?.data?.activeTimerStartedAt) {
+    const generalTimerDescription = getGeneralTimerDisplayDescription(activeGeneralTimer.data.activeTimerDescription);
     lines.push(
-      `General timer running: ${formatDuration(Date.now() - getTimestampMillis(activeGeneralTimer.data.activeTimerStartedAt))}`
+      `General timer running: ${formatDuration(Date.now() - getTimestampMillis(activeGeneralTimer.data.activeTimerStartedAt))}${generalTimerDescription !== "General work" ? ` - ${generalTimerDescription}` : ""}`
     );
   }
 
@@ -6614,7 +6970,7 @@ async function buildDailyTaskSummary(options = {}) {
   if (activeTimers.length > 0) {
     lines.push(`Running timers: ${activeTimers.length}`);
     activeTimers.slice(0, 10).forEach((task) => {
-      lines.push(`- ${task.description} (${formatDuration(Date.now() - getTimestampMillis(task.activeTimerStartedAt))})`);
+      lines.push(`- ${getTaskTimerDisplayDescription(task)} (${formatDuration(Date.now() - getTimestampMillis(task.activeTimerStartedAt))})`);
     });
   }
 
@@ -6715,6 +7071,7 @@ function serializeTaskForMessage(task) {
     activeTimerStartedAt: task.activeTimerStartedAt || null,
     activeTimerStartedBy: task.activeTimerStartedBy || "",
     activeTimerStartedByName: task.activeTimerStartedByName || "",
+    activeTimerDescription: task.activeTimerDescription || "",
     commentCount: Number.isFinite(task.commentCount) ? task.commentCount : 0,
   };
 }
@@ -6955,6 +7312,19 @@ async function loadRoomLeads() {
   }));
 }
 
+async function loadRoomChanges() {
+  const changesQuery = query(
+    collection(state.db, "rooms", state.roomId, "changelog"),
+    orderBy("createdAt", "desc")
+  );
+  const changesSnapshot = await getDocs(changesQuery);
+
+  return changesSnapshot.docs.map((changeDoc) => ({
+    id: changeDoc.id,
+    ...changeDoc.data(),
+  }));
+}
+
 async function loadRoomTasks() {
   const tasksSnapshot = await getDocs(collection(state.db, "rooms", state.roomId, "tasks"));
 
@@ -7021,8 +7391,8 @@ async function loadTaskCommentSummary(task) {
   };
 }
 
-async function loadWorkDayTimeEntries() {
-  const entriesSnapshot = await getDocs(collection(getWorkDayRef(), "timeEntries"));
+async function loadWorkDayTimeEntries(workDayRef = getWorkDayRef()) {
+  const entriesSnapshot = await getDocs(collection(workDayRef, "timeEntries"));
 
   return entriesSnapshot.docs.map((entryDoc) => ({
     id: entryDoc.id,
@@ -7074,6 +7444,143 @@ function isCurrentUserWorkDay(workDay) {
   const workDayUserName = normalizeProfileName(workDay.userName);
   const profileName = normalizeProfileName(state.profile?.name);
   return Boolean(workDayUserName && profileName && workDayUserName === profileName);
+}
+
+function parseTimesheetRequest(input = "") {
+  const parts = input.trim().split(/\s+/).filter(Boolean);
+  let dateKey = getTodayKey();
+  const handleParts = [];
+
+  for (const part of parts) {
+    const parsedDateKey = parseDateKey(part);
+
+    if (parsedDateKey) {
+      dateKey = parsedDateKey;
+      continue;
+    }
+
+    if (looksLikeDateToken(part)) {
+      return null;
+    }
+
+    handleParts.push(part);
+  }
+
+  return {
+    dateKey,
+    handle: normalizeTimesheetHandle(handleParts.join(" ")),
+  };
+}
+
+function looksLikeDateToken(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || "").trim());
+}
+
+function normalizeTimesheetHandle(value) {
+  return String(value || "")
+    .trim()
+    .replace(/^@/, "")
+    .toLowerCase();
+}
+
+function workDayMatchesHandle(workDay, handle) {
+  if (!handle) {
+    return isCurrentUserWorkDay(workDay);
+  }
+
+  return doesPersonMatchHandle(workDay.userName, handle) || doesPersonMatchHandle(workDay.activeTimerStartedByName, handle);
+}
+
+function taskTimerMatchesHandle(task, handle) {
+  if (!handle) {
+    return isCurrentUserTaskTimerOwner(task);
+  }
+
+  return doesPersonMatchHandle(task.activeTimerStartedByName, handle);
+}
+
+function doesPersonMatchHandle(name, handle) {
+  const normalizedName = normalizeProfileName(name);
+  const normalizedHandle = normalizeTimesheetHandle(handle);
+
+  if (!normalizedName || !normalizedHandle) {
+    return false;
+  }
+
+  return normalizedName === normalizedHandle || normalizedName.replace(/\s+/g, "") === normalizedHandle;
+}
+
+function timesheetEntryMatches(entry, start, end, handle) {
+  return isTimestampWithin(entry.stoppedAt, start, end) && (!handle || doesPersonMatchHandle(entry.userName, handle));
+}
+
+async function loadTimesheetTaskEntries(tasks, start, end, handle) {
+  const entriesByTask = new Map();
+
+  await Promise.all(
+    tasks.map(async (task) => {
+      const entries = (await loadTaskTimeEntries(task.id)).filter((entry) => {
+        if (!isTimestampWithin(entry.stoppedAt, start, end)) {
+          return false;
+        }
+
+        if (handle) {
+          return doesPersonMatchHandle(entry.userName, handle);
+        }
+
+        return entry.userId === state.profile.id || doesPersonMatchHandle(entry.userName, state.profile.name);
+      });
+
+      entriesByTask.set(task, entries);
+    })
+  );
+
+  return entriesByTask;
+}
+
+function selectTimesheetWorkDay(workDays, handle) {
+  if (workDays.length === 0) {
+    return null;
+  }
+
+  if (!handle) {
+    return workDays.find((workDay) => workDay.userId === state.profile?.id) || workDays[0];
+  }
+
+  return workDays[0];
+}
+
+function getTimesheetBreakEntries(workDay, start, end, handle) {
+  const completedBreaks = (Array.isArray(workDay?.breaks) ? workDay.breaks : []).filter(
+    (breakEntry) =>
+      timesheetEntryMatches(breakEntry, start, end, handle) ||
+      (isTimestampWithin(breakEntry.startedAt, start, end) && (!handle || doesPersonMatchHandle(breakEntry.userName, handle)))
+  );
+
+  return completedBreaks;
+}
+
+function getTimesheetPersonLabel({ handle, workDay, taskEntriesByTask, generalEntries, breakEntries }) {
+  if (workDay?.userName) {
+    return workDay.userName;
+  }
+
+  const firstTaskEntry = [...taskEntriesByTask.values()].flat().find((entry) => entry.userName);
+  if (firstTaskEntry?.userName) {
+    return firstTaskEntry.userName;
+  }
+
+  const firstGeneralEntry = generalEntries.find((entry) => entry.userName);
+  if (firstGeneralEntry?.userName) {
+    return firstGeneralEntry.userName;
+  }
+
+  const firstBreakEntry = breakEntries.find((entry) => entry.userName);
+  if (firstBreakEntry?.userName) {
+    return firstBreakEntry.userName;
+  }
+
+  return handle ? `@${handle}` : getProfileDisplayName();
 }
 
 async function loadRoomLeaves() {
@@ -7154,6 +7661,16 @@ async function postDayMessage(text) {
   });
 }
 
+async function postChangeMessage(text) {
+  await addDoc(collection(state.db, "rooms", state.roomId, "messages"), {
+    text,
+    senderId: state.profile.id,
+    senderName: "Changelog",
+    type: "change",
+    createdAt: serverTimestamp(),
+  });
+}
+
 async function postCodexMessage(text) {
   await addDoc(collection(state.db, "rooms", state.roomId, "messages"), {
     text,
@@ -7168,6 +7685,7 @@ async function recordTaskTimeEntry(task, startedAt, stoppedAt, durationMs) {
   await addDoc(collection(state.db, "rooms", state.roomId, "tasks", task.id, "timeEntries"), {
     taskId: task.id,
     taskDescription: task.description,
+    timerDescription: task.activeTimerDescription || null,
     userId: state.profile.id,
     userName: getProfileDisplayName(),
     startedAt: normalizeTimestampDate(startedAt),
@@ -7177,9 +7695,18 @@ async function recordTaskTimeEntry(task, startedAt, stoppedAt, durationMs) {
   });
 }
 
-async function recordGeneralTimeEntry(startedAt, stoppedAt, durationMs, workDayRef = getWorkDayRef()) {
+async function recordGeneralTimeEntry(
+  startedAt,
+  stoppedAt,
+  durationMs,
+  workDayRef = getWorkDayRef(),
+  description = ""
+) {
+  const timerDescription = sanitizeTimerDescription(description);
+
   await addDoc(collection(workDayRef, "timeEntries"), {
-    description: "General work",
+    description: getGeneralTimerDisplayDescription(timerDescription),
+    timerDescription: timerDescription || null,
     userId: state.profile.id,
     userName: getProfileDisplayName(),
     startedAt: normalizeTimestampDate(startedAt),
@@ -7191,6 +7718,10 @@ async function recordGeneralTimeEntry(startedAt, stoppedAt, durationMs, workDayR
 
 function postLocalTaskMessage(text, actions = []) {
   postLocalMessage(text, "Tasks (only you)", "task", actions);
+}
+
+function postLocalChangeMessage(text) {
+  postLocalMessage(text, "Changelog (only you)", "change");
 }
 
 function postLocalTaskListMessage(heading, tasks, fallbackText, options = {}) {
@@ -7250,7 +7781,7 @@ async function buildTodayPlanResetHint() {
     return "";
   }
 
-  return `Yesterday's plan reset: ${resetTasks.length} unfinished task${resetTasks.length === 1 ? "" : "s"} no longer marked Today. Affected tasks are tagged below; use /task day review to carry them.`;
+  return `Yesterday's plan reset: ${resetTasks.length} unfinished task${resetTasks.length === 1 ? "" : "s"} no longer marked Today. Affected tasks are tagged below; use /task today review to carry them.`;
 }
 
 function postLocalDailyTaskReviewMessage(heading, tasks, sourceDateKey) {
@@ -7851,6 +8382,7 @@ async function autoStopUnansweredTaskTimer(task, unattendedSince) {
     activeTimerStartedAt: null,
     activeTimerStartedBy: null,
     activeTimerStartedByName: null,
+    activeTimerDescription: null,
   });
 
   if (elapsedMs > 0) {
@@ -7874,6 +8406,7 @@ async function autoStopUnansweredGeneralTimer(timer, unattendedSince) {
       activeTimerStartedAt: null,
       activeTimerStartedBy: null,
       activeTimerStartedByName: null,
+      activeTimerDescription: null,
       userId: state.profile.id,
       userName: getProfileDisplayName(),
       updatedAt: serverTimestamp(),
@@ -7882,7 +8415,13 @@ async function autoStopUnansweredGeneralTimer(timer, unattendedSince) {
   );
 
   if (elapsedMs > 0) {
-    await recordGeneralTimeEntry(timer.activeTimerStartedAt || timer.startedAt, stoppedAt, elapsedMs);
+    await recordGeneralTimeEntry(
+      timer.activeTimerStartedAt || timer.startedAt,
+      stoppedAt,
+      elapsedMs,
+      timer.ref || getWorkDayRef(),
+      timer.timerDescription || timer.activeTimerDescription
+    );
   }
 
   postLocalTaskMessage(
@@ -7907,9 +8446,10 @@ async function getActiveTaskForLocalReminder(task) {
 
     return {
       id: latestTask.id,
-      description: latestTask.description || task.description,
+      description: getTaskTimerDisplayDescription(latestTask, task.timerDescription),
       startedAt: latestTask.activeTimerStartedAt || task.startedAt,
       activeTimerStartedAt: latestTask.activeTimerStartedAt,
+      timerDescription: latestTask.activeTimerDescription || task.timerDescription || "",
     };
   } catch (error) {
     console.error("Task reminder check failed:", error);
@@ -7927,10 +8467,12 @@ async function getActiveGeneralTimerForLocalReminder(timer) {
 
     return {
       id: getGeneralTimerReminderId(),
-      description: "General work",
+      description: getGeneralTimerDisplayDescription(activeTimer.data.activeTimerDescription || timer.timerDescription),
       startedAt: activeTimer.data.activeTimerStartedAt || timer.startedAt,
       activeTimerStartedAt: activeTimer.data.activeTimerStartedAt,
       isGeneralTimer: true,
+      timerDescription: activeTimer.data.activeTimerDescription || timer.timerDescription || "",
+      activeTimerDescription: activeTimer.data.activeTimerDescription || timer.activeTimerDescription || "",
       ref: activeTimer.ref,
     };
   } catch (error) {
@@ -8118,6 +8660,72 @@ function compareLeadsByCreatedAt(left, right) {
   }
 
   return String(left.id || "").localeCompare(String(right.id || ""));
+}
+
+function formatChangeLogList(changes) {
+  const lines = ["Recent changes:"];
+
+  changes.forEach((change) => {
+    lines.push(`- ${formatChangeLine(change)}`);
+  });
+
+  return lines.join("\n");
+}
+
+function formatChangeLogSummary(changes) {
+  if (changes.length === 0) {
+    return "Project changelog summary:\nNo changes logged yet.";
+  }
+
+  const labels = countChangeLabels(changes);
+  const lines = [
+    "Project changelog summary:",
+    `Total changes: ${changes.length}`,
+  ];
+
+  if (labels.length > 0) {
+    lines.push(`Labels: ${labels.map(([label, count]) => `#${label} (${count})`).join(", ")}`);
+  }
+
+  lines.push("", "Changes:");
+  changes.slice(0, CHANGELOG_LIST_LIMIT).forEach((change) => {
+    lines.push(`- ${formatChangeLine(change)}`);
+  });
+
+  if (changes.length > CHANGELOG_LIST_LIMIT) {
+    lines.push(`- ...and ${changes.length - CHANGELOG_LIST_LIMIT} more.`);
+  }
+
+  return lines.join("\n");
+}
+
+function formatChangeLine(change) {
+  const timestamp = formatTaskTimestamp(change.createdAt);
+  const author = isPrivacyModeActive() ? "User" : change.createdByName || "Unknown";
+  const labels = formatTaskLabels(change.labels);
+  return `${formatChangeId(change.id)} ${change.text || "Untitled change"}${labels} (${author}${timestamp ? `, ${timestamp}` : ""})`;
+}
+
+function countChangeLabels(changes) {
+  const counts = new Map();
+
+  changes.forEach((change) => {
+    (Array.isArray(change.labels) ? change.labels : []).forEach((label) => {
+      counts.set(label, (counts.get(label) || 0) + 1);
+    });
+  });
+
+  return [...counts.entries()].sort((left, right) => {
+    if (right[1] !== left[1]) {
+      return right[1] - left[1];
+    }
+
+    return left[0].localeCompare(right[0]);
+  });
+}
+
+function formatChangeId(changeId) {
+  return `#${String(changeId || "").slice(0, 6)}`;
 }
 
 function draftTaskEdit(taskId, description) {
@@ -8441,11 +9049,23 @@ function formatTaskTimeSummary(task, options = {}) {
       parts.push("running");
     } else {
       const owner = task.activeTimerStartedByName || "someone";
-      parts.push(`running by ${owner}`);
+      parts.push(`running by ${owner}${task.activeTimerDescription ? ` - ${task.activeTimerDescription}` : ""}`);
     }
   }
 
   return parts.length > 0 ? ` [${parts.join(", ")}]` : "";
+}
+
+function getTaskTimerDisplayDescription(task, timerDescription = task?.activeTimerDescription || "") {
+  const description = sanitizeTimerDescription(timerDescription);
+  const taskDescription = task?.description || "Untitled task";
+
+  return description ? `${taskDescription} - ${description}` : taskDescription;
+}
+
+function getGeneralTimerDisplayDescription(timerDescription = "") {
+  const description = sanitizeTimerDescription(timerDescription);
+  return description || "General work";
 }
 
 function isPrivacyModeActive() {
@@ -8503,6 +9123,16 @@ function formatDuration(durationMs) {
   return `${minutes}m`;
 }
 
+function getTimeEntryDurationMs(entry) {
+  if (Number.isFinite(entry?.durationMs)) {
+    return entry.durationMs;
+  }
+
+  const startedAt = getTimestampMillis(entry?.startedAt);
+  const stoppedAt = getTimestampMillis(entry?.stoppedAt);
+  return startedAt && stoppedAt ? Math.max(0, stoppedAt - startedAt) : 0;
+}
+
 function generateBreakId() {
   return `b${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -8528,8 +9158,16 @@ function getTotalBreakMs(workDay) {
 }
 
 function formatBreakTimeRange(breakEntry) {
-  const startedAt = normalizeTimestampDate(breakEntry?.startedAt);
-  const stoppedAt = normalizeTimestampDate(breakEntry?.stoppedAt);
+  return formatTimeRange(breakEntry?.startedAt, breakEntry?.stoppedAt);
+}
+
+function formatTimeEntryRange(entry) {
+  return formatTimeRange(entry?.startedAt, entry?.stoppedAt);
+}
+
+function formatTimeRange(startedAtValue, stoppedAtValue) {
+  const startedAt = normalizeTimestampDate(startedAtValue);
+  const stoppedAt = normalizeTimestampDate(stoppedAtValue);
   const formatter = new Intl.DateTimeFormat(undefined, {
     timeStyle: "short",
   });
@@ -8540,6 +9178,14 @@ function formatBreakTimeRange(breakEntry) {
 function getTodayBounds() {
   const start = new Date();
   start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+
+  return { start, end };
+}
+
+function getDateBounds(dateKey) {
+  const start = new Date(`${dateKey}T00:00:00`);
   const end = new Date(start);
   end.setDate(end.getDate() + 1);
 
@@ -8583,6 +9229,13 @@ function parseDateKey(value) {
 
   if (normalizedValue === "today") {
     return getTodayKey();
+  }
+
+  if (normalizedValue === "yesterday") {
+    const yesterday = new Date();
+    yesterday.setHours(0, 0, 0, 0);
+    yesterday.setDate(yesterday.getDate() - 1);
+    return formatDateKey(yesterday);
   }
 
   if (normalizedValue === "tomorrow") {
@@ -9478,7 +10131,7 @@ function getVisibleMessages() {
     if (state.isPrivacyEnabled) {
       const hiddenIds = new Set(state.hiddenMessageIds);
       return state.messages.filter(
-        (message) => !hiddenIds.has(message.id) && (!isOwnMessage(message) || isTaskCreatedMessage(message))
+        (message) => !hiddenIds.has(message.id) && (!isOwnMessage(message) || isPrivacyVisibleOwnMessage(message))
       );
     }
 
@@ -9493,8 +10146,8 @@ function isOwnMessage(message) {
   return Boolean(message.senderId && message.senderId === state.profile?.id);
 }
 
-function isTaskCreatedMessage(message) {
-  return message.type === "task" && /^Task\s+#[a-z0-9]+\s+created:/i.test(message.text || "");
+function isPrivacyVisibleOwnMessage(message) {
+  return message.type === "task" && message.senderName === "Tasks";
 }
 
 function getVisibleMessagesWithLocal() {

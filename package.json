@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "codex:bridge": "node tools/codex-bridge.mjs",
+    "changelog:add": "node tools/changelog-entry.mjs",
     "tasks:pending": "node tools/pending-tasks.mjs"
   }
 }

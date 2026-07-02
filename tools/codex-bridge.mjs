@@ -2,6 +2,7 @@
 
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { firebaseConfig } from "../firebase-config.js";
 
 const DEFAULT_POLL_MS = 5000;
@@ -243,6 +244,7 @@ async function processCommand({ auth, roomId, command, options }) {
 
   if (result.ok) {
     const finalText = truncateText(result.stdout.trim() || "Codex finished without a final message.", options.maxOutputChars);
+    await maybeAppendChangelog(command, finalText, options);
     await updateDocument(command.name, auth.idToken, {
       status: "completed",
       completedAt,
@@ -281,6 +283,32 @@ async function processCommand({ auth, roomId, command, options }) {
     text: formatFailureMessage(command, errorText),
   });
   console.error(`Failed ${shortId}`);
+}
+
+async function maybeAppendChangelog(command, resultText, options) {
+  if (options.sandbox === "read-only") {
+    return;
+  }
+
+  const scriptPath = join(options.cwd, "tools", "changelog-entry.mjs");
+
+  if (!existsSync(scriptPath)) {
+    return;
+  }
+
+  const result = await runNodeScript(scriptPath, [
+    "--cwd",
+    options.cwd,
+    "--prompt",
+    command.prompt,
+    "--result",
+    resultText,
+    "--only-if-changed",
+  ]);
+
+  if (!result.ok) {
+    console.warn(`Changelog update skipped: ${result.stderr || result.stdout || result.error}`);
+  }
 }
 
 function runCodex(prompt, options) {
@@ -325,6 +353,40 @@ function runCodex(prompt, options) {
         stdout,
         stderr,
         error: timedOut ? `Codex timed out after ${options.timeoutMs}ms.` : "",
+      });
+    });
+  });
+}
+
+function runNodeScript(scriptPath, args) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [scriptPath, ...args], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", (error) => {
+      resolve({
+        ok: false,
+        stdout,
+        stderr,
+        error: error.message,
+      });
+    });
+    child.on("close", (exitCode) => {
+      resolve({
+        ok: exitCode === 0,
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        error: "",
       });
     });
   });
