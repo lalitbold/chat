@@ -19,6 +19,7 @@ This project is a lightweight realtime chat app built with:
 - Auth-backed user identity, read receipts, and session restore
 - Firestore rules scoped to authenticated users
 - Room task commands for creating, listing, and completing shared tasks
+- Room changelog commands with shareable project summaries
 
 ## Project structure
 
@@ -82,6 +83,13 @@ rooms/{roomId}/queries/{queryId}
   lastReminderAt
   reminderCount
 
+rooms/{roomId}/changelog/{changeId}
+  text
+  labels
+  createdAt
+  createdBy
+  createdByName
+
 rooms/{roomId}/readReceipts/{userId}
   userId
   displayName
@@ -103,10 +111,12 @@ rooms/{roomId}/tasks/{taskId}
   activeTimerStartedAt
   activeTimerStartedBy
   activeTimerStartedByName
+  activeTimerDescription
 
 rooms/{roomId}/tasks/{taskId}/timeEntries/{entryId}
   taskId
   taskDescription
+  timerDescription
   userId
   userName
   startedAt
@@ -131,10 +141,12 @@ rooms/{roomId}/workDays/{userId_dateKey}
   activeTimerStartedAt
   activeTimerStartedBy
   activeTimerStartedByName
+  activeTimerDescription
   updatedAt
 
 rooms/{roomId}/workDays/{userId_dateKey}/timeEntries/{entryId}
   description
+  timerDescription
   userId
   userName
   startedAt
@@ -161,21 +173,22 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 
 ## Task commands
 
-- `/task fix that issue #bug #urgent` creates a pending task with optional labels.
+- `/task create fix that issue #bug #urgent` creates a pending task with optional labels.
 - `/task list` shows the pending task list only to you. Completed tasks are hidden by default.
 - `/task list #bug` shows pending tasks with that label only to you.
+- `/task current` shows your current active task with quick action buttons.
 - `/task edit <id> <description> #bug` updates a task description. Labels are replaced only when new labels are included.
 - Typing `#` in the composer suggests task IDs and task labels. In `/task edit <id>`, selecting or typing a task ID loads the current task text into the composer for easier editing.
 - `/task comment <id> <comment>` adds a comment to a task.
 - `/task comments <id>` shows task comments only to you.
-- `/task react <id> <reaction>` toggles your reaction on a task. Task cards also include quick reaction buttons.
-- `/task day today #abc123 #def456` adds existing pending tasks to today's plan.
-- `/task day tomorrow #abc123` or `/task day 2026-06-26 #abc123` plans tasks for another day.
-- `/task day list [today|tomorrow|YYYY-MM-DD]` shows planned tasks only to you.
-- `/task day review` shows unfinished planned tasks from yesterday with carry, complete, and skip actions.
+- Message bubbles include quick reaction buttons.
+- `/task today #abc123 #def456` adds existing pending tasks to today's plan.
+- `/task today list` shows today's planned tasks only to you.
+- `/task today review` shows unfinished planned tasks from yesterday with carry, complete, and skip actions.
 - `/task process continue` resumes the last task process for the current room and user.
 - `/task start` starts a general timer without linking it to a task.
-- `/task start <id>` starts a timer on a task and reminds you locally after 25 minutes, then every 5 minutes until you continue, complete, or stop it. If two reminders go unanswered, the timer auto-stops and records time only through the first unanswered reminder.
+- `/task start deployment work` starts a general timer with an optional description.
+- `/task start <id> deployment work` starts a timer on a task with an optional timer description. Timers remind you locally after 25 minutes, then every 5 minutes until you continue, complete, or stop it. If two reminders go unanswered, the timer auto-stops and records time only through the first unanswered reminder.
 - `/task stop` stops your general timer and records the elapsed time.
 - `/task stop <id>` stops your running timer and adds the elapsed time to the task.
 - `/task continue` keeps the general timer active and resets the next reminder to 25 minutes.
@@ -198,6 +211,23 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 - `/query close <id>` marks one of your queries answered without response text.
 - Pending queries remind users locally every 10 minutes by default while the app is open. A custom query duration changes both the first reminder delay and repeat interval for that query.
 - Advanced Settings can change the query reminder audience to `All`, `Asker`, or `Others`, either for the group or only for you. If browser notifications are enabled, query reminders also use notifications.
+
+## Changelog commands
+
+- `/change add Added lead filters #feature` logs a project change with optional labels.
+- `/change list` shows recent changes only to you.
+- `/change summary` generates a copyable project change summary only to you.
+- `/change summary share` posts the project change summary to the group.
+
+## Repo changelog
+
+Project code changes are tracked in `CHANGELOG.md`.
+
+```powershell
+npm run changelog:add -- --summary "Built changelog summary handler"
+```
+
+When `npm run codex:bridge` runs with a write-enabled sandbox, it appends a changelog entry automatically after successful Codex commands that changed project files.
 
 ## Plugin commands
 
@@ -271,10 +301,12 @@ The script signs in anonymously with the Firebase web app config and reads pendi
 ## Day commands
 
 - `/day start` starts your day and posts attendance to the group.
-- When your day is started and no task timer is running, the app reminds you locally every 5 minutes.
+- When your day is started and no task timer is running, the app reminds you locally every 5 minutes and counts those reminders in the day summary.
 - `/day plan Ship feature X` saves and posts your plan to the group.
 - `/day free tired` marks your current status as free with an optional reason and posts it to the group.
 - `/day status` shows your current day status only to you.
+- `/day timesheet` shows your timesheet for today only to you.
+- `/day timesheet 2026-07-01 @lalit` shows a timesheet for a specific day and display-name handle.
 - `/day break start` changes the app color while your break is active. Activity during a break shows a local prompt to stop it.
 - `/day end` ends your day and posts your work summary to the group.
 - `/day leave tomorrow Sick leave` schedules leave and posts it to the group.
