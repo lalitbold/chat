@@ -116,6 +116,20 @@ const QUERY_REMINDER_AUDIENCES = new Set([
 ]);
 const PLUGIN_LEADS = "leads";
 const SUPPORTED_PLUGINS = new Set([PLUGIN_LEADS]);
+const LEAD_FIELDS = [
+  "name",
+  "phone",
+  "email",
+  "company",
+  "source",
+  "status",
+  "owner",
+  "property",
+  "location",
+  "pricePerGaj",
+  "postedBy",
+  "notes",
+];
 const BASE_SLASH_COMMANDS = [
   {
     label: "/plugin enable leads",
@@ -2322,6 +2336,10 @@ function renderLeadPreviewCard(lead, options = {}) {
   meta.className = "task-preview-meta";
 
   [
+    lead.property ? `Property ${lead.property}` : "",
+    lead.location ? `Location ${lead.location}` : "",
+    lead.pricePerGaj ? `Price ${lead.pricePerGaj}` : "",
+    lead.postedBy ? `Posted by ${lead.postedBy}` : "",
     lead.company,
     lead.phone ? `Phone ${lead.phone}` : "",
     lead.email ? `Email ${lead.email}` : "",
@@ -3786,7 +3804,7 @@ async function handleLeadCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     postLocalLeadMessage(
-      "Lead commands:\n/lead <name> phone:<phone> email:<email> company:<company> source:<source> notes:<notes>\n/lead new\n/lead list\n/lead view <id>\n/lead update <id> status:<status> owner:<owner> notes:<notes>"
+      "Lead commands:\n/lead <name> phone:<phone> email:<email> company:<company> source:<source> property:<property> location:<location> pricePerGaj:<price> postedBy:<name> notes:<notes>\n/lead x property is available at Jaipur for 50k per gaj, posted by Ritu\n/lead new\n/lead list\n/lead view <id>\n/lead update <id> status:<status> owner:<owner> pricePerGaj:<price> notes:<notes>"
     );
     return;
   }
@@ -4032,6 +4050,10 @@ async function createLead(input) {
     source: parsedLead.source,
     status: parsedLead.status || "new",
     owner: parsedLead.owner || state.profile.name,
+    property: parsedLead.property,
+    location: parsedLead.location,
+    pricePerGaj: parsedLead.pricePerGaj,
+    postedBy: parsedLead.postedBy,
     notes: parsedLead.notes,
     createdAt: serverTimestamp(),
     createdBy: state.profile.id,
@@ -4069,10 +4091,9 @@ async function updateLead(input) {
   }
 
   const updates = parseLeadFields(updateParts.join(" "));
-  const allowedFields = ["name", "phone", "email", "company", "source", "status", "owner", "notes"];
   const leadUpdates = {};
 
-  allowedFields.forEach((field) => {
+  LEAD_FIELDS.forEach((field) => {
     if (Object.prototype.hasOwnProperty.call(updates, field) && updates[field]) {
       leadUpdates[field] = updates[field];
     }
@@ -4170,13 +4191,19 @@ function formatQueryMessageText(queryData) {
 
 function formatLeadMessageText(leadData, action = "shared") {
   const actionText = action === "created" ? "created" : action === "updated" ? "updated" : "shared";
-  const companyText = leadData.company ? ` at ${leadData.company}` : "";
-  return `Lead ${formatLeadId(leadData.id)} ${actionText}: ${leadData.name || "Untitled lead"}${companyText}`;
+  const locationText = leadData.location ? ` at ${leadData.location}` : leadData.company ? ` at ${leadData.company}` : "";
+  const priceText = leadData.pricePerGaj ? ` for ${leadData.pricePerGaj}` : "";
+  return `Lead ${formatLeadId(leadData.id)} ${actionText}: ${leadData.name || "Untitled lead"}${locationText}${priceText}`;
 }
 
 function parseLeadInput(input) {
   const fields = parseLeadFields(input);
-  const name = normalizeLeadFieldValue(fields.name || removeLeadFieldTokens(input));
+  const propertyDetails = parsePropertyLeadText(input);
+  const name = normalizeLeadFieldValue(
+    fields.name ||
+      propertyDetails.name ||
+      removeLeadFieldTokens(input)
+  );
 
   return {
     name,
@@ -4186,21 +4213,24 @@ function parseLeadInput(input) {
     source: normalizeLeadFieldValue(fields.source),
     status: normalizeLeadFieldValue(fields.status),
     owner: normalizeLeadFieldValue(fields.owner),
+    property: normalizeLeadFieldValue(fields.property || propertyDetails.property),
+    location: normalizeLeadFieldValue(fields.location || propertyDetails.location),
+    pricePerGaj: normalizeLeadFieldValue(fields.pricePerGaj || propertyDetails.pricePerGaj),
+    postedBy: normalizeLeadFieldValue(fields.postedBy || propertyDetails.postedBy),
     notes: normalizeLeadFieldValue(fields.notes),
   };
 }
 
 function parseLeadFields(input) {
-  const allowedFields = new Set(["name", "phone", "email", "company", "source", "status", "owner", "notes"]);
   const text = String(input || "");
-  const fieldRegex = /\b(name|phone|email|company|source|status|owner|notes):/gi;
+  const fieldRegex = /\b(name|phone|email|company|source|status|owner|property|location|pricePerGaj|price|rate|postedBy|posted|notes):/gi;
   const matches = [...text.matchAll(fieldRegex)];
   const fields = {};
 
   matches.forEach((match, index) => {
-    const key = match[1].toLowerCase();
+    const key = normalizeLeadFieldKey(match[1]);
 
-    if (!allowedFields.has(key)) {
+    if (!LEAD_FIELDS.includes(key)) {
       return;
     }
 
@@ -4214,9 +4244,48 @@ function parseLeadFields(input) {
 
 function removeLeadFieldTokens(input) {
   return String(input || "")
-    .replace(/\b(name|phone|email|company|source|status|owner|notes):.*?(?=\s+\b(?:name|phone|email|company|source|status|owner|notes):|$)/gi, " ")
+    .replace(/\b(name|phone|email|company|source|status|owner|property|location|pricePerGaj|price|rate|postedBy|posted|notes):.*?(?=\s+\b(?:name|phone|email|company|source|status|owner|property|location|pricePerGaj|price|rate|postedBy|posted|notes):|$)/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normalizeLeadFieldKey(key) {
+  const normalizedKey = String(key || "").trim().toLowerCase();
+
+  if (normalizedKey === "price" || normalizedKey === "rate") {
+    return "pricePerGaj";
+  }
+
+  if (normalizedKey === "posted") {
+    return "postedBy";
+  }
+
+  if (normalizedKey === "pricepergaj") {
+    return "pricePerGaj";
+  }
+
+  if (normalizedKey === "postedby") {
+    return "postedBy";
+  }
+
+  return normalizedKey;
+}
+
+function parsePropertyLeadText(input) {
+  const text = normalizeLeadFieldValue(input);
+  const propertyMatch = text.match(/^(.+?)\s+property\s+is\s+available\b/i);
+  const locationMatch = text.match(/\bavailable\s+at\s+(.+?)(?=\s+for\s+|,\s*posted\s+by\b|\s+posted\s+by\b|$)/i);
+  const priceMatch = text.match(/\bfor\s+(.+?)(?=,\s*posted\s+by\b|\s+posted\s+by\b|$)/i);
+  const postedByMatch = text.match(/\bposted\s+by\s+(.+?)\s*$/i);
+  const property = normalizeLeadFieldValue(propertyMatch?.[1]);
+
+  return {
+    name: property ? `${property} property` : "",
+    property,
+    location: normalizeLeadFieldValue(locationMatch?.[1]),
+    pricePerGaj: normalizeLeadFieldValue(priceMatch?.[1]),
+    postedBy: normalizeLeadFieldValue(postedByMatch?.[1]),
+  };
 }
 
 function normalizeLeadFieldValue(value) {
@@ -6527,6 +6596,10 @@ function serializeLeadForMessage(leadData) {
     source: leadData.source || "",
     status: leadData.status || "new",
     owner: leadData.owner || "",
+    property: leadData.property || "",
+    location: leadData.location || "",
+    pricePerGaj: leadData.pricePerGaj || "",
+    postedBy: leadData.postedBy || "",
     notes: leadData.notes || "",
     createdAt: leadData.createdAt || null,
     createdBy: leadData.createdBy || null,
@@ -7673,7 +7746,7 @@ function draftQueryResponse(queryId) {
 }
 
 function draftNewLead() {
-  messageInput.value = "/lead name phone: email: company: source: notes:";
+  messageInput.value = "/lead name phone: email: company: source: property: location: pricePerGaj: postedBy: notes:";
   messageInput.focus();
   messageInput.setSelectionRange("/lead ".length, "/lead name".length);
   syncMessageMaskOverlay();
@@ -7686,7 +7759,7 @@ function draftLeadUpdate(leadId) {
     return;
   }
 
-  messageInput.value = `/lead update ${formatLeadId(leadId)} status: owner: notes:`;
+  messageInput.value = `/lead update ${formatLeadId(leadId)} status: owner: pricePerGaj: postedBy: notes:`;
   messageInput.focus();
   messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
   syncMessageMaskOverlay();

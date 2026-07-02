@@ -210,10 +210,12 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 Lead commands are available after `/plugin enable leads`.
 
 - `/lead Rahul phone:9999999999 email:rahul@example.com company:Acme source:referral notes:interested in demo` creates a lead and posts a compact lead card to the group.
+- `/lead x property is available at Jaipur for 50k per gaj, posted by Ritu` creates a property lead from sentence-style text.
+- `/lead property:x location:Jaipur pricePerGaj:50k per gaj postedBy:Ritu notes:corner plot` creates a property lead from structured fields.
 - `/lead new` fills the composer with a lead template.
 - `/lead list` shows recent leads only to you.
 - `/lead view <id>` posts a lead card to the group. Lead IDs are shown like `~abc123`.
-- `/lead update <id> status:contacted owner:Lalit notes:demo scheduled` updates a lead and posts the updated card to the group.
+- `/lead update <id> status:contacted owner:Lalit pricePerGaj:55k per gaj notes:demo scheduled` updates a lead and posts the updated card to the group.
 
 ## Codex commands
 
