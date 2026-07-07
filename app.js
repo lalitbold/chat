@@ -93,10 +93,13 @@ const CODEX_COMMAND = "/codex";
 const QUERY_COMMAND = "/query";
 const PLUGIN_COMMAND = "/plugin";
 const LEAD_COMMAND = "/lead";
+const TEAM_COMMAND = "/team";
 const COMMAND_AUTOCOMPLETE_LIMIT = 8;
 const TASK_LIST_LIMIT = 50;
 const CHANGELOG_LIST_LIMIT = 50;
 const LEAD_LIST_LIMIT = 25;
+const TEAM_MEMBER_LIST_LIMIT = 50;
+const TEAM_FOLLOWUP_LIST_LIMIT = 50;
 const TASK_PREVIEW_LIMIT = 3;
 const MESSAGE_REACTION_OPTIONS = ["👍", "✅", "👀", "🙌"];
 const TASK_TIMER_REMINDER_MS = 25 * 60 * 1000;
@@ -118,7 +121,8 @@ const QUERY_REMINDER_AUDIENCES = new Set([
   QUERY_REMINDER_AUDIENCE_OTHERS,
 ]);
 const PLUGIN_LEADS = "leads";
-const SUPPORTED_PLUGINS = new Set([PLUGIN_LEADS]);
+const PLUGIN_TEAM = "team";
+const SUPPORTED_PLUGINS = new Set([PLUGIN_LEADS, PLUGIN_TEAM]);
 const LEAD_FIELDS = [
   "name",
   "phone",
@@ -133,6 +137,15 @@ const LEAD_FIELDS = [
   "postedBy",
   "notes",
 ];
+const TEAM_MEMBER_FIELDS = [
+  "name",
+  "role",
+  "designation",
+  "email",
+  "handle",
+  "status",
+  "notes",
+];
 const BASE_SLASH_COMMANDS = [
   {
     label: "/plugin enable leads",
@@ -140,9 +153,19 @@ const BASE_SLASH_COMMANDS = [
     hint: "Enable leads",
   },
   {
+    label: "/plugin enable team",
+    insertText: "/plugin enable team",
+    hint: "Enable team",
+  },
+  {
     label: "/plugin disable leads",
     insertText: "/plugin disable leads",
     hint: "Disable leads",
+  },
+  {
+    label: "/plugin disable team",
+    insertText: "/plugin disable team",
+    hint: "Disable team",
   },
   {
     label: "/plugin list",
@@ -499,6 +522,8 @@ const state = {
   taskTimerReminderSyncIntervalId: null,
   queryReminderTimeouts: new Map(),
   queryReminderSyncIntervalId: null,
+  teamFollowupReminderTimeouts: new Map(),
+  teamFollowupReminderSyncIntervalId: null,
   taskProcessSession: null,
   dayIdleTaskReminderTimeoutId: null,
   dayIdleTaskReminderClientId: `day-idle-${Math.random().toString(36).slice(2)}`,
@@ -1434,6 +1459,7 @@ async function connectToRoom(roomId, roomPasscode = "", roomData = null) {
   scheduleDayIdleTaskReminder();
   startTaskTimerReminderSync();
   startQueryReminderSync();
+  startTeamFollowupReminderSync();
   void announceTodaysLeaves();
   void postDailyTaskRolloverReview({ auto: true });
   void syncActiveBreakState();
@@ -1495,6 +1521,11 @@ function applyRoomData(roomData = {}) {
     state.groupQueryReminderAudience
   );
   void syncQueryReminders();
+  if (isRoomPluginEnabled(PLUGIN_TEAM)) {
+    void syncTeamFollowupReminders();
+  } else {
+    clearTeamFollowupReminders();
+  }
   updatePrivacyFeatureAccess();
 
   if (messageInput.value.trimStart().startsWith("/")) {
@@ -1686,6 +1717,8 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   clearTaskTimerReminders();
   clearQueryReminderSync();
   clearQueryReminders();
+  clearTeamFollowupReminderSync();
+  clearTeamFollowupReminders();
   clearDayIdleTaskReminder();
   clearMessageMaskRevealTimer();
   clearPrivacyPreviewTimer();
@@ -1696,6 +1729,7 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   state.roomPlugins = {};
   state.groupQueryReminderAudience = DEFAULT_QUERY_REMINDER_AUDIENCE;
   state.queryReminderAudience = DEFAULT_QUERY_REMINDER_AUDIENCE;
+  state.teamFollowupReminderTimeouts = new Map();
   state.activeBreakStartedAt = null;
   state.lastBreakActivityPromptAt = 0;
   state.isAdvancedSettingsVisible = false;
@@ -1787,6 +1821,12 @@ function renderMessage(message, context = {}) {
     wrapper.append(renderLeadListMessage(message));
   } else if (message.type === "lead-view" && message.lead) {
     wrapper.append(renderLeadViewMessage(message));
+  } else if (message.type === "team-member-list" && Array.isArray(message.members)) {
+    wrapper.append(renderTeamMemberListMessage(message));
+  } else if (message.type === "team-member-view" && message.member) {
+    wrapper.append(renderTeamMemberViewMessage(message));
+  } else if (message.type === "team-followup-list" && Array.isArray(message.followups)) {
+    wrapper.append(renderTeamFollowupListMessage(message));
   } else {
     const body = document.createElement("p");
     body.className = "message-text";
@@ -1819,6 +1859,14 @@ function renderMessage(message, context = {}) {
 
       if (action.leadId) {
         button.dataset.leadId = action.leadId;
+      }
+
+      if (action.memberId) {
+        button.dataset.memberId = action.memberId;
+      }
+
+      if (action.followupId) {
+        button.dataset.followupId = action.followupId;
       }
 
       if (action.successText) {
@@ -2158,6 +2206,20 @@ function renderTaskListItem(task, options = {}) {
     subtasks.className = "task-list-badge";
     subtasks.textContent = `${subtaskSummary.completed}/${subtaskSummary.total} subtasks`;
     meta.append(subtasks);
+  }
+
+  if (task.assigneeName) {
+    const assignee = document.createElement("span");
+    assignee.className = "task-list-badge";
+    assignee.textContent = `Assigned to ${task.assigneeName}`;
+    meta.append(assignee);
+  }
+
+  if (task.jiraKey) {
+    const jira = document.createElement("span");
+    jira.className = "task-list-badge";
+    jira.textContent = `Jira ${task.jiraKey}${task.jiraStatus ? ` (${task.jiraStatus})` : ""}`;
+    meta.append(jira);
   }
 
   if (task.plannedToday) {
@@ -2559,6 +2621,244 @@ function renderLeadPreviewCard(lead, options = {}) {
   return card;
 }
 
+function renderTeamMemberViewMessage(message) {
+  const member = message.member;
+  const container = document.createElement("div");
+  container.className = "team-member-view-message";
+
+  const header = document.createElement("div");
+  header.className = "task-list-header";
+
+  const title = document.createElement("strong");
+  title.textContent = "Team member";
+
+  const id = document.createElement("span");
+  id.className = "task-list-count";
+  id.textContent = formatTeamMemberId(member.id);
+
+  header.append(title, id);
+  container.append(header);
+  container.append(renderTeamMemberPreviewCard(member));
+
+  return container;
+}
+
+function renderTeamMemberListMessage(message) {
+  const container = document.createElement("div");
+  container.className = "team-member-list-message";
+
+  const header = document.createElement("div");
+  header.className = "task-list-header";
+
+  const title = document.createElement("strong");
+  title.textContent = message.heading || "Team members";
+
+  const count = document.createElement("span");
+  count.className = "task-list-count";
+  count.textContent = `${message.members.length} member${message.members.length === 1 ? "" : "s"}`;
+
+  header.append(title, count);
+  container.append(header);
+
+  const list = document.createElement("ol");
+  list.className = "query-list";
+
+  message.members.forEach((member) => {
+    const item = document.createElement("li");
+    item.append(renderTeamMemberPreviewCard(member, { localActions: true }));
+    list.append(item);
+  });
+
+  container.append(list);
+  return container;
+}
+
+function renderTeamMemberPreviewCard(member, options = {}) {
+  const card = document.createElement("article");
+  card.className = "query-preview-card team-member-preview-card";
+
+  const top = document.createElement("div");
+  top.className = "task-preview-top";
+
+  const id = document.createElement("span");
+  id.className = "task-list-id";
+  id.textContent = formatTeamMemberId(member.id);
+  id.title = member.id || "";
+
+  const status = document.createElement("span");
+  status.className = `query-preview-status ${member.status === "inactive" ? "answered" : "pending"}`;
+  status.textContent = member.status || "active";
+
+  top.append(id, status);
+
+  const name = document.createElement("p");
+  name.className = "task-preview-title";
+  name.textContent = member.name || "Unnamed member";
+
+  card.append(top, name);
+
+  const meta = document.createElement("div");
+  meta.className = "task-preview-meta";
+
+  [
+    member.role ? `Role ${member.role}` : "",
+    member.designation ? `Designation ${member.designation}` : "",
+    member.handle ? `Handle ${member.handle}` : "",
+    member.email ? `Email ${member.email}` : "",
+    member.createdByName ? `Added by ${member.createdByName}` : "",
+  ]
+    .filter(Boolean)
+    .forEach((value) => {
+      const item = document.createElement("span");
+      item.textContent = value;
+      meta.append(item);
+    });
+
+  const createdAt = document.createElement("span");
+  createdAt.textContent = formatTaskTimestamp(member.createdAt);
+  meta.append(createdAt);
+  card.append(meta);
+
+  if (member.notes) {
+    const notes = document.createElement("p");
+    notes.className = "query-linked-task";
+    notes.textContent = member.notes;
+    card.append(notes);
+  }
+
+  if (!options.hideActions) {
+    const actions = document.createElement("div");
+    actions.className = "task-list-actions";
+
+    const updateButton = document.createElement("button");
+    updateButton.type = "button";
+    updateButton.className = "task-list-edit";
+    updateButton.textContent = "Update";
+    updateButton.dataset.action = "team-member-update-draft";
+    updateButton.dataset.memberId = member.id || "";
+
+    const followupButton = document.createElement("button");
+    followupButton.type = "button";
+    followupButton.className = "task-list-edit";
+    followupButton.textContent = "Follow up";
+    followupButton.dataset.action = "team-followup-member-draft";
+    followupButton.dataset.memberId = member.id || "";
+
+    actions.append(updateButton, followupButton);
+
+    if (options.localActions) {
+      const viewButton = document.createElement("button");
+      viewButton.type = "button";
+      viewButton.className = "task-list-edit";
+      viewButton.textContent = "View";
+      viewButton.dataset.action = "team-member-view";
+      viewButton.dataset.memberId = member.id || "";
+      actions.prepend(viewButton);
+    }
+
+    card.append(actions);
+  }
+
+  return card;
+}
+
+function renderTeamFollowupListMessage(message) {
+  const container = document.createElement("div");
+  container.className = "team-followup-list-message";
+
+  const header = document.createElement("div");
+  header.className = "task-list-header";
+
+  const title = document.createElement("strong");
+  title.textContent = message.heading || "Team followups";
+
+  const count = document.createElement("span");
+  count.className = "task-list-count";
+  count.textContent = `${message.followups.length} followup${message.followups.length === 1 ? "" : "s"}`;
+
+  header.append(title, count);
+  container.append(header);
+
+  const list = document.createElement("ol");
+  list.className = "query-list";
+
+  message.followups.forEach((followup) => {
+    const item = document.createElement("li");
+    item.append(renderTeamFollowupPreviewCard(followup));
+    list.append(item);
+  });
+
+  container.append(list);
+  return container;
+}
+
+function renderTeamFollowupPreviewCard(followup) {
+  const card = document.createElement("article");
+  card.className = "query-preview-card team-followup-preview-card";
+
+  const top = document.createElement("div");
+  top.className = "task-preview-top";
+
+  const id = document.createElement("span");
+  id.className = "task-list-id";
+  id.textContent = formatTeamFollowupId(followup.id);
+  id.title = followup.id || "";
+
+  const status = document.createElement("span");
+  status.className = `query-preview-status ${followup.status === "complete" ? "answered" : "pending"}`;
+  status.textContent = followup.status === "complete" ? "Done" : "Pending";
+
+  top.append(id, status);
+
+  const title = document.createElement("p");
+  title.className = "task-preview-title";
+  title.textContent = followup.text || "Untitled followup";
+
+  card.append(top, title);
+
+  const meta = document.createElement("div");
+  meta.className = "task-preview-meta";
+
+  [
+    formatTeamFollowupTarget(followup),
+    followup.reminderAt ? `Reminder ${formatTaskTimestamp(followup.reminderAt)}` : "",
+    `Repeats every ${formatDuration(getTeamFollowupIntervalMs(followup))}`,
+    followup.createdByName ? `Created by ${followup.createdByName}` : "",
+  ]
+    .filter(Boolean)
+    .forEach((value) => {
+      const item = document.createElement("span");
+      item.textContent = value;
+      meta.append(item);
+    });
+
+  card.append(meta);
+
+  if (followup.taskId && followup.taskDescription) {
+    const task = document.createElement("p");
+    task.className = "query-linked-task";
+    task.textContent = `${formatTaskId(followup.taskId)} ${followup.taskDescription}`;
+    card.append(task);
+  }
+
+  if (followup.status !== "complete") {
+    const actions = document.createElement("div");
+    actions.className = "task-list-actions";
+
+    const doneButton = document.createElement("button");
+    doneButton.type = "button";
+    doneButton.className = "task-list-edit";
+    doneButton.textContent = "Done";
+    doneButton.dataset.action = "team-followup-done";
+    doneButton.dataset.followupId = followup.id || "";
+
+    actions.append(doneButton);
+    card.append(actions);
+  }
+
+  return card;
+}
+
 function renderInlineTaskPreviews(tasks) {
   const container = document.createElement("div");
   container.className = "inline-task-previews";
@@ -2618,6 +2918,18 @@ function renderTaskPreviewCard(task, options = {}) {
     const running = document.createElement("span");
     running.textContent = `Running by ${task.activeTimerStartedByName || "someone"}${task.activeTimerDescription ? ` - ${task.activeTimerDescription}` : ""}`;
     meta.append(running);
+  }
+
+  if (task.assigneeName) {
+    const assignee = document.createElement("span");
+    assignee.textContent = `Assigned to ${task.assigneeName}`;
+    meta.append(assignee);
+  }
+
+  if (task.jiraKey) {
+    const jira = document.createElement("span");
+    jira.textContent = `Jira ${task.jiraKey}${task.jiraStatus ? ` (${task.jiraStatus})` : ""}`;
+    meta.append(jira);
   }
 
   card.append(meta);
@@ -2980,6 +3292,25 @@ function handleMessageActionClick(event) {
       actionButton.disabled = false;
     });
   }
+
+  if (actionButton.dataset.action === "team-member-update-draft") {
+    draftTeamMemberUpdate(actionButton.dataset.memberId || "");
+  }
+
+  if (actionButton.dataset.action === "team-followup-member-draft") {
+    draftTeamMemberFollowup(actionButton.dataset.memberId || "");
+  }
+
+  if (actionButton.dataset.action === "team-member-view") {
+    actionButton.disabled = true;
+    void postTeamMemberView(actionButton.dataset.memberId || "").finally(() => {
+      actionButton.disabled = false;
+    });
+  }
+
+  if (actionButton.dataset.action === "team-followup-done") {
+    runLocalAction(actionButton, () => completeTeamFollowup(actionButton.dataset.followupId || ""), "Followup completed.");
+  }
 }
 
 function renderEmptyState(message) {
@@ -3229,6 +3560,11 @@ async function sendSubmittedText(text) {
       return;
     }
 
+    if (isTeamCommand(text)) {
+      await handleTeamCommand(text);
+      return;
+    }
+
     const taskPreviews = await buildTaskPreviewsForText(text);
     const messagePayload = {
       text,
@@ -3263,6 +3599,8 @@ async function sendSubmittedText(text) {
           ? "Plugin command failed. Check the command and room permissions."
         : isLeadCommand(text)
           ? "Lead command failed. Check the command and room permissions."
+        : isTeamCommand(text)
+          ? "Team command failed. Check the command and room permissions."
         : "Message send failed. Check room permissions.",
       "error"
     );
@@ -3430,6 +3768,51 @@ function getAvailableSlashCommands() {
         label: "/lead update <id> status:<status>",
         insertText: "/lead update ",
         hint: "Update lead",
+      }
+    );
+  }
+
+  if (isRoomPluginEnabled(PLUGIN_TEAM)) {
+    commands.push(
+      {
+        label: "/team member add name:<name>",
+        insertText: "/team member add name:",
+        hint: "Add member",
+      },
+      {
+        label: "/team member list",
+        insertText: "/team member list",
+        hint: "Team members",
+      },
+      {
+        label: "/team task assign <task-id> <member-id>",
+        insertText: "/team task assign ",
+        hint: "Assign task",
+      },
+      {
+        label: "/team task list [member-id]",
+        insertText: "/team task list ",
+        hint: "Team tasks",
+      },
+      {
+        label: "/team task jira <task-id> <JIRA-KEY> [url]",
+        insertText: "/team task jira ",
+        hint: "Link Jira",
+      },
+      {
+        label: "/team followup add <member-id> after 1d <text>",
+        insertText: "/team followup add ",
+        hint: "Member followup",
+      },
+      {
+        label: "/team followup task <task-id> after 1d <text>",
+        insertText: "/team followup task ",
+        hint: "Task followup",
+      },
+      {
+        label: "/team followup list",
+        insertText: "/team followup list",
+        hint: "Followups",
       }
     );
   }
@@ -3670,7 +4053,8 @@ function isHandledCommand(command) {
     isCodexCommand(command) ||
     isQueryCommand(command) ||
     isPluginCommand(command) ||
-    isLeadCommand(command)
+    isLeadCommand(command) ||
+    isTeamCommand(command)
   );
 }
 
@@ -3872,6 +4256,11 @@ function isPluginCommand(text) {
 function isLeadCommand(text) {
   const normalized = text.trim().toLowerCase();
   return normalized === LEAD_COMMAND || normalized.startsWith(`${LEAD_COMMAND} `);
+}
+
+function isTeamCommand(text) {
+  const normalized = text.trim().toLowerCase();
+  return normalized === TEAM_COMMAND || normalized.startsWith(`${TEAM_COMMAND} `);
 }
 
 async function handleTaskCommand(text) {
@@ -4167,7 +4556,7 @@ async function handlePluginCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     postLocalPluginMessage(
-      "Plugin commands:\n/plugin enable leads\n/plugin disable leads\n/plugin list"
+      "Plugin commands:\n/plugin enable leads\n/plugin disable leads\n/plugin enable team\n/plugin disable team\n/plugin list"
     );
     return;
   }
@@ -4184,7 +4573,7 @@ async function handlePluginCommand(text) {
   }
 
   if (!SUPPORTED_PLUGINS.has(normalizedPlugin)) {
-    postLocalPluginMessage("Supported plugins: leads.");
+    postLocalPluginMessage("Supported plugins: leads, team.");
     setStatus("Unknown plugin.", "error");
     return;
   }
@@ -4200,6 +4589,14 @@ async function handlePluginCommand(text) {
   };
   postLocalPluginMessage(`${formatPluginName(normalizedPlugin)} plugin ${enabled ? "enabled" : "disabled"} for this group.`);
   setStatus(`${formatPluginName(normalizedPlugin)} plugin ${enabled ? "enabled" : "disabled"}.`, "success");
+  if (normalizedPlugin === PLUGIN_TEAM) {
+    if (enabled) {
+      startTeamFollowupReminderSync();
+    } else {
+      clearTeamFollowupReminderSync();
+      clearTeamFollowupReminders();
+    }
+  }
   void updateCommandAutocomplete();
 }
 
@@ -4243,6 +4640,120 @@ async function handleLeadCommand(text) {
   }
 
   await createLead(payload);
+}
+
+async function handleTeamCommand(text) {
+  if (!isRoomPluginEnabled(PLUGIN_TEAM)) {
+    postLocalTeamMessage("Team is not enabled in this group. Enable it with /plugin enable team.");
+    setStatus("Team plugin is disabled.", "error");
+    return;
+  }
+
+  const rawCommand = text.trim();
+  const payload = rawCommand.slice(TEAM_COMMAND.length).trim();
+  const [section = "", ...rest] = payload.split(/\s+/);
+  const normalizedSection = section.toLowerCase();
+
+  if (!payload || normalizedSection === "help") {
+    postLocalTeamMessage(
+      "Team commands:\n/team member add name:<name> role:<role> designation:<designation> email:<email> handle:<handle> notes:<notes>\n/team member list\n/team member view <id>\n/team member update <id> role:<role> designation:<designation> status:<active|inactive> notes:<notes>\n/team task assign <task-id> <member-id>\n/team task list [member-id]\n/team task jira <task-id> <JIRA-KEY> [url]\n/team followup add <member-id> after 1d <text>\n/team followup task <task-id> after 1d <text>\n/team followup list\n/team followup done <id>"
+    );
+    return;
+  }
+
+  if (normalizedSection === "member" || normalizedSection === "members") {
+    await handleTeamMemberCommand(rest.join(" "));
+    return;
+  }
+
+  if (normalizedSection === "task" || normalizedSection === "tasks") {
+    await handleTeamTaskCommand(rest.join(" "));
+    return;
+  }
+
+  if (normalizedSection === "followup" || normalizedSection === "followups") {
+    await handleTeamFollowupCommand(rest.join(" "));
+    return;
+  }
+
+  postLocalTeamMessage("Unknown team command. Use /team help.");
+  setStatus("Unknown team command.", "error");
+}
+
+async function handleTeamMemberCommand(input = "") {
+  const [action = "", ...rest] = input.trim().split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+
+  if (normalizedAction === "add" || normalizedAction === "new") {
+    await addTeamMember(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "list") {
+    await postTeamMemberList();
+    return;
+  }
+
+  if (normalizedAction === "view") {
+    await postTeamMemberView(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "update" || normalizedAction === "edit") {
+    await updateTeamMember(rest.join(" "));
+    return;
+  }
+
+  postLocalTeamMessage("Use /team member add, /team member list, /team member view <id>, or /team member update <id>.");
+}
+
+async function handleTeamTaskCommand(input = "") {
+  const [action = "", ...rest] = input.trim().split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+
+  if (normalizedAction === "assign") {
+    await assignTeamTask(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "list") {
+    await postTeamTaskList(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "jira") {
+    await linkTaskToJira(rest.join(" "));
+    return;
+  }
+
+  postLocalTeamMessage("Use /team task assign <task-id> <member-id>, /team task list [member-id], or /team task jira <task-id> <JIRA-KEY> [url].");
+}
+
+async function handleTeamFollowupCommand(input = "") {
+  const [action = "", ...rest] = input.trim().split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+
+  if (normalizedAction === "add") {
+    await addMemberFollowup(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "task") {
+    await addTaskFollowup(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "list") {
+    await postTeamFollowupList();
+    return;
+  }
+
+  if (normalizedAction === "done" || normalizedAction === "complete" || normalizedAction === "close") {
+    await completeTeamFollowup(rest.join(" "));
+    return;
+  }
+
+  postLocalTeamMessage("Use /team followup add <member-id> after 1d <text>, /team followup task <task-id> after 1d <text>, /team followup list, or /team followup done <id>.");
 }
 
 async function createQuery(question, options = {}) {
@@ -4590,6 +5101,412 @@ async function postLeadViewMessage(leadData, action = "shared") {
   });
 }
 
+async function addTeamMember(input) {
+  const fields = parseTeamMemberFields(input);
+  const name = normalizeTeamFieldValue(fields.name || removeTeamMemberFieldTokens(input));
+
+  if (!name) {
+    postLocalTeamMessage("Use /team member add name:<name> role:<role> designation:<designation> email:<email> handle:<handle> notes:<notes>.");
+    return;
+  }
+
+  const now = new Date();
+  const memberPayload = {
+    name,
+    role: normalizeTeamFieldValue(fields.role),
+    designation: normalizeTeamFieldValue(fields.designation),
+    email: normalizeTeamFieldValue(fields.email),
+    handle: normalizeTeamHandle(fields.handle),
+    status: normalizeTeamMemberStatus(fields.status),
+    notes: normalizeTeamFieldValue(fields.notes),
+    createdAt: serverTimestamp(),
+    createdBy: state.profile.id,
+    createdByName: getProfileDisplayName(),
+    updatedAt: serverTimestamp(),
+    updatedBy: state.profile.id,
+    updatedByName: getProfileDisplayName(),
+  };
+  const memberRef = await addDoc(collection(state.db, "rooms", state.roomId, "teamMembers"), memberPayload);
+  const memberData = {
+    id: memberRef.id,
+    ...memberPayload,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  await postTeamMemberViewMessage(memberData, "added");
+  setStatus("Team member added.", "success");
+}
+
+async function updateTeamMember(input) {
+  const [memberIdInput = "", ...updateParts] = input.trim().split(/\s+/);
+
+  if (!memberIdInput || updateParts.length === 0) {
+    postLocalTeamMessage("Use /team member update <id> role:<role> designation:<designation> status:<active|inactive> notes:<notes>.");
+    return;
+  }
+
+  const member = await findTeamMemberById(memberIdInput);
+
+  if (!member) {
+    postLocalTeamMessage(`Team member ${memberIdInput} was not found.`);
+    setStatus("Team member not found.", "error");
+    return;
+  }
+
+  const fields = parseTeamMemberFields(updateParts.join(" "));
+  const updates = {};
+
+  TEAM_MEMBER_FIELDS.forEach((field) => {
+    if (!Object.prototype.hasOwnProperty.call(fields, field)) {
+      return;
+    }
+
+    if (field === "status") {
+      updates.status = normalizeTeamMemberStatus(fields.status, member.status || "active");
+      return;
+    }
+
+    if (field === "handle") {
+      updates.handle = normalizeTeamHandle(fields.handle);
+      return;
+    }
+
+    updates[field] = normalizeTeamFieldValue(fields[field]);
+  });
+
+  if (Object.keys(updates).length === 0) {
+    postLocalTeamMessage("Add at least one team member field to update.");
+    return;
+  }
+
+  const updatedAt = new Date();
+  await updateDoc(doc(state.db, "rooms", state.roomId, "teamMembers", member.id), {
+    ...updates,
+    updatedAt: serverTimestamp(),
+    updatedBy: state.profile.id,
+    updatedByName: getProfileDisplayName(),
+  });
+
+  await postTeamMemberViewMessage({
+    ...member,
+    ...updates,
+    updatedAt,
+    updatedBy: state.profile.id,
+    updatedByName: getProfileDisplayName(),
+  }, "updated");
+  setStatus("Team member updated.", "success");
+}
+
+async function postTeamMemberList() {
+  const members = (await loadRoomTeamMembers())
+    .sort(compareTeamMembersByName)
+    .slice(0, TEAM_MEMBER_LIST_LIMIT);
+
+  if (members.length === 0) {
+    postLocalTeamMessage("No team members yet. Add one with /team member add name:<name>.");
+    setStatus("No team members found.", "success");
+    return;
+  }
+
+  postLocalMessage(
+    `Team members: ${members.length}`,
+    "Team (only you)",
+    "team-member-list",
+    [],
+    {
+      heading: "Team members",
+      members: members.map(serializeTeamMemberForMessage),
+    }
+  );
+  setStatus(`${members.length} team member${members.length === 1 ? "" : "s"} listed.`, "success");
+}
+
+async function postTeamMemberView(memberIdInput) {
+  const memberId = String(memberIdInput || "").trim();
+
+  if (!memberId) {
+    postLocalTeamMessage("Use /team member view <id>.");
+    return;
+  }
+
+  const member = await findTeamMemberById(memberId);
+
+  if (!member) {
+    postLocalTeamMessage(`Team member ${memberId} was not found.`);
+    setStatus("Team member not found.", "error");
+    return;
+  }
+
+  await postTeamMemberViewMessage(member, "shared");
+  setStatus("Team member shared.", "success");
+}
+
+async function postTeamMemberViewMessage(member, action = "shared") {
+  await addDoc(collection(state.db, "rooms", state.roomId, "messages"), {
+    text: formatTeamMemberMessageText(member, action),
+    senderId: state.profile.id,
+    senderName: "Team",
+    type: "team-member-view",
+    member: serializeTeamMemberForMessage(member),
+    createdAt: serverTimestamp(),
+  });
+}
+
+async function assignTeamTask(input) {
+  const [taskIdInput = "", memberIdInput = ""] = input.trim().split(/\s+/);
+
+  if (!taskIdInput || !memberIdInput) {
+    postLocalTeamMessage("Use /team task assign <task-id> <member-id>.");
+    return;
+  }
+
+  const [task, member] = await Promise.all([
+    findTaskById(taskIdInput),
+    findTeamMemberById(memberIdInput),
+  ]);
+
+  if (!task) {
+    postLocalTeamMessage(`Task ${taskIdInput} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  if (!member) {
+    postLocalTeamMessage(`Team member ${memberIdInput} was not found.`);
+    setStatus("Team member not found.", "error");
+    return;
+  }
+
+  await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", task.id), {
+    assigneeMemberId: member.id,
+    assigneeName: member.name,
+    updatedAt: serverTimestamp(),
+    updatedBy: state.profile.id,
+    updatedByName: getProfileDisplayName(),
+  });
+
+  await postTaskMessage(`Task ${formatTaskId(task.id)} assigned to ${member.name}: ${task.description || "Untitled task"}`);
+  setStatus("Task assigned.", "success");
+}
+
+async function postTeamTaskList(memberIdInput = "") {
+  const requestedMemberId = String(memberIdInput || "").trim();
+  let member = null;
+
+  if (requestedMemberId) {
+    member = await findTeamMemberById(requestedMemberId);
+
+    if (!member) {
+      postLocalTeamMessage(`Team member ${requestedMemberId} was not found.`);
+      setStatus("Team member not found.", "error");
+      return;
+    }
+  }
+
+  const tasks = (await Promise.all((await loadRoomTasks())
+    .filter((task) => task.assigneeMemberId || task.jiraKey || task.source === "jira")
+    .filter((task) => !member || task.assigneeMemberId === member.id)
+    .sort(compareTasksByCreatedAt)
+    .map(loadTaskCommentSummary)));
+
+  if (tasks.length === 0) {
+    postLocalTeamMessage(member ? `No team tasks assigned to ${member.name}.` : "No team tasks yet.");
+    setStatus("No team tasks found.", "success");
+    return;
+  }
+
+  postLocalTaskListMessage(
+    member ? `Tasks for ${member.name}` : "Team tasks",
+    tasks,
+    `${member ? `Tasks for ${member.name}` : "Team tasks"}:\n${tasks.map((task) => `${formatTaskId(task.id)} - ${task.description || "Untitled task"}`).join("\n")}`,
+    {
+      showTodayPlanActions: true,
+    }
+  );
+  setStatus(`${tasks.length} team task${tasks.length === 1 ? "" : "s"} listed.`, "success");
+}
+
+async function linkTaskToJira(input) {
+  const [taskIdInput = "", jiraKeyInput = "", jiraUrlInput = ""] = input.trim().split(/\s+/);
+  const jiraKey = normalizeJiraKey(jiraKeyInput);
+
+  if (!taskIdInput || !jiraKey) {
+    postLocalTeamMessage("Use /team task jira <task-id> <JIRA-KEY> [url].");
+    return;
+  }
+
+  const task = await findTaskById(taskIdInput);
+
+  if (!task) {
+    postLocalTeamMessage(`Task ${taskIdInput} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  const jiraUrl = normalizeTeamFieldValue(jiraUrlInput);
+  await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", task.id), {
+    jiraKey,
+    jiraUrl,
+    jiraStatus: task.jiraStatus || "linked",
+    jiraUpdatedAt: serverTimestamp(),
+    source: task.source || "manual",
+    updatedAt: serverTimestamp(),
+    updatedBy: state.profile.id,
+    updatedByName: getProfileDisplayName(),
+  });
+
+  await postTaskMessage(`Task ${formatTaskId(task.id)} linked to Jira ${jiraKey}${jiraUrl ? ` (${jiraUrl})` : ""}.`);
+  setStatus("Jira reference linked.", "success");
+}
+
+async function addMemberFollowup(input) {
+  const [memberIdInput = "", ...followupParts] = input.trim().split(/\s+/);
+
+  if (!memberIdInput || followupParts.length === 0) {
+    postLocalTeamMessage("Use /team followup add <member-id> after 1d <text>.");
+    return;
+  }
+
+  const member = await findTeamMemberById(memberIdInput);
+
+  if (!member) {
+    postLocalTeamMessage(`Team member ${memberIdInput} was not found.`);
+    setStatus("Team member not found.", "error");
+    return;
+  }
+
+  await createTeamFollowup(followupParts.join(" "), { member });
+}
+
+async function addTaskFollowup(input) {
+  const [taskIdInput = "", ...followupParts] = input.trim().split(/\s+/);
+
+  if (!taskIdInput || followupParts.length === 0) {
+    postLocalTeamMessage("Use /team followup task <task-id> after 1d <text>.");
+    return;
+  }
+
+  const task = await findTaskById(taskIdInput);
+
+  if (!task) {
+    postLocalTeamMessage(`Task ${taskIdInput} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  let member = null;
+
+  if (task.assigneeMemberId) {
+    member = await findTeamMemberById(task.assigneeMemberId);
+  }
+
+  await createTeamFollowup(followupParts.join(" "), { task, member });
+}
+
+async function createTeamFollowup(input, options = {}) {
+  const { text, reminderIntervalMs, error } = parseQueryReminderInput(input);
+
+  if (!text) {
+    postLocalTeamMessage(error || "Add followup text and reminder timing.");
+    return;
+  }
+
+  const createdAt = new Date();
+  const reminderAt = new Date(createdAt.getTime() + reminderIntervalMs);
+  const followupPayload = {
+    text,
+    status: "pending",
+    memberId: options.member?.id || null,
+    memberName: options.member?.name || "",
+    taskId: options.task?.id || null,
+    taskDescription: options.task?.description || "",
+    reminderAt,
+    reminderIntervalMs,
+    lastReminderAt: null,
+    reminderCount: 0,
+    createdAt: serverTimestamp(),
+    createdBy: state.profile.id,
+    createdByName: getProfileDisplayName(),
+    completedAt: null,
+    completedBy: null,
+    completedByName: null,
+  };
+  const followupRef = await addDoc(collection(state.db, "rooms", state.roomId, "followups"), followupPayload);
+  const followup = {
+    id: followupRef.id,
+    ...followupPayload,
+    createdAt,
+  };
+
+  if (options.task) {
+    await addQueryTaskComment(options.task.id, `Followup ${formatTeamFollowupId(followupRef.id)}: ${text}`);
+  }
+
+  scheduleTeamFollowupReminder(followup);
+  postLocalTeamMessage(`Followup ${formatTeamFollowupId(followupRef.id)} added for ${formatTeamFollowupTarget(followup)}. Reminder in ${formatDuration(reminderIntervalMs)}.`);
+  setStatus("Followup added.", "success");
+}
+
+async function postTeamFollowupList() {
+  const followups = (await loadPendingTeamFollowups())
+    .sort(compareTeamFollowupsByReminderAt)
+    .slice(0, TEAM_FOLLOWUP_LIST_LIMIT);
+
+  if (followups.length === 0) {
+    postLocalTeamMessage("No pending team followups.");
+    setStatus("No pending followups.", "success");
+    return;
+  }
+
+  postLocalMessage(
+    `Team followups: ${followups.length}`,
+    "Team (only you)",
+    "team-followup-list",
+    [],
+    {
+      heading: "Team followups",
+      followups: followups.map(serializeTeamFollowupForMessage),
+    }
+  );
+  setStatus(`${followups.length} team followup${followups.length === 1 ? "" : "s"} listed.`, "success");
+}
+
+async function completeTeamFollowup(followupIdInput) {
+  const followupId = String(followupIdInput || "").trim();
+
+  if (!followupId) {
+    postLocalTeamMessage("Use /team followup done <id>.");
+    return;
+  }
+
+  const followup = await findTeamFollowupById(followupId);
+
+  if (!followup) {
+    postLocalTeamMessage(`Followup ${followupId} was not found.`);
+    setStatus("Followup not found.", "error");
+    return;
+  }
+
+  if (followup.status === "complete") {
+    postLocalTeamMessage(`Followup ${formatTeamFollowupId(followup.id)} is already complete.`);
+    setStatus("Followup already complete.", "success");
+    return;
+  }
+
+  await updateDoc(doc(state.db, "rooms", state.roomId, "followups", followup.id), {
+    status: "complete",
+    completedAt: serverTimestamp(),
+    completedBy: state.profile.id,
+    completedByName: getProfileDisplayName(),
+    updatedAt: serverTimestamp(),
+  });
+
+  clearTeamFollowupReminder(followup.id);
+  postLocalTeamMessage(`Followup ${formatTeamFollowupId(followup.id)} completed: ${followup.text}`);
+  setStatus("Followup completed.", "success");
+}
+
 function formatQueryMessageText(queryData) {
   const taskText = queryData.taskId ? ` on Task ${formatTaskId(queryData.taskId)}` : "";
 
@@ -4705,6 +5622,68 @@ function normalizeLeadFieldValue(value) {
   return String(value || "")
     .trim()
     .replace(/\s+/g, " ");
+}
+
+function parseTeamMemberFields(input) {
+  const text = String(input || "");
+  const fieldRegex = /\b(name|role|designation|email|handle|status|notes):/gi;
+  const matches = [...text.matchAll(fieldRegex)];
+  const fields = {};
+
+  matches.forEach((match, index) => {
+    const key = normalizeTeamMemberFieldKey(match[1]);
+
+    if (!TEAM_MEMBER_FIELDS.includes(key)) {
+      return;
+    }
+
+    const valueStart = match.index + match[0].length;
+    const valueEnd = index + 1 < matches.length ? matches[index + 1].index : text.length;
+    fields[key] = normalizeTeamFieldValue(text.slice(valueStart, valueEnd));
+  });
+
+  return fields;
+}
+
+function removeTeamMemberFieldTokens(input) {
+  return String(input || "")
+    .replace(/\b(name|role|designation|email|handle|status|notes):.*?(?=\s+\b(?:name|role|designation|email|handle|status|notes):|$)/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeTeamMemberFieldKey(key) {
+  return String(key || "").trim().toLowerCase();
+}
+
+function normalizeTeamFieldValue(value) {
+  return String(value || "")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function normalizeTeamHandle(value) {
+  const normalized = normalizeTeamFieldValue(value).replace(/^@/, "");
+  return normalized ? `@${normalized}` : "";
+}
+
+function normalizeTeamMemberStatus(value, fallback = "active") {
+  const normalized = String(value || "").trim().toLowerCase();
+
+  if (["inactive", "disabled", "archived"].includes(normalized)) {
+    return "inactive";
+  }
+
+  if (["active", "enabled"].includes(normalized)) {
+    return "active";
+  }
+
+  return fallback === "inactive" ? "inactive" : "active";
+}
+
+function normalizeJiraKey(value) {
+  const normalized = String(value || "").trim().toUpperCase();
+  return /^[A-Z][A-Z0-9]+-\d+$/.test(normalized) ? normalized : "";
 }
 
 async function addChangeLogEntry(input) {
@@ -7324,6 +8303,13 @@ function serializeTaskForMessage(task) {
     activeTimerStartedByName: task.activeTimerStartedByName || "",
     activeTimerDescription: task.activeTimerDescription || "",
     commentCount: Number.isFinite(task.commentCount) ? task.commentCount : 0,
+    assigneeMemberId: task.assigneeMemberId || "",
+    assigneeName: task.assigneeName || "",
+    jiraKey: task.jiraKey || "",
+    jiraUrl: task.jiraUrl || "",
+    jiraStatus: task.jiraStatus || "",
+    jiraUpdatedAt: task.jiraUpdatedAt || null,
+    source: task.source || "",
   };
 }
 
@@ -7492,6 +8478,47 @@ function serializeLeadForMessage(leadData) {
   };
 }
 
+function serializeTeamMemberForMessage(member) {
+  return {
+    id: member.id,
+    name: member.name || "Unnamed member",
+    role: member.role || "",
+    designation: member.designation || "",
+    email: member.email || "",
+    handle: member.handle || "",
+    status: member.status || "active",
+    notes: member.notes || "",
+    createdAt: member.createdAt || null,
+    createdBy: member.createdBy || null,
+    createdByName: member.createdByName || "",
+    updatedAt: member.updatedAt || null,
+    updatedBy: member.updatedBy || null,
+    updatedByName: member.updatedByName || "",
+  };
+}
+
+function serializeTeamFollowupForMessage(followup) {
+  return {
+    id: followup.id,
+    text: followup.text || "Untitled followup",
+    status: followup.status === "complete" ? "complete" : "pending",
+    memberId: followup.memberId || null,
+    memberName: followup.memberName || "",
+    taskId: followup.taskId || null,
+    taskDescription: followup.taskDescription || "",
+    reminderAt: followup.reminderAt || null,
+    reminderIntervalMs: Number.isFinite(followup.reminderIntervalMs) ? followup.reminderIntervalMs : QUERY_REMINDER_MS,
+    lastReminderAt: followup.lastReminderAt || null,
+    reminderCount: Number.isFinite(followup.reminderCount) ? followup.reminderCount : 0,
+    createdAt: followup.createdAt || null,
+    createdBy: followup.createdBy || null,
+    createdByName: followup.createdByName || "",
+    completedAt: followup.completedAt || null,
+    completedBy: followup.completedBy || null,
+    completedByName: followup.completedByName || "",
+  };
+}
+
 async function findQueryById(queryIdInput) {
   const normalizedId = normalizeQueryId(queryIdInput);
 
@@ -7558,12 +8585,91 @@ async function findLeadById(leadIdInput) {
   return matches.length === 1 ? matches[0] : null;
 }
 
+async function findTeamMemberById(memberIdInput) {
+  const normalizedId = normalizeTeamMemberId(memberIdInput);
+
+  if (!normalizedId) {
+    return null;
+  }
+
+  const directSnapshot = await getDoc(doc(state.db, "rooms", state.roomId, "teamMembers", normalizedId));
+
+  if (directSnapshot.exists()) {
+    return {
+      id: directSnapshot.id,
+      ...directSnapshot.data(),
+    };
+  }
+
+  const members = await loadRoomTeamMembers();
+  const matches = members.filter((member) => {
+    const memberId = member.id.toLowerCase();
+    const handle = normalizeTeamHandle(member.handle).replace(/^@/, "");
+    return memberId.startsWith(normalizedId) || (handle && handle === normalizedId);
+  });
+
+  return matches.length === 1 ? matches[0] : null;
+}
+
+async function findTeamFollowupById(followupIdInput) {
+  const normalizedId = normalizeTeamFollowupId(followupIdInput);
+
+  if (!normalizedId) {
+    return null;
+  }
+
+  const directSnapshot = await getDoc(doc(state.db, "rooms", state.roomId, "followups", normalizedId));
+
+  if (directSnapshot.exists()) {
+    return {
+      id: directSnapshot.id,
+      ...directSnapshot.data(),
+    };
+  }
+
+  const followups = await loadRoomTeamFollowups();
+  const matches = followups.filter((followup) => followup.id.toLowerCase().startsWith(normalizedId));
+
+  return matches.length === 1 ? matches[0] : null;
+}
+
 async function loadRoomLeads() {
   const leadsSnapshot = await getDocs(collection(state.db, "rooms", state.roomId, "leads"));
 
   return leadsSnapshot.docs.map((leadDoc) => ({
     id: leadDoc.id,
     ...leadDoc.data(),
+  }));
+}
+
+async function loadRoomTeamMembers() {
+  const membersSnapshot = await getDocs(collection(state.db, "rooms", state.roomId, "teamMembers"));
+
+  return membersSnapshot.docs.map((memberDoc) => ({
+    id: memberDoc.id,
+    ...memberDoc.data(),
+  }));
+}
+
+async function loadRoomTeamFollowups() {
+  const followupsSnapshot = await getDocs(collection(state.db, "rooms", state.roomId, "followups"));
+
+  return followupsSnapshot.docs.map((followupDoc) => ({
+    id: followupDoc.id,
+    ...followupDoc.data(),
+  }));
+}
+
+async function loadPendingTeamFollowups() {
+  const followupsQuery = query(
+    collection(state.db, "rooms", state.roomId, "followups"),
+    where("status", "==", "pending")
+  );
+  const followupsSnapshot = await getDocs(followupsQuery);
+
+  return followupsSnapshot.docs.map((followupDoc) => ({
+    id: followupDoc.id,
+    ...followupDoc.data(),
   }));
 }
 
@@ -8156,6 +9262,10 @@ function postLocalLeadMessage(text, actions = [], extra = {}) {
   postLocalMessage(text, "Leads (only you)", extra.type || "lead", actions, extra);
 }
 
+function postLocalTeamMessage(text, actions = [], extra = {}) {
+  postLocalMessage(text, "Team (only you)", extra.type || "team", actions, extra);
+}
+
 function postLocalMessage(text, senderName, type, actions = [], extra = {}) {
   state.localMessages.push({
     id: `local-${type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -8424,6 +9534,141 @@ function getQueryReminderLeadText(queryData) {
   return queryData.createdBy === state.profile?.id
     ? "Still waiting for a response."
     : "Please respond to this query.";
+}
+
+function startTeamFollowupReminderSync() {
+  clearTeamFollowupReminderSync();
+  void syncTeamFollowupReminders();
+
+  state.teamFollowupReminderSyncIntervalId = window.setInterval(() => {
+    void syncTeamFollowupReminders();
+  }, QUERY_REMINDER_SYNC_MS);
+}
+
+async function syncTeamFollowupReminders() {
+  if (!state.db || !state.roomId || !state.profile || !isRoomPluginEnabled(PLUGIN_TEAM)) {
+    return;
+  }
+
+  try {
+    const followups = await loadPendingTeamFollowups();
+    const activeFollowupIds = new Set();
+
+    followups.forEach((followup) => {
+      activeFollowupIds.add(followup.id);
+
+      if (!state.teamFollowupReminderTimeouts.has(followup.id)) {
+        scheduleTeamFollowupReminder(followup);
+      }
+    });
+
+    [...state.teamFollowupReminderTimeouts.keys()].forEach((followupId) => {
+      if (!activeFollowupIds.has(followupId)) {
+        clearTeamFollowupReminder(followupId);
+      }
+    });
+  } catch (error) {
+    console.error("Team followup reminder sync failed:", error);
+  }
+}
+
+function scheduleTeamFollowupReminder(followup) {
+  clearTeamFollowupReminder(followup.id);
+
+  if (followup.status === "complete") {
+    return;
+  }
+
+  const nextReminderTime = getTeamFollowupNextReminderTime(followup);
+  const delayMs = Math.max(0, nextReminderTime - Date.now());
+  const timeoutId = window.setTimeout(() => {
+    void handleTeamFollowupReminder(followup.id);
+  }, delayMs);
+
+  state.teamFollowupReminderTimeouts.set(followup.id, { timeoutId });
+}
+
+async function handleTeamFollowupReminder(followupId) {
+  state.teamFollowupReminderTimeouts.delete(followupId);
+
+  const followup = await findTeamFollowupById(followupId);
+
+  if (!followup || followup.status === "complete") {
+    return;
+  }
+
+  const reminderCount = Number.isFinite(followup.reminderCount) ? followup.reminderCount : 0;
+  const remindedAt = new Date();
+  const remindedFollowup = {
+    ...followup,
+    lastReminderAt: remindedAt,
+    reminderCount: reminderCount + 1,
+  };
+
+  await updateDoc(doc(state.db, "rooms", state.roomId, "followups", followup.id), {
+    lastReminderAt: serverTimestamp(),
+    reminderCount: reminderCount + 1,
+    updatedAt: serverTimestamp(),
+  });
+
+  postLocalTeamMessage(
+    `Team followup reminder\n${formatTeamFollowupId(followup.id)} for ${formatTeamFollowupTarget(followup)}: ${followup.text}\nMark done with /team followup done ${formatTeamFollowupId(followup.id)}.`,
+    [],
+    {
+      type: "team-followup-list",
+      heading: "Team followup reminder",
+      followups: [serializeTeamFollowupForMessage(remindedFollowup)],
+    }
+  );
+  void showTeamFollowupNotification(remindedFollowup);
+  scheduleTeamFollowupReminder(remindedFollowup);
+  setStatus("Team followup reminder.", "success");
+}
+
+function clearTeamFollowupReminder(followupId) {
+  const reminder = state.teamFollowupReminderTimeouts.get(followupId);
+
+  if (!reminder?.timeoutId) {
+    return;
+  }
+
+  window.clearTimeout(reminder.timeoutId);
+  state.teamFollowupReminderTimeouts.delete(followupId);
+}
+
+function clearTeamFollowupReminders() {
+  state.teamFollowupReminderTimeouts.forEach((reminder) => {
+    if (reminder?.timeoutId) {
+      window.clearTimeout(reminder.timeoutId);
+    }
+  });
+  state.teamFollowupReminderTimeouts.clear();
+}
+
+function clearTeamFollowupReminderSync() {
+  if (!state.teamFollowupReminderSyncIntervalId) {
+    return;
+  }
+
+  window.clearInterval(state.teamFollowupReminderSyncIntervalId);
+  state.teamFollowupReminderSyncIntervalId = null;
+}
+
+function getTeamFollowupIntervalMs(followup) {
+  return Number.isFinite(followup.reminderIntervalMs) && followup.reminderIntervalMs > 0
+    ? followup.reminderIntervalMs
+    : QUERY_REMINDER_MS;
+}
+
+function getTeamFollowupNextReminderTime(followup) {
+  const lastReminderTime = getTimestampMillis(followup.lastReminderAt);
+
+  if (lastReminderTime > 0) {
+    return lastReminderTime + getTeamFollowupIntervalMs(followup);
+  }
+
+  const reminderTime = getTimestampMillis(followup.reminderAt);
+  return reminderTime > 0 ? reminderTime : Date.now() + getTeamFollowupIntervalMs(followup);
 }
 
 function scheduleTaskTimerReminder(task) {
@@ -8987,6 +10232,27 @@ function compareLeadsByCreatedAt(left, right) {
   return String(left.id || "").localeCompare(String(right.id || ""));
 }
 
+function compareTeamMembersByName(left, right) {
+  const nameCompare = String(left.name || "").localeCompare(String(right.name || ""));
+
+  if (nameCompare !== 0) {
+    return nameCompare;
+  }
+
+  return String(left.id || "").localeCompare(String(right.id || ""));
+}
+
+function compareTeamFollowupsByReminderAt(left, right) {
+  const leftTime = getTimestampMillis(left.reminderAt);
+  const rightTime = getTimestampMillis(right.reminderAt);
+
+  if (leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+
+  return String(left.id || "").localeCompare(String(right.id || ""));
+}
+
 function formatChangeLogList(changes) {
   const lines = ["Recent changes:"];
 
@@ -9162,6 +10428,32 @@ function draftLeadUpdate(leadId) {
   setStatus("Update the lead fields and send when ready.", "success");
 }
 
+function draftTeamMemberUpdate(memberId) {
+  if (!memberId) {
+    return;
+  }
+
+  messageInput.value = `/team member update ${formatTeamMemberId(memberId)} role: designation: status:active notes:`;
+  messageInput.focus();
+  messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+  syncMessageMaskOverlay();
+  handleMessageInputChange();
+  setStatus("Update the team member fields and send when ready.", "success");
+}
+
+function draftTeamMemberFollowup(memberId) {
+  if (!memberId) {
+    return;
+  }
+
+  messageInput.value = `/team followup add ${formatTeamMemberId(memberId)} after 1d `;
+  messageInput.focus();
+  messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+  syncMessageMaskOverlay();
+  handleMessageInputChange();
+  setStatus("Write the followup and send when ready.", "success");
+}
+
 function formatTaskId(taskId) {
   return `#${taskId.slice(0, 6)}`;
 }
@@ -9172,6 +10464,14 @@ function formatQueryId(queryId) {
 
 function formatLeadId(leadId) {
   return `~${String(leadId || "").slice(0, 6)}`;
+}
+
+function formatTeamMemberId(memberId) {
+  return `%${String(memberId || "").slice(0, 6)}`;
+}
+
+function formatTeamFollowupId(followupId) {
+  return `!${String(followupId || "").slice(0, 6)}`;
 }
 
 function normalizeQueryId(queryId) {
@@ -9186,6 +10486,39 @@ function normalizeLeadId(leadId) {
     .trim()
     .replace(/^[~#]/, "")
     .toLowerCase();
+}
+
+function normalizeTeamMemberId(memberId) {
+  return String(memberId || "")
+    .trim()
+    .replace(/^[%#@]/, "")
+    .toLowerCase();
+}
+
+function normalizeTeamFollowupId(followupId) {
+  return String(followupId || "")
+    .trim()
+    .replace(/^[!#]/, "")
+    .toLowerCase();
+}
+
+function formatTeamMemberMessageText(member, action = "shared") {
+  const actionText = action === "added" ? "added" : action === "updated" ? "updated" : "shared";
+  const roleText = member.role ? `, ${member.role}` : "";
+  const designationText = member.designation ? ` (${member.designation})` : "";
+  return `Team member ${formatTeamMemberId(member.id)} ${actionText}: ${member.name || "Unnamed member"}${roleText}${designationText}`;
+}
+
+function formatTeamFollowupTarget(followup) {
+  if (followup.memberName) {
+    return followup.memberName;
+  }
+
+  if (followup.taskId) {
+    return `Task ${formatTaskId(followup.taskId)}`;
+  }
+
+  return "Team";
 }
 
 function formatCodexCommandId(commandId) {
@@ -10178,6 +11511,33 @@ async function showQueryReminderNotification(queryData) {
   }
 }
 
+async function showTeamFollowupNotification(followup) {
+  if (
+    !state.isNotificationsEnabled ||
+    typeof Notification === "undefined" ||
+    Notification.permission !== "granted"
+  ) {
+    return;
+  }
+
+  try {
+    await showBrowserNotification("Team followup", {
+      body: `${formatTeamFollowupTarget(followup)}: ${followup.text || "A team followup is pending."}`,
+      tag: `team-followup-${state.roomId}-${followup.id}`,
+      renotify: true,
+      badge: "./icons/icon-192.png",
+      icon: "./icons/icon-192.png",
+      data: {
+        roomId: state.roomId,
+        followupId: followup.id,
+        notificationType: "team-followup",
+      },
+    });
+  } catch (error) {
+    console.error("Team followup notification failed:", error);
+  }
+}
+
 async function testNotification() {
   if (!state.isNotificationsEnabled) {
     setStatus("Notifications are disabled in settings.", "error");
@@ -10667,7 +12027,15 @@ function normalizePluginName(value) {
 }
 
 function formatPluginName(pluginName) {
-  return pluginName === PLUGIN_LEADS ? "Leads" : pluginName;
+  if (pluginName === PLUGIN_LEADS) {
+    return "Leads";
+  }
+
+  if (pluginName === PLUGIN_TEAM) {
+    return "Team";
+  }
+
+  return pluginName;
 }
 
 function isRoomPluginEnabled(pluginName) {

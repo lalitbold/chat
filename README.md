@@ -83,6 +83,39 @@ rooms/{roomId}/queries/{queryId}
   lastReminderAt
   reminderCount
 
+rooms/{roomId}/teamMembers/{memberId}
+  name
+  role
+  designation
+  email
+  handle
+  status
+  notes
+  createdAt
+  createdBy
+  createdByName
+  updatedAt
+  updatedBy
+  updatedByName
+
+rooms/{roomId}/followups/{followupId}
+  text
+  status
+  memberId
+  memberName
+  taskId
+  taskDescription
+  reminderAt
+  reminderIntervalMs
+  lastReminderAt
+  reminderCount
+  createdAt
+  createdBy
+  createdByName
+  completedAt
+  completedBy
+  completedByName
+
 rooms/{roomId}/changelog/{changeId}
   text
   labels
@@ -112,6 +145,13 @@ rooms/{roomId}/tasks/{taskId}
   activeTimerStartedBy
   activeTimerStartedByName
   activeTimerDescription
+  assigneeMemberId
+  assigneeName
+  jiraKey
+  jiraUrl
+  jiraStatus
+  jiraUpdatedAt
+  source
 
 rooms/{roomId}/tasks/{taskId}/timeEntries/{entryId}
   taskId
@@ -233,6 +273,8 @@ When `npm run codex:bridge` runs with a write-enabled sandbox, it appends a chan
 
 - `/plugin enable leads` enables lead capture for the current group.
 - `/plugin disable leads` disables lead capture for the current group.
+- `/plugin enable team` enables team management for the current group.
+- `/plugin disable team` disables team management for the current group.
 - `/plugin list` shows enabled and disabled group plugins only to you.
 
 ## Lead commands
@@ -246,6 +288,25 @@ Lead commands are available after `/plugin enable leads`.
 - `/lead list` shows recent leads only to you.
 - `/lead view <id>` posts a lead card to the group. Lead IDs are shown like `~abc123`.
 - `/lead update <id> status:contacted owner:Lalit pricePerGaj:55k per gaj notes:demo scheduled` updates a lead and posts the updated card to the group.
+
+## Team commands
+
+Team commands are available after `/plugin enable team`.
+
+- `/team member add name:Rahul role:Developer designation:SDE email:rahul@example.com handle:@rahul notes:Backend owner` adds a team member and posts a member card to the group.
+- `/team member list` shows team members only to you. Member IDs are shown like `%abc123`.
+- `/team member view <id>` posts a team member card to the group.
+- `/team member update <id> role:Lead designation:Senior status:active notes:Owns API work` updates a member and posts the updated card to the group.
+- `/team task assign <task-id> <member-id>` assigns an existing room task to a team member.
+- `/team task list` shows tasks with a team assignee or Jira reference only to you.
+- `/team task list <member-id>` shows team tasks for one member only to you.
+- `/team task jira <task-id> CMPL-123 https://jira.example.com/browse/CMPL-123` stores Jira metadata on an existing room task. Jira live fetching is not included in this browser-only version.
+- `/team followup add <member-id> after 1d Confirm estimate` creates a member followup with reminders.
+- `/team followup task <task-id> after 2h Check blocker` creates a task-linked followup with reminders.
+- `/team followup list` shows pending team followups only to you. Followup IDs are shown like `!abc123`.
+- `/team followup done <id>` marks a followup complete and stops reminders.
+
+Jira integration is prepared through task fields (`jiraKey`, `jiraUrl`, `jiraStatus`, `jiraUpdatedAt`, `source`). A future Firebase Cloud Function or small backend service should fetch Jira issues server-side and write them into Firestore so Jira API tokens are never exposed in the browser.
 
 ## Codex commands
 
