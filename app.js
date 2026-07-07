@@ -104,6 +104,7 @@ const TASK_TIMER_REPEAT_REMINDER_MS = 5 * 60 * 1000;
 const TASK_TIMER_MAX_UNANSWERED_REMINDERS = 2;
 const TASK_TIMER_REMINDER_SYNC_MS = 60 * 1000;
 const DAY_IDLE_TASK_REMINDER_MS = 5 * 60 * 1000;
+const DAY_IDLE_TASK_REMINDER_LOCK_MS = 30 * 1000;
 const QUERY_REMINDER_MS = 10 * 60 * 1000;
 const QUERY_REMINDER_SYNC_MS = 60 * 1000;
 const QUERY_REMINDER_MAX_MS = 21 * 24 * 60 * 60 * 1000;
@@ -416,6 +417,8 @@ const SESSION_KEY = "firestore-chat-session";
 const JOINED_ROOMS_KEY = "openbox-joined-rooms";
 const MESSAGES_PAGE_SIZE = 25;
 const LOCAL_ROOM_COMMANDS_KEY_PREFIX = "firestore-chat-room-commands";
+const COMMAND_HISTORY_KEY_PREFIX = "firestore-chat-command-history";
+const COMMAND_HISTORY_LIMIT = 50;
 const TASK_PROCESS_STATE_KEY_PREFIX = "firestore-chat-task-process";
 const GROUP_COMMAND_SCOPE = "group";
 const PERSONAL_COMMAND_SCOPE = "personal";
@@ -489,12 +492,16 @@ const state = {
   pendingSessionPayload: "",
   commandSuggestionMatches: [],
   selectedCommandSuggestionIndex: 0,
+  commandHistory: [],
+  commandHistoryIndex: null,
+  commandHistoryDraft: "",
   taskTimerReminderTimeouts: new Map(),
   taskTimerReminderSyncIntervalId: null,
   queryReminderTimeouts: new Map(),
   queryReminderSyncIntervalId: null,
   taskProcessSession: null,
   dayIdleTaskReminderTimeoutId: null,
+  dayIdleTaskReminderClientId: `day-idle-${Math.random().toString(36).slice(2)}`,
   activeBreakStartedAt: null,
   lastBreakActivityPromptAt: 0,
   isNotificationsEnabled: loadNotificationsEnabled(),
@@ -611,6 +618,8 @@ function wireEvents() {
     if (!text || !state.roomId || !state.db || !state.profile) {
       return;
     }
+
+    recordCommandHistory(text);
 
     if (handleLocalCommand(text)) {
       messageInput.value = "";
@@ -1392,6 +1401,8 @@ async function connectToRoom(roomId, roomPasscode = "", roomData = null) {
   state.hasHydratedRoom = false;
   state.messages = [];
   state.localMessages = [];
+  state.commandHistory = loadCommandHistory();
+  resetCommandHistoryNavigation();
   state.taskProcessSession = null;
   state.queryReminderTimeouts = new Map();
   state.oldestMessageCursor = null;
@@ -1693,6 +1704,8 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   state.hasHydratedRoom = false;
   state.messages = [];
   state.localMessages = [];
+  state.commandHistory = [];
+  resetCommandHistoryNavigation();
   state.hasMoreMessages = true;
   state.isLoadingOlderMessages = false;
   state.oldestMessageCursor = null;
@@ -3114,6 +3127,7 @@ function shouldKeepMessageTextVisible(value) {
 }
 
 function handleMessageInputChange(event) {
+  resetCommandHistoryNavigation();
   maybeRevealLatestMaskedCharacter(event);
   syncMessageMaskOverlay();
   updateCommandAutocomplete();
@@ -3160,6 +3174,10 @@ function clearMessageMaskRevealTimer(resetRevealIndex = true) {
 
 function handleMessageInputKeydown(event) {
   if (handleCommandAutocompleteKeydown(event)) {
+    return;
+  }
+
+  if (handleCommandHistoryKeydown(event)) {
     return;
   }
 
@@ -3564,6 +3582,170 @@ function applyCommandSuggestion(index) {
   hideCommandAutocomplete();
   messageInput.focus();
   void maybeHydrateTaskEditDraft();
+}
+
+function handleCommandHistoryKeydown(event) {
+  if (!["ArrowUp", "ArrowDown"].includes(event.key) || shouldSkipCommandHistoryNavigation()) {
+    return false;
+  }
+
+  if (event.key === "ArrowDown" && state.commandHistoryIndex === null) {
+    return false;
+  }
+
+  if (state.commandHistory.length === 0 && state.commandHistoryIndex === null) {
+    return false;
+  }
+
+  event.preventDefault();
+
+  if (state.commandHistoryIndex === null) {
+    state.commandHistoryDraft = messageInput.value;
+    state.commandHistoryIndex = state.commandHistory.length;
+  }
+
+  if (event.key === "ArrowUp") {
+    state.commandHistoryIndex = Math.max(0, state.commandHistoryIndex - 1);
+  } else {
+    state.commandHistoryIndex = Math.min(state.commandHistory.length, state.commandHistoryIndex + 1);
+  }
+
+  const nextValue =
+    state.commandHistoryIndex === state.commandHistory.length
+      ? state.commandHistoryDraft
+      : state.commandHistory[state.commandHistoryIndex] || "";
+
+  messageInput.value = nextValue;
+  messageInput.setSelectionRange(nextValue.length, nextValue.length);
+  syncMessageMaskOverlay();
+  hideCommandAutocomplete();
+
+  return true;
+}
+
+function shouldSkipCommandHistoryNavigation() {
+  if (messageInput.selectionStart !== messageInput.selectionEnd) {
+    return true;
+  }
+
+  const cursorIndex = messageInput.selectionStart ?? messageInput.value.length;
+  return cursorIndex !== 0 && cursorIndex !== messageInput.value.length;
+}
+
+function resetCommandHistoryNavigation() {
+  state.commandHistoryIndex = null;
+  state.commandHistoryDraft = "";
+}
+
+function recordCommandHistory(text) {
+  const command = String(text || "").trim();
+
+  resetCommandHistoryNavigation();
+
+  if (!shouldRecordCommandHistory(command)) {
+    return;
+  }
+
+  state.commandHistory = [
+    ...state.commandHistory.filter((entry) => entry !== command),
+    command,
+  ].slice(-COMMAND_HISTORY_LIMIT);
+  saveCommandHistory();
+}
+
+function shouldRecordCommandHistory(command) {
+  if (!command || !isHandledCommand(command) || isPrivacyHistoryCommand(command)) {
+    return false;
+  }
+
+  return true;
+}
+
+function isHandledCommand(command) {
+  return (
+    handleLocalCommandWouldMatch(command) ||
+    isTaskCommand(command) ||
+    isDayCommand(command) ||
+    isChangeCommand(command) ||
+    isCodexCommand(command) ||
+    isQueryCommand(command) ||
+    isPluginCommand(command) ||
+    isLeadCommand(command)
+  );
+}
+
+function handleLocalCommandWouldMatch(command) {
+  const normalized = command.trim().toLowerCase();
+  return ADVANCED_SETTINGS_COMMANDS.has(normalized) || normalized === GET_LINK_COMMAND;
+}
+
+function isPrivacyHistoryCommand(command) {
+  const normalized = command.trim().toLowerCase();
+  const normalizedWithoutSlash = normalized.startsWith("/") ? normalized.slice(1) : normalized;
+  const roomCommands = getEffectiveRoomCommands(state.roomId, state.groupRoomCommands);
+
+  if (normalized === PRIVACY_INVITE_COMMAND || normalized.startsWith(`${PRIVACY_INVITE_COMMAND} `)) {
+    return true;
+  }
+
+  if (PRIVACY_HIDE_ALL_COMMANDS.has(normalized)) {
+    return true;
+  }
+
+  if (matchesCommand(normalizedWithoutSlash, DEFAULT_ROOM_COMMANDS.enable, roomCommands.enable)) {
+    return true;
+  }
+
+  return Boolean(
+    matchCommandWithOptionalCount(normalized, [
+      DEFAULT_ROOM_COMMANDS.disable,
+      roomCommands.disable,
+      `/${DEFAULT_ROOM_COMMANDS.disable}`,
+      `/${roomCommands.disable}`,
+      ...DEFAULT_REVEAL_ALIASES,
+      roomCommands.reveal,
+      ...Array.from(DEFAULT_REVEAL_ALIASES, (alias) => `/${alias}`),
+      `/${roomCommands.reveal}`,
+    ])
+  );
+}
+
+function getCommandHistoryStorageKey() {
+  const userId = state.profile?.id || state.authUser?.uid || "pending-auth";
+  const roomId = state.roomId || "pending-room";
+  return `${COMMAND_HISTORY_KEY_PREFIX}:${userId}:${roomId}`;
+}
+
+function loadCommandHistory() {
+  try {
+    const raw = localStorage.getItem(getCommandHistoryStorageKey());
+
+    if (!raw) {
+      return [];
+    }
+
+    const entries = JSON.parse(raw);
+
+    if (!Array.isArray(entries)) {
+      return [];
+    }
+
+    return entries
+      .map((entry) => String(entry || "").trim())
+      .filter(shouldRecordCommandHistory)
+      .slice(-COMMAND_HISTORY_LIMIT);
+  } catch (error) {
+    console.error(error);
+    localStorage.removeItem(getCommandHistoryStorageKey());
+    return [];
+  }
+}
+
+function saveCommandHistory() {
+  localStorage.setItem(
+    getCommandHistoryStorageKey(),
+    JSON.stringify(state.commandHistory.filter(shouldRecordCommandHistory).slice(-COMMAND_HISTORY_LIMIT))
+  );
 }
 
 function handleMessageListScroll() {
@@ -8604,20 +8786,29 @@ function scheduleDayIdleTaskReminder() {
 async function handleDayIdleTaskReminder() {
   state.dayIdleTaskReminderTimeoutId = null;
 
-  const workDay = await getWorkDay();
-  const shouldRemind = await shouldRemindForIdleWorkDay(workDay);
-
-  if (!shouldRemind) {
+  if (document.hidden || !claimDayIdleTaskReminder()) {
+    scheduleDayIdleTaskReminder();
     return;
   }
 
-  const reminderCount = await recordDayIdleTaskReminder(workDay);
+  try {
+    const workDay = await getWorkDay();
+    const shouldRemind = await shouldRemindForIdleWorkDay(workDay);
 
-  postLocalDayMessage(
-    `Reminder #${reminderCount}: Your day is started, but no timer is running.\nStart a general timer with /task start, start a task with /task start <id>, or create one with /task create <description>.`
-  );
-  scheduleDayIdleTaskReminder();
-  setStatus("No task running reminder.", "success");
+    if (!shouldRemind) {
+      return;
+    }
+
+    const reminderCount = await recordDayIdleTaskReminder(workDay);
+
+    postLocalDayMessage(
+      `Reminder #${reminderCount}: Your day is started, but no timer is running.\nStart a general timer with /task start, start a task with /task start <id>, or create one with /task create <description>.`
+    );
+    scheduleDayIdleTaskReminder();
+    setStatus("No task running reminder.", "success");
+  } finally {
+    releaseDayIdleTaskReminderClaim();
+  }
 }
 
 async function shouldRemindForIdleWorkDay(workDay = null) {
@@ -8665,6 +8856,67 @@ async function recordDayIdleTaskReminder(workDay) {
 
 function getDayIdleReminderCount(workDay) {
   return Number.isFinite(workDay?.dayIdleReminderCount) ? workDay.dayIdleReminderCount : 0;
+}
+
+function claimDayIdleTaskReminder() {
+  const key = getDayIdleTaskReminderLockKey();
+
+  if (!key) {
+    return true;
+  }
+
+  try {
+    const now = Date.now();
+    const existingClaim = JSON.parse(localStorage.getItem(key) || "null");
+
+    if (
+      existingClaim?.expiresAt > now &&
+      existingClaim?.clientId &&
+      existingClaim.clientId !== state.dayIdleTaskReminderClientId
+    ) {
+      return false;
+    }
+
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        clientId: state.dayIdleTaskReminderClientId,
+        expiresAt: now + DAY_IDLE_TASK_REMINDER_LOCK_MS,
+      })
+    );
+
+    const savedClaim = JSON.parse(localStorage.getItem(key) || "null");
+    return savedClaim?.clientId === state.dayIdleTaskReminderClientId;
+  } catch (error) {
+    console.warn("Day idle reminder lock failed:", error);
+    return true;
+  }
+}
+
+function releaseDayIdleTaskReminderClaim() {
+  const key = getDayIdleTaskReminderLockKey();
+
+  if (!key) {
+    return;
+  }
+
+  try {
+    const existingClaim = JSON.parse(localStorage.getItem(key) || "null");
+
+    if (existingClaim?.clientId === state.dayIdleTaskReminderClientId) {
+      localStorage.removeItem(key);
+    }
+  } catch (error) {
+    console.warn("Day idle reminder unlock failed:", error);
+  }
+}
+
+function getDayIdleTaskReminderLockKey() {
+  if (!state.roomId || !state.profile?.id) {
+    return "";
+  }
+
+  return `dayIdleTaskReminder:${state.roomId}:${state.profile.id}:${getTodayKey()}`;
 }
 
 function clearDayIdleTaskReminder() {
@@ -8972,15 +9224,21 @@ function createTaskCommentPrivacyAliases(comments) {
   let index = 1;
 
   comments.forEach((comment) => {
-    if (!comment.createdBy || aliases.has(comment.createdBy)) {
+    const aliasKey = getTaskCommentAliasKey(comment, index);
+
+    if (aliases.has(aliasKey)) {
       return;
     }
 
-    aliases.set(comment.createdBy, `User ${index}`);
+    aliases.set(aliasKey, `Note ${index}`);
     index += 1;
   });
 
   return aliases;
+}
+
+function getTaskCommentAliasKey(comment, fallbackIndex = 0) {
+  return comment.id || `${comment.createdBy || "comment"}-${fallbackIndex}`;
 }
 
 function formatTaskPersonName(userId, fallbackName = "Unknown", privateAliases = null, options = {}) {
@@ -8996,6 +9254,10 @@ function formatTaskPersonName(userId, fallbackName = "Unknown", privateAliases =
 }
 
 function formatTaskCommentAuthor(comment, privateAliases = null, options = {}) {
+  if (options.maskIdentity) {
+    return privateAliases?.get?.(getTaskCommentAliasKey(comment)) || "Note";
+  }
+
   return formatTaskPersonName(comment.createdBy, comment.createdByName || "Unknown", privateAliases, options);
 }
 
@@ -9006,14 +9268,15 @@ function formatTaskCommentText(comment, privateAliases = null, options = {}) {
     return text;
   }
 
-  const author = formatTaskCommentAuthor(comment, privateAliases, options);
   const storedName = escapeRegExp(comment.createdByName || state.profile?.name || "");
+  let noteText = text.replace(/^Response to Query\s+([^:]+?)\s+from\s+[^:]+:/i, "Response note for Query $1:");
+  noteText = noteText.replace(/^Response to Query\s+([^:]+):/i, "Response note for Query $1:");
 
-  if (!storedName) {
-    return text;
+  if (storedName) {
+    noteText = noteText.replace(new RegExp(`\\bfrom\\s+${storedName}:`, "gi"), "note:");
   }
 
-  return text.replace(new RegExp(`\\bfrom\\s+${storedName}:`, "gi"), `from ${author}:`);
+  return noteText;
 }
 
 function formatQueryPersonName(userId, fallbackName = "Unknown") {
