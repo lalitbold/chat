@@ -4271,7 +4271,7 @@ async function handleTaskCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     await postTaskMessage(
-      "Task commands:\n/task create fix that issue #bug\n/task list\n/task list #bug\n/task completed\n/task completed #bug\n/task current\n/task today #abc123 #def456\n/task today list\n/task today review\n/task view <id>\n/task process\n/task process #bug\n/task process continue\n/task process stop\n/task edit <id> <description> #label\n/task comment <id> <comment>\n/task comments <id>\n/task subtask <id> <description>\n/task subtasks <id>\n/task subtask done <id> <subtask>\n/task subtask reopen <id> <subtask>\n/task subtask remove <id> <subtask>\n/task start [description]\n/task start <id> [description]\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task timers\n/task summary\n/task summary share\n/task complete <id>\n/task reopen <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nMention a task id like #abc123 in a message to preview it.\nUse /day for attendance and leave commands."
+      "Task commands:\n/task create fix that issue #bug\n/task list\n/task list #bug\n/task completed\n/task completed #bug\n/task current\n/task today #abc123 #def456\n/task today list\n/task today review\n/task view <id>\n/task codex <id> [instruction]\n/task process\n/task process #bug\n/task process continue\n/task process stop\n/task edit <id> <description> #label\n/task comment <id> <comment>\n/task comments <id>\n/task subtask <id> <description>\n/task subtasks <id>\n/task subtask done <id> <subtask>\n/task subtask reopen <id> <subtask>\n/task subtask remove <id> <subtask>\n/task start [description]\n/task start <id> [description]\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task timers\n/task summary\n/task summary share\n/task complete <id>\n/task reopen <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nMention a task id like #abc123 in a message to preview it.\nUse /day for attendance and leave commands."
     );
     return;
   }
@@ -4308,6 +4308,11 @@ async function handleTaskCommand(text) {
 
   if (normalizedAction === "view") {
     await postTaskView(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "codex") {
+    await queueTaskForCodex(rest.join(" "));
     return;
   }
 
@@ -4492,6 +4497,10 @@ async function handleCodexCommand(text) {
     return;
   }
 
+  await queueCodexPrompt(prompt);
+}
+
+async function queueCodexPrompt(prompt) {
   const commandRef = await addDoc(collection(state.db, "rooms", state.roomId, "codexCommands"), {
     prompt,
     status: "queued",
@@ -4509,6 +4518,46 @@ async function handleCodexCommand(text) {
     `Queued Codex command ${formatCodexCommandId(commandRef.id)} from ${getProfileDisplayName()}.\n${prompt}`
   );
   setStatus("Codex command queued.", "success");
+}
+
+async function queueTaskForCodex(payload) {
+  const [taskIdInput = "", ...instructionParts] = payload.trim().split(/\s+/);
+
+  if (!taskIdInput) {
+    postLocalTaskMessage("Use /task codex <id> [instruction].");
+    return;
+  }
+
+  const task = await findTaskById(taskIdInput);
+
+  if (!task) {
+    postLocalTaskMessage(`Task ${taskIdInput} was not found.`);
+    return;
+  }
+
+  await queueCodexPrompt(buildTaskCodexPrompt(task, instructionParts.join(" ")));
+}
+
+function buildTaskCodexPrompt(task, instruction) {
+  const labels = Array.isArray(task.labels) && task.labels.length > 0
+    ? task.labels.map((label) => `#${label}`).join(" ")
+    : "none";
+  const creator = task.createdByName || "Unknown";
+  const timeSummary = formatTaskTimeSummary(task).trim() || "none";
+  const userInstruction = instruction.trim() || "Process this task and report what was done.";
+
+  return [
+    "Process this chat task through Codex.",
+    "",
+    `Task: ${formatTaskId(task.id)}`,
+    `Full ID: ${task.id}`,
+    `Description: ${task.description || "Untitled task"}`,
+    `Labels: ${labels}`,
+    `Creator: ${creator}`,
+    `Time: ${timeSummary}`,
+    "",
+    `Instruction: ${userInstruction}`,
+  ].join("\n");
 }
 
 async function handleQueryCommand(text) {

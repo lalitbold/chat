@@ -225,6 +225,7 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 - `/task today #abc123 #def456` adds existing pending tasks to today's plan.
 - `/task today list` shows today's planned tasks only to you.
 - `/task today review` shows unfinished planned tasks from yesterday with carry, complete, and skip actions.
+- `/task codex <id> [instruction]` queues a task directly for the trusted Codex bridge.
 - `/task process continue` resumes the last task process for the current room and user.
 - `/task start` starts a general timer without linking it to a task.
 - `/task start deployment work` starts a general timer with an optional description.
