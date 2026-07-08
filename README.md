@@ -311,35 +311,42 @@ Jira integration is prepared through task fields (`jiraKey`, `jiraUrl`, `jiraSta
 
 ## Codex commands
 
-- `/codex <instruction>` queues an instruction for a trusted Codex bridge process.
+- `/codex <instruction>` queues an instruction for a trusted local Codex bridge process.
 - `/codex help` shows local help for the command.
+- `/task codex <id> [instruction]` queues a task for the same local Codex bridge.
 
-Start the bridge from the machine where Codex should run:
+Start the local bridge from the machine where Codex should run:
 
 ```powershell
-npm run codex:bridge -- --room testroom
+npm run codex:local -- --sandbox workspace-write --cwd C:\work\poc\chat
 ```
 
-By default, the bridge runs `codex exec` with a read-only sandbox. To allow Codex to edit the current repo, start it with an explicit sandbox and working directory:
+For another repo:
+
+```powershell
+npm run codex:local -- --sandbox workspace-write --cwd C:\xampp\htdocs\wp\zety
+```
+
+The browser posts Codex commands to `http://127.0.0.1:17345/commands`. The local bridge writes JSONL audit files under `<cwd>/.codex-queue/commands.jsonl` and `<cwd>/.codex-queue/results.jsonl`, then runs `codex exec`.
+
+Useful local options:
+
+```powershell
+npm run codex:local -- --local-port 17346
+npm run codex:local -- --timeout-ms 1800000
+npm run codex:local -- --queue-dir .codex-queue
+```
+
+To point the browser at a different local bridge URL:
+
+```js
+localStorage.setItem("codex-local-bridge-url", "http://127.0.0.1:17346")
+```
+
+Legacy Firebase polling is still available if needed:
 
 ```powershell
 npm run codex:bridge -- --room testroom --sandbox workspace-write --cwd C:\work\poc\chat
-```
-
-Useful options:
-
-```powershell
-npm run codex:bridge -- --room testroom --once
-npm run codex:bridge -- --room testroom --poll-ms 2000
-npm run codex:bridge -- --room testroom --timeout-ms 1800000
-```
-
-The browser app only writes queue documents to Firestore. The bridge is the only process that runs Codex, so do not run it for rooms you do not trust.
-
-If `/codex` or the bridge reports missing permissions, deploy the updated Firestore rules first:
-
-```powershell
-firebase deploy --only firestore:rules
 ```
 
 ## Codex pending task export

@@ -67,6 +67,8 @@ const composerCount = document.getElementById("composer-count");
 const messageInput = document.getElementById("message-input");
 const messageMaskOverlay = document.getElementById("message-mask-overlay");
 let commandSuggestions = document.getElementById("command-suggestions");
+const voiceTypeButton = document.getElementById("voice-type-button");
+const voiceRecordButton = document.getElementById("voice-record-button");
 const toggleMessageMaskButton = document.getElementById("toggle-message-mask");
 const sendButton = document.getElementById("send-button");
 const saveAdvancedSettingsButton = document.getElementById("save-advanced-settings");
@@ -86,6 +88,7 @@ const DEFAULT_ROOM_COMMANDS = {
 const DEFAULT_REVEAL_ALIASES = new Set(["whatisit", "whatitis"]);
 const ADVANCED_SETTINGS_COMMANDS = new Set(["advancesetting", "advancedsetting"]);
 const GET_LINK_COMMAND = "getlink";
+const EXPORT_MESSAGES_COMMAND = "/export";
 const TASK_COMMAND = "/task";
 const DAY_COMMAND = "/day";
 const CHANGE_COMMAND = "/change";
@@ -94,6 +97,7 @@ const QUERY_COMMAND = "/query";
 const PLUGIN_COMMAND = "/plugin";
 const LEAD_COMMAND = "/lead";
 const TEAM_COMMAND = "/team";
+const DEFAULT_CODEX_LOCAL_BRIDGE_URL = "http://127.0.0.1:17345";
 const COMMAND_AUTOCOMPLETE_LIMIT = 8;
 const TASK_LIST_LIMIT = 50;
 const CHANGELOG_LIST_LIMIT = 50;
@@ -115,6 +119,9 @@ const QUERY_REMINDER_AUDIENCE_ALL = "all";
 const QUERY_REMINDER_AUDIENCE_ASKER = "asker";
 const QUERY_REMINDER_AUDIENCE_OTHERS = "others";
 const DEFAULT_QUERY_REMINDER_AUDIENCE = QUERY_REMINDER_AUDIENCE_ALL;
+const SpeechRecognitionConstructor = window.SpeechRecognition || window.webkitSpeechRecognition || null;
+const VOICE_RECORDING_MAX_MS = 45 * 1000;
+const VOICE_RECORDING_MAX_BYTES = 700 * 1024;
 const QUERY_REMINDER_AUDIENCES = new Set([
   QUERY_REMINDER_AUDIENCE_ALL,
   QUERY_REMINDER_AUDIENCE_ASKER,
@@ -147,6 +154,11 @@ const TEAM_MEMBER_FIELDS = [
   "notes",
 ];
 const BASE_SLASH_COMMANDS = [
+  {
+    label: "/export 10",
+    insertText: "/export 10",
+    hint: "Export messages",
+  },
   {
     label: "/plugin enable leads",
     insertText: "/plugin enable leads",
@@ -487,6 +499,13 @@ const state = {
   isMessageInputMasked: false,
   messageMaskRevealIndex: null,
   messageMaskRevealTimeoutId: null,
+  speechRecognition: null,
+  isVoiceTyping: false,
+  voiceTypingBaseText: "",
+  mediaRecorder: null,
+  voiceRecordingChunks: [],
+  voiceRecordingTimeoutId: null,
+  voiceRecordingStartedAt: 0,
   messages: [],
   localMessages: [],
   hasHydratedRoom: false,
@@ -608,6 +627,8 @@ function wireEvents() {
   commandSuggestions.addEventListener("mousedown", handleCommandSuggestionMouseDown);
   messagesContainer.addEventListener("click", handleMessageActionClick);
   messagesContainer.addEventListener("scroll", handleMessageListScroll);
+  voiceTypeButton.addEventListener("click", toggleVoiceTyping);
+  voiceRecordButton.addEventListener("click", toggleVoiceRecording);
   toggleMessageMaskButton.addEventListener("click", toggleMessageInputMask);
   openSettingsButton.addEventListener("click", () => setAdvancedSettingsVisibility(true));
   saveAdvancedSettingsButton.addEventListener("click", saveAdvancedSettings);
@@ -1827,6 +1848,8 @@ function renderMessage(message, context = {}) {
     wrapper.append(renderTeamMemberViewMessage(message));
   } else if (message.type === "team-followup-list" && Array.isArray(message.followups)) {
     wrapper.append(renderTeamFollowupListMessage(message));
+  } else if (message.type === "voice" && message.audioDataUrl) {
+    wrapper.append(renderVoiceMessage(message));
   } else {
     const body = document.createElement("p");
     body.className = "message-text";
@@ -3359,6 +3382,28 @@ function setComposerState(enabled) {
   messageInput.disabled = !enabled;
   sendButton.disabled = !enabled;
   toggleMessageMaskButton.disabled = !enabled;
+  voiceTypeButton.disabled = !enabled || !SpeechRecognitionConstructor;
+  voiceRecordButton.disabled = !enabled || !navigator.mediaDevices?.getUserMedia || !window.MediaRecorder;
+}
+
+function renderVoiceMessage(message) {
+  const container = document.createElement("div");
+  container.className = "voice-message";
+
+  const audio = document.createElement("audio");
+  audio.controls = true;
+  audio.preload = "metadata";
+  audio.src = message.audioDataUrl;
+  container.append(audio);
+
+  if (message.text) {
+    const note = document.createElement("p");
+    note.className = "message-text voice-message-note";
+    note.textContent = message.text;
+    container.append(note);
+  }
+
+  return container;
 }
 
 function toggleMessageInputMask() {
@@ -3501,6 +3546,191 @@ function clearMessageMaskRevealTimer(resetRevealIndex = true) {
   if (resetRevealIndex) {
     state.messageMaskRevealIndex = null;
   }
+}
+
+function toggleVoiceTyping() {
+  if (state.isVoiceTyping) {
+    stopVoiceTyping();
+    return;
+  }
+
+  if (!SpeechRecognitionConstructor) {
+    setStatus("Voice typing is not supported in this browser.", "error");
+    return;
+  }
+
+  const recognition = new SpeechRecognitionConstructor();
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  recognition.lang = navigator.language || "en-US";
+
+  state.voiceTypingBaseText = messageInput.value.trimEnd();
+  recognition.onresult = (event) => {
+    let finalTranscript = "";
+    let interimTranscript = "";
+
+    for (let index = event.resultIndex; index < event.results.length; index += 1) {
+      const transcript = event.results[index][0]?.transcript || "";
+      if (event.results[index].isFinal) {
+        finalTranscript += transcript;
+      } else {
+        interimTranscript += transcript;
+      }
+    }
+
+    if (finalTranscript.trim()) {
+      state.voiceTypingBaseText = joinComposerText(state.voiceTypingBaseText, finalTranscript.trim());
+    }
+
+    setVoiceTypedText(interimTranscript.trim());
+  };
+
+  recognition.onerror = () => {
+    setStatus("Voice typing stopped.", "error");
+    stopVoiceTyping();
+  };
+  recognition.onend = () => {
+    stopVoiceTyping(false);
+  };
+
+  state.speechRecognition = recognition;
+  state.isVoiceTyping = true;
+  voiceTypeButton.textContent = "Stop voice";
+  voiceTypeButton.classList.add("active");
+  recognition.start();
+  setStatus("Listening for voice typing.", "success");
+}
+
+function setVoiceTypedText(interimText = "") {
+  messageInput.value = joinComposerText(state.voiceTypingBaseText, interimText);
+  messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
+  syncMessageMaskOverlay();
+  updateCommandAutocomplete();
+}
+
+function joinComposerText(baseText = "", nextText = "") {
+  const base = baseText.trimEnd();
+  const next = nextText.trim();
+
+  if (!base) {
+    return next;
+  }
+
+  if (!next) {
+    return base;
+  }
+
+  return `${base} ${next}`;
+}
+
+function stopVoiceTyping(stopRecognition = true) {
+  if (stopRecognition && state.speechRecognition) {
+    state.speechRecognition.stop();
+  }
+
+  state.speechRecognition = null;
+  state.isVoiceTyping = false;
+  state.voiceTypingBaseText = "";
+  voiceTypeButton.textContent = "Voice type";
+  voiceTypeButton.classList.remove("active");
+}
+
+async function toggleVoiceRecording() {
+  if (state.mediaRecorder?.state === "recording") {
+    state.mediaRecorder.stop();
+    return;
+  }
+
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    setStatus("Voice messages are not supported in this browser.", "error");
+    return;
+  }
+
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const mediaRecorder = new MediaRecorder(stream);
+    state.mediaRecorder = mediaRecorder;
+    state.voiceRecordingChunks = [];
+    state.voiceRecordingStartedAt = Date.now();
+
+    mediaRecorder.addEventListener("dataavailable", (event) => {
+      if (event.data?.size) {
+        state.voiceRecordingChunks.push(event.data);
+      }
+    });
+
+    mediaRecorder.addEventListener("stop", () => {
+      stream.getTracks().forEach((track) => track.stop());
+      void sendRecordedVoiceMessage(mediaRecorder.mimeType);
+    });
+
+    mediaRecorder.start();
+    voiceRecordButton.textContent = "Send voice";
+    voiceRecordButton.classList.add("recording");
+    setStatus("Recording voice message.", "success");
+    state.voiceRecordingTimeoutId = window.setTimeout(() => {
+      if (state.mediaRecorder?.state === "recording") {
+        state.mediaRecorder.stop();
+      }
+    }, VOICE_RECORDING_MAX_MS);
+  } catch (error) {
+    console.error(error);
+    setStatus("Microphone access was blocked.", "error");
+  }
+}
+
+async function sendRecordedVoiceMessage(mimeType) {
+  if (state.voiceRecordingTimeoutId) {
+    window.clearTimeout(state.voiceRecordingTimeoutId);
+    state.voiceRecordingTimeoutId = null;
+  }
+
+  voiceRecordButton.textContent = "Record voice";
+  voiceRecordButton.classList.remove("recording");
+
+  const chunks = state.voiceRecordingChunks;
+  state.voiceRecordingChunks = [];
+  state.mediaRecorder = null;
+
+  if (!chunks.length) {
+    setStatus("No voice was recorded.", "error");
+    return;
+  }
+
+  const audioBlob = new Blob(chunks, { type: mimeType || "audio/webm" });
+  if (audioBlob.size > VOICE_RECORDING_MAX_BYTES) {
+    setStatus("Voice message is too long. Try a shorter recording.", "error");
+    return;
+  }
+
+  try {
+    const audioDataUrl = await blobToDataUrl(audioBlob);
+    const durationSeconds = Math.max(1, Math.round((Date.now() - state.voiceRecordingStartedAt) / 1000));
+    await addDoc(collection(state.db, "rooms", state.roomId, "messages"), {
+      type: "voice",
+      text: `Voice message (${durationSeconds}s)`,
+      audioDataUrl,
+      audioMimeType: audioBlob.type,
+      audioSize: audioBlob.size,
+      durationSeconds,
+      senderId: state.profile.id,
+      senderName: getProfileDisplayName(),
+      createdAt: serverTimestamp(),
+    });
+    setStatus("Voice message sent.", "success");
+  } catch (error) {
+    console.error(error);
+    setStatus("Voice message send failed. Check room permissions.", "error");
+  }
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(String(reader.result || "")));
+    reader.addEventListener("error", () => reject(reader.error));
+    reader.readAsDataURL(blob);
+  });
 }
 
 function handleMessageInputKeydown(event) {
@@ -4076,6 +4306,11 @@ function isPrivacyHistoryCommand(command) {
     return true;
   }
 
+  if (normalized === EXPORT_MESSAGES_COMMAND || normalized.startsWith(`${EXPORT_MESSAGES_COMMAND} `)) {
+    exportChatMessages(text.trim().slice(EXPORT_MESSAGES_COMMAND.length).trim());
+    return true;
+  }
+
   if (matchesCommand(normalizedWithoutSlash, DEFAULT_ROOM_COMMANDS.enable, roomCommands.enable)) {
     return true;
   }
@@ -4492,7 +4727,7 @@ async function handleCodexCommand(text) {
 
   if (!prompt || prompt.toLowerCase() === "help") {
     postLocalCodexMessage(
-      "Codex commands:\n/codex summarize this repo\n/codex review the latest diff\n/codex fix the failing test\nStart the bridge with npm run codex:bridge -- --room <roomId>."
+      "Codex commands:\n/codex summarize this repo\n/codex review the latest diff\n/codex fix the failing test\n/task codex #abc123 fix this\nStart the local bridge with npm run codex:bridge -- --local-server --sandbox workspace-write --cwd <path>."
     );
     return;
   }
@@ -4501,6 +4736,30 @@ async function handleCodexCommand(text) {
 }
 
 async function queueCodexPrompt(prompt) {
+  const bridgeUrl = getCodexLocalBridgeUrl();
+  const response = await fetch(`${bridgeUrl}/commands`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      prompt,
+      roomId: state.roomId,
+      requestedBy: state.profile.id,
+      requestedByName: getProfileDisplayName(),
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(payload?.error || `Local Codex bridge returned HTTP ${response.status}.`);
+  }
+
+  postLocalCodexMessage(
+    `Queued local Codex command ${payload.shortId || formatCodexCommandId(payload.id)} from ${getProfileDisplayName()}.\n${prompt}`
+  );
+  setStatus("Local Codex command queued.", "success");
+}
+
+async function queueFirebaseCodexPrompt(prompt) {
   const commandRef = await addDoc(collection(state.db, "rooms", state.roomId, "codexCommands"), {
     prompt,
     status: "queued",
@@ -4518,6 +4777,10 @@ async function queueCodexPrompt(prompt) {
     `Queued Codex command ${formatCodexCommandId(commandRef.id)} from ${getProfileDisplayName()}.\n${prompt}`
   );
   setStatus("Codex command queued.", "success");
+}
+
+function getCodexLocalBridgeUrl() {
+  return localStorage.getItem("codex-local-bridge-url") || DEFAULT_CODEX_LOCAL_BRIDGE_URL;
 }
 
 async function queueTaskForCodex(payload) {
@@ -11115,6 +11378,99 @@ function hideAllPrivacyMessages() {
   renderMessages();
   persistSession();
   setStatus("All messages hidden.", "success");
+}
+
+function exportChatMessages(input = "") {
+  const normalizedInput = input.trim().toLowerCase();
+  const count =
+    normalizedInput === "all"
+      ? state.messages.length
+      : Number.parseInt(normalizedInput || "10", 10);
+
+  if (!Number.isInteger(count) || count <= 0) {
+    setStatus("Use /export 10 or /export all.", "error");
+    return;
+  }
+
+  const messages = state.messages.slice(-Math.min(count, state.messages.length));
+
+  if (messages.length === 0) {
+    setStatus("No messages to export.", "error");
+    return;
+  }
+
+  const exportedAt = new Date();
+  const lines = [
+    "OpenBox chat export",
+    `Room: ${state.roomId || "unknown"}`,
+    `Exported: ${formatExportTimestamp(exportedAt)}`,
+    `Messages: ${messages.length}`,
+    "",
+    ...messages.map(formatMessageForExport),
+    "",
+  ];
+  const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${sanitizeExportFilename(state.roomId || "chat")}_${formatExportFilenameDate(exportedAt)}.txt`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  setStatus(`${messages.length} message${messages.length === 1 ? "" : "s"} exported.`, "success");
+}
+
+function formatMessageForExport(message) {
+  const timestamp = formatExportTimestamp(getMessageExportDate(message));
+  const sender = message.senderName || "Anonymous";
+  const text = getMessageExportText(message);
+  return `[${timestamp}] ${sender}: ${text}`;
+}
+
+function getMessageExportText(message) {
+  if (message.text) {
+    return String(message.text).replace(/\r?\n/g, "\n  ");
+  }
+
+  if (message.audioDataUrl) {
+    return `[voice message: ${message.audioMimeType || "audio"}]`;
+  }
+
+  return `[${message.type || "message"}]`;
+}
+
+function getMessageExportDate(message) {
+  if (message.createdAt instanceof Date) {
+    return message.createdAt;
+  }
+
+  return message.createdAt?.toDate?.() || new Date();
+}
+
+function formatExportTimestamp(date) {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
+}
+
+function formatExportFilenameDate(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  const seconds = String(date.getSeconds()).padStart(2, "0");
+  return `${year}${month}${day}_${hours}${minutes}${seconds}`;
+}
+
+function sanitizeExportFilename(value) {
+  return String(value || "chat")
+    .trim()
+    .replace(/[^a-z0-9_-]+/gi, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 60) || "chat";
 }
 
 function disablePrivacyMode(messageLimit = null) {

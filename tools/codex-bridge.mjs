@@ -1,13 +1,18 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
+import { appendFile, mkdir } from "node:fs/promises";
+import { createServer } from "node:http";
 import { join } from "node:path";
 import { firebaseConfig } from "../firebase-config.js";
 
 const DEFAULT_POLL_MS = 5000;
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_OUTPUT_CHARS = 12000;
+const DEFAULT_LOCAL_HOST = "127.0.0.1";
+const DEFAULT_LOCAL_PORT = 17345;
+const DEFAULT_QUEUE_DIR = ".codex-queue";
 const DEFAULT_CODEX_BIN_CANDIDATES = [
   "/Applications/Codex.app/Contents/Resources/codex",
   "codex",
@@ -28,8 +33,13 @@ async function main() {
 
   const roomId = options.room || process.env.ROOM_ID;
 
-  if (!roomId) {
+  if (!roomId && !options.localServer) {
     throw new Error("Missing room id. Use --room <roomId> or set ROOM_ID.");
+  }
+
+  if (options.localServer) {
+    await startLocalServer({ roomId, options });
+    return;
   }
 
   const auth = await signInAnonymously(firebaseConfig.apiKey);
@@ -57,9 +67,13 @@ function parseArgs(args) {
     codexBin: findDefaultCodexBin(),
     cwd: process.cwd(),
     help: false,
+    localHost: DEFAULT_LOCAL_HOST,
+    localPort: DEFAULT_LOCAL_PORT,
+    localServer: false,
     maxOutputChars: DEFAULT_MAX_OUTPUT_CHARS,
     once: false,
     pollMs: DEFAULT_POLL_MS,
+    queueDir: DEFAULT_QUEUE_DIR,
     sandbox: "read-only",
     timeoutMs: DEFAULT_TIMEOUT_MS,
   };
@@ -74,6 +88,11 @@ function parseArgs(args) {
 
     if (arg === "--once") {
       options.once = true;
+      continue;
+    }
+
+    if (arg === "--local-server") {
+      options.localServer = true;
       continue;
     }
 
@@ -97,6 +116,24 @@ function parseArgs(args) {
 
     if (arg === "--sandbox") {
       options.sandbox = readValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--local-host") {
+      options.localHost = readValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--local-port") {
+      options.localPort = readPositiveInteger(readValue(args, index, arg), arg);
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--queue-dir") {
+      options.queueDir = readValue(args, index, arg);
       index += 1;
       continue;
     }
@@ -155,6 +192,10 @@ Options:
       --codex-bin <path>       Codex executable. Auto-detects the macOS app binary.
       --sandbox <mode>         Codex sandbox. Defaults to read-only.
                                Common values: read-only, workspace-write, danger-full-access.
+      --local-server           Start a local HTTP bridge instead of polling Firebase.
+      --local-host <host>      Local bridge host. Defaults to ${DEFAULT_LOCAL_HOST}.
+      --local-port <port>      Local bridge port. Defaults to ${DEFAULT_LOCAL_PORT}.
+      --queue-dir <path>       Local JSONL queue/result directory. Defaults to ${DEFAULT_QUEUE_DIR}.
       --poll-ms <number>       Queue polling interval. Defaults to ${DEFAULT_POLL_MS}.
       --timeout-ms <number>    Max runtime per Codex command. Defaults to ${DEFAULT_TIMEOUT_MS}.
       --max-output-chars <n>   Max result text posted to chat. Defaults to ${DEFAULT_MAX_OUTPUT_CHARS}.
@@ -164,8 +205,171 @@ Options:
 Examples:
   npm run codex:bridge -- --room team-standup
   npm run codex:bridge -- --room team-standup --sandbox workspace-write --cwd /Users/lalitj/work/iw/chat
+  npm run codex:bridge -- --local-server --sandbox workspace-write --cwd C:/work/project
   npm run codex:bridge -- --room team-standup --codex-bin /Applications/Codex.app/Contents/Resources/codex
 `);
+}
+
+async function startLocalServer({ roomId, options }) {
+  const queueDir = join(options.cwd, options.queueDir);
+  await mkdir(queueDir, { recursive: true });
+
+  const server = createServer((request, response) => {
+    handleLocalRequest(request, response, { roomId, queueDir, options }).catch((error) => {
+      sendJson(response, 500, { error: error.message });
+    });
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(options.localPort, options.localHost, resolve);
+  });
+
+  console.log(
+    `Local Codex bridge listening on http://${options.localHost}:${options.localPort} with ${options.sandbox} sandbox from ${options.cwd}`
+  );
+}
+
+async function handleLocalRequest(request, response, context) {
+  setCorsHeaders(response);
+
+  if (request.method === "OPTIONS") {
+    response.writeHead(204);
+    response.end();
+    return;
+  }
+
+  if (request.method === "GET" && request.url === "/health") {
+    sendJson(response, 200, { ok: true });
+    return;
+  }
+
+  if (request.method === "GET" && request.url === "/results") {
+    response.writeHead(200, {
+      "Access-Control-Allow-Origin": "*",
+      "Content-Type": "application/x-ndjson; charset=utf-8",
+    });
+    const resultsPath = join(context.queueDir, "results.jsonl");
+    if (!existsSync(resultsPath)) {
+      response.end("");
+      return;
+    }
+    createReadStream(resultsPath).pipe(response);
+    return;
+  }
+
+  if (request.method !== "POST" || request.url !== "/commands") {
+    sendJson(response, 404, { error: "Not found." });
+    return;
+  }
+
+  const body = await readRequestJson(request);
+  const prompt = String(body.prompt || "").trim();
+
+  if (!prompt) {
+    sendJson(response, 400, { error: "Missing prompt." });
+    return;
+  }
+
+  const command = {
+    id: createLocalCommandId(),
+    prompt,
+    requestedByName: body.requestedByName || "Local user",
+    roomId: body.roomId || context.roomId || null,
+    createdAt: new Date().toISOString(),
+  };
+
+  await appendJsonLine(join(context.queueDir, "commands.jsonl"), {
+    ...command,
+    status: "queued",
+  });
+
+  processLocalCommand(command, context).catch((error) => {
+    console.error(`Local command ${formatCommandId(command.id)} failed: ${error.message}`);
+  });
+
+  sendJson(response, 202, {
+    id: command.id,
+    shortId: formatCommandId(command.id),
+    status: "queued",
+  });
+}
+
+async function processLocalCommand(command, { queueDir, options }) {
+  const shortId = formatCommandId(command.id);
+  console.log(`Running local ${shortId}: ${command.prompt}`);
+  await appendJsonLine(join(queueDir, "results.jsonl"), {
+    ...command,
+    status: "running",
+    startedAt: new Date().toISOString(),
+  });
+
+  const result = await runCodex(command.prompt, options);
+  const completedAt = new Date().toISOString();
+  const resultText = truncateText(
+    result.ok
+      ? result.stdout.trim() || "Codex finished without a final message."
+      : [result.error, result.stderr, result.stdout].filter(Boolean).join("\n\n").trim() ||
+          `Codex exited with code ${result.exitCode}.`,
+    options.maxOutputChars
+  );
+
+  if (result.ok) {
+    await maybeAppendChangelog(command, resultText, options);
+  }
+
+  await appendJsonLine(join(queueDir, "results.jsonl"), {
+    ...command,
+    status: result.ok ? "completed" : "failed",
+    completedAt,
+    result: result.ok ? resultText : null,
+    error: result.ok ? null : resultText,
+  });
+
+  console.log(`${result.ok ? "Completed" : "Failed"} local ${shortId}`);
+}
+
+function setCorsHeaders(response) {
+  response.setHeader("Access-Control-Allow-Origin", "*");
+  response.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  response.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+function sendJson(response, statusCode, payload) {
+  setCorsHeaders(response);
+  response.writeHead(statusCode, { "Content-Type": "application/json; charset=utf-8" });
+  response.end(JSON.stringify(payload));
+}
+
+function readRequestJson(request) {
+  return new Promise((resolve, reject) => {
+    let body = "";
+
+    request.setEncoding("utf8");
+    request.on("data", (chunk) => {
+      body += chunk;
+      if (body.length > 1024 * 1024) {
+        reject(new Error("Request body too large."));
+        request.destroy();
+      }
+    });
+    request.on("end", () => {
+      try {
+        resolve(body ? JSON.parse(body) : {});
+      } catch {
+        reject(new Error("Invalid JSON body."));
+      }
+    });
+    request.on("error", reject);
+  });
+}
+
+async function appendJsonLine(filePath, value) {
+  await appendFile(filePath, `${JSON.stringify(value)}\n`, "utf8");
+}
+
+function createLocalCommandId() {
+  return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
 
 async function signInAnonymously(apiKey) {
