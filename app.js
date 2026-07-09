@@ -160,6 +160,11 @@ const BASE_SLASH_COMMANDS = [
     hint: "Export messages",
   },
   {
+    label: "/export file 10",
+    insertText: "/export file 10",
+    hint: "Save txt file",
+  },
+  {
     label: "/plugin enable leads",
     insertText: "/plugin enable leads",
     hint: "Enable leads",
@@ -517,6 +522,7 @@ const state = {
   unreadMessageIds: [],
   hiddenMessageIds: [],
   previewMessageIds: [],
+  exportFileHandle: null,
   autocompleteRequestId: 0,
   isPrivacyEnabled: false,
   isPrivacyPreviewVisible: false,
@@ -928,7 +934,7 @@ function syncGroupUnreadCountListeners(rooms = state.availableGroups) {
     return;
   }
 
-  const roomIds = new Set(rooms.map((room) => room.id).filter(Boolean));
+  const roomIds = new Set(rooms.map((room) => room.id).filter((roomId) => roomId && roomId !== state.roomId));
 
   state.unsubscribeGroupUnreadCounts.forEach((unsubscribe, roomId) => {
     if (!roomIds.has(roomId)) {
@@ -4307,7 +4313,6 @@ function isPrivacyHistoryCommand(command) {
   }
 
   if (normalized === EXPORT_MESSAGES_COMMAND || normalized.startsWith(`${EXPORT_MESSAGES_COMMAND} `)) {
-    exportChatMessages(text.trim().slice(EXPORT_MESSAGES_COMMAND.length).trim());
     return true;
   }
 
@@ -4429,6 +4434,11 @@ function handleLocalCommand(text) {
 
   if (normalized === GET_LINK_COMMAND) {
     void generateShareLink();
+    return true;
+  }
+
+  if (normalized === EXPORT_MESSAGES_COMMAND || normalized.startsWith(`${EXPORT_MESSAGES_COMMAND} `)) {
+    void exportChatMessages(text.trim().slice(EXPORT_MESSAGES_COMMAND.length).trim());
     return true;
   }
 
@@ -7532,8 +7542,10 @@ async function getTimerUnavailableReason() {
 
 async function pauseActiveTimersForCurrentUser(reason = "pause") {
   const stoppedAt = new Date();
-  const [tasks, activeGeneralTimer] = await Promise.all([loadRoomTasks(), findActiveGeneralTimer()]);
-  const activeTasks = tasks.filter((task) => task.activeTimerStartedAt && isCurrentUserTaskTimerOwner(task));
+  const [activeTasks, activeGeneralTimer] = await Promise.all([
+    loadCurrentUserActiveTaskTimers(),
+    findActiveGeneralTimer(),
+  ]);
   let pausedCount = 0;
 
   for (const task of activeTasks) {
@@ -9007,6 +9019,25 @@ async function loadRoomTasks() {
   }));
 }
 
+async function loadCurrentUserActiveTaskTimers() {
+  if (!state.profile?.id) {
+    return [];
+  }
+
+  const activeTasksQuery = query(
+    collection(state.db, "rooms", state.roomId, "tasks"),
+    where("activeTimerStartedBy", "==", state.profile.id)
+  );
+  const tasksSnapshot = await getDocs(activeTasksQuery);
+
+  return tasksSnapshot.docs
+    .map((taskDoc) => ({
+      id: taskDoc.id,
+      ...taskDoc.data(),
+    }))
+    .filter((task) => task.status !== "complete" && task.activeTimerStartedAt && isCurrentUserTaskTimerOwner(task));
+}
+
 async function loadTasksByIds(taskIds) {
   const tasks = [];
 
@@ -10022,16 +10053,10 @@ async function syncActiveTaskTimerReminders() {
       return;
     }
 
-    const [tasks, activeGeneralTimer] = await Promise.all([
-      loadRoomTasks(),
+    const [activeOwnedTasks, activeGeneralTimer] = await Promise.all([
+      loadCurrentUserActiveTaskTimers(),
       findActiveGeneralTimer(),
     ]);
-    const activeOwnedTasks = tasks.filter(
-      (task) =>
-        task.status !== "complete" &&
-        task.activeTimerStartedAt &&
-        isCurrentUserTaskTimerOwner(task)
-    );
     const activeReminderIds = new Set();
 
     activeOwnedTasks.forEach((task) => {
@@ -10384,8 +10409,8 @@ async function shouldRemindForIdleWorkDay(workDay = null) {
       return false;
     }
 
-    const tasks = await loadRoomTasks();
-    return !tasks.some((task) => task.activeTimerStartedAt && isCurrentUserTaskTimerOwner(task));
+    const activeTasks = await loadCurrentUserActiveTaskTimers();
+    return activeTasks.length === 0;
   } catch (error) {
     console.error("Idle task reminder check failed:", error);
     return false;
@@ -11380,15 +11405,17 @@ function hideAllPrivacyMessages() {
   setStatus("All messages hidden.", "success");
 }
 
-function exportChatMessages(input = "") {
-  const normalizedInput = input.trim().toLowerCase();
+async function exportChatMessages(input = "") {
+  const parts = input.trim().split(/\s+/).filter(Boolean);
+  const wantsSystemFile = parts[0]?.toLowerCase() === "file";
+  const normalizedInput = wantsSystemFile ? (parts[1] || "10").toLowerCase() : input.trim().toLowerCase();
   const count =
     normalizedInput === "all"
       ? state.messages.length
       : Number.parseInt(normalizedInput || "10", 10);
 
   if (!Number.isInteger(count) || count <= 0) {
-    setStatus("Use /export 10 or /export all.", "error");
+    setStatus("Use /export 10, /export all, /export file 10, or /export file all.", "error");
     return;
   }
 
@@ -11408,17 +11435,67 @@ function exportChatMessages(input = "") {
     "",
     ...messages.map(formatMessageForExport),
     "",
-  ];
-  const blob = new Blob([lines.join("\n")], { type: "text/plain;charset=utf-8" });
+  ].join("\n");
+
+  if (wantsSystemFile) {
+    try {
+      const exportTarget = await writeExportToSystemFile(lines);
+      setStatus(
+        exportTarget === "file"
+          ? `${messages.length} message${messages.length === 1 ? "" : "s"} written to export file.`
+          : `${messages.length} message${messages.length === 1 ? "" : "s"} downloaded.`,
+        "success"
+      );
+    } catch (error) {
+      if (error?.name === "AbortError") {
+        setStatus("Export canceled.", "error");
+        return;
+      }
+
+      console.error("Export failed:", error);
+      setStatus("Export failed. Check browser file permissions.", "error");
+    }
+    return;
+  }
+
+  downloadExportText(lines);
+  setStatus(`${messages.length} message${messages.length === 1 ? "" : "s"} exported.`, "success");
+}
+
+async function writeExportToSystemFile(text) {
+  if (!window.showSaveFilePicker) {
+    downloadExportText(text);
+    return "download";
+  }
+
+  if (!state.exportFileHandle) {
+    state.exportFileHandle = await window.showSaveFilePicker({
+      suggestedName: "openbox-chat-export.txt",
+      types: [
+        {
+          description: "Text file",
+          accept: { "text/plain": [".txt"] },
+        },
+      ],
+    });
+  }
+
+  const writable = await state.exportFileHandle.createWritable();
+  await writable.write(text);
+  await writable.close();
+  return "file";
+}
+
+function downloadExportText(text) {
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `${sanitizeExportFilename(state.roomId || "chat")}_${formatExportFilenameDate(exportedAt)}.txt`;
+  link.download = "openbox-chat-export.txt";
   document.body.append(link);
   link.click();
   link.remove();
-  URL.revokeObjectURL(url);
-  setStatus(`${messages.length} message${messages.length === 1 ? "" : "s"} exported.`, "success");
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 function formatMessageForExport(message) {
