@@ -160,16 +160,40 @@ async function loadMessages({ projectId, roomId, token, limit }) {
     },
     body: JSON.stringify({ structuredQuery }),
   });
-  const payload = await response.json();
+  const payload = await readJsonResponse(response);
 
   if (!response.ok) {
-    throw new Error(payload?.error?.message || "Could not load messages.");
+    throw new Error(formatFirebaseError(payload, response.status, "Could not load messages."));
   }
 
   return payload
     .filter((row) => row.document)
     .map((row) => parseDocument(row.document))
     .sort((left, right) => getTime(left.createdAt) - getTime(right.createdAt));
+}
+
+async function readJsonResponse(response) {
+  const text = await response.text();
+
+  if (!text) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { raw: text };
+  }
+}
+
+function formatFirebaseError(payload, status, fallback) {
+  const message =
+    payload?.error?.message ||
+    payload?.message ||
+    payload?.raw ||
+    (Array.isArray(payload) ? payload.map((row) => row?.error?.message).filter(Boolean).join("; ") : "");
+
+  return message ? `${fallback} (${status}): ${message}` : `${fallback} (${status}).`;
 }
 
 function parseDocument(document) {

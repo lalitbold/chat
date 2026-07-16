@@ -94,6 +94,8 @@ const DAY_COMMAND = "/day";
 const CHANGE_COMMAND = "/change";
 const CODEX_COMMAND = "/codex";
 const QUERY_COMMAND = "/query";
+const SELF_REMINDER_COMMAND = "/remind";
+const DEBUG_COMMAND = "/debug";
 const PLUGIN_COMMAND = "/plugin";
 const LEAD_COMMAND = "/lead";
 const TEAM_COMMAND = "/team";
@@ -109,12 +111,13 @@ const MESSAGE_REACTION_OPTIONS = ["👍", "✅", "👀", "🙌"];
 const TASK_TIMER_REMINDER_MS = 25 * 60 * 1000;
 const TASK_TIMER_REPEAT_REMINDER_MS = 5 * 60 * 1000;
 const TASK_TIMER_MAX_UNANSWERED_REMINDERS = 2;
-const TASK_TIMER_REMINDER_SYNC_MS = 60 * 1000;
+const TASK_TIMER_REMINDER_SYNC_MS = 5 * 60 * 1000;
 const DAY_IDLE_TASK_REMINDER_MS = 5 * 60 * 1000;
 const DAY_IDLE_TASK_REMINDER_LOCK_MS = 30 * 1000;
 const QUERY_REMINDER_MS = 10 * 60 * 1000;
-const QUERY_REMINDER_SYNC_MS = 60 * 1000;
+const QUERY_REMINDER_SYNC_MS = 5 * 60 * 1000;
 const QUERY_REMINDER_MAX_MS = 21 * 24 * 60 * 60 * 1000;
+const SELF_REMINDER_MAX_MS = QUERY_REMINDER_MAX_MS;
 const QUERY_REMINDER_AUDIENCE_ALL = "all";
 const QUERY_REMINDER_AUDIENCE_ASKER = "asker";
 const QUERY_REMINDER_AUDIENCE_OTHERS = "others";
@@ -449,6 +452,36 @@ const BASE_SLASH_COMMANDS = [
     insertText: "/query close ",
     hint: "Close query",
   },
+  {
+    label: "/remind 15m <note>",
+    insertText: "/remind 15m ",
+    hint: "Self reminder",
+  },
+  {
+    label: "/remind after 1h <note>",
+    insertText: "/remind after 1h ",
+    hint: "Self reminder",
+  },
+  {
+    label: "/remind list",
+    insertText: "/remind list",
+    hint: "Self reminders",
+  },
+  {
+    label: "/remind cancel <id>",
+    insertText: "/remind cancel ",
+    hint: "Cancel reminder",
+  },
+  {
+    label: "/debug reads",
+    insertText: "/debug reads",
+    hint: "Read analytics",
+  },
+  {
+    label: "/debug reads reset",
+    insertText: "/debug reads reset",
+    hint: "Reset reads",
+  },
 ];
 const PRIVACY_INVITE_COMMAND = "/privacy invite";
 const PRIVACY_HIDE_ALL_COMMANDS = new Set(["/privacy hideall", "/privacy hide all"]);
@@ -469,6 +502,7 @@ const SESSION_PERSIST_DELAY_MS = 250;
 const PRIVACY_FEATURE_CONFIG_COLLECTION = "appSettings";
 const PRIVACY_FEATURE_CONFIG_ID = "privacyMode";
 const NOTIFICATIONS_ENABLED_KEY = "openbox-notifications-enabled";
+const READ_ANALYTICS_STORAGE_KEY = "openbox-read-analytics";
 
 if (!commandSuggestions) {
   commandSuggestions = document.createElement("div");
@@ -526,6 +560,7 @@ const state = {
   autocompleteRequestId: 0,
   isPrivacyEnabled: false,
   isPrivacyPreviewVisible: false,
+  isRemoteSyncPaused: false,
   privacyPreviewTimeoutId: null,
   unsubscribeMessages: null,
   unsubscribePrivacyFeatureConfig: null,
@@ -547,6 +582,8 @@ const state = {
   taskTimerReminderSyncIntervalId: null,
   queryReminderTimeouts: new Map(),
   queryReminderSyncIntervalId: null,
+  selfReminderTimeouts: new Map(),
+  readAnalytics: loadReadAnalytics(),
   teamFollowupReminderTimeouts: new Map(),
   teamFollowupReminderSyncIntervalId: null,
   taskProcessSession: null,
@@ -567,6 +604,103 @@ const state = {
 };
 
 boot();
+
+async function trackedGetDoc(feature, ref) {
+  const snapshot = await getDoc(ref);
+  recordReadAnalytics(feature, 1, "getDoc");
+  return snapshot;
+}
+
+async function trackedGetDocs(feature, queryRef) {
+  const snapshot = await getDocs(queryRef);
+  recordReadAnalytics(feature, Math.max(snapshot.size || 0, 1), "getDocs");
+  return snapshot;
+}
+
+function trackedOnSnapshot(feature, target, onNext, onError) {
+  let isInitialSnapshot = true;
+
+  return onSnapshot(
+    target,
+    (snapshot) => {
+      const readCount = isInitialSnapshot
+        ? Math.max(snapshot.size ?? (snapshot.exists?.() ? 1 : 0), 1)
+        : snapshot.docChanges?.().length || 0;
+      isInitialSnapshot = false;
+      recordReadAnalytics(feature, readCount, "onSnapshot");
+      onNext(snapshot);
+    },
+    onError
+  );
+}
+
+function recordReadAnalytics(feature, readCount, source) {
+  const safeFeature = feature || "unknown";
+  const safeReadCount = Number.isFinite(readCount) ? Math.max(0, readCount) : 0;
+  const current = state.readAnalytics[safeFeature] || {
+    reads: 0,
+    calls: 0,
+    getDoc: 0,
+    getDocs: 0,
+    onSnapshot: 0,
+  };
+
+  current.reads += safeReadCount;
+  current.calls += 1;
+  current[source] = (current[source] || 0) + 1;
+  current.lastAt = new Date().toISOString();
+  state.readAnalytics[safeFeature] = current;
+  saveReadAnalytics();
+}
+
+function loadReadAnalytics() {
+  try {
+    const analytics = JSON.parse(localStorage.getItem(READ_ANALYTICS_STORAGE_KEY) || "{}");
+    return analytics && typeof analytics === "object" && !Array.isArray(analytics) ? analytics : {};
+  } catch (error) {
+    console.warn("Read analytics could not be loaded:", error);
+    return {};
+  }
+}
+
+function saveReadAnalytics() {
+  try {
+    localStorage.setItem(READ_ANALYTICS_STORAGE_KEY, JSON.stringify(state.readAnalytics));
+  } catch (error) {
+    console.warn("Read analytics could not be saved:", error);
+  }
+}
+
+function resetReadAnalytics() {
+  state.readAnalytics = {};
+  saveReadAnalytics();
+}
+
+function formatReadAnalyticsReport() {
+  const entries = Object.entries(state.readAnalytics)
+    .map(([feature, stats]) => ({
+      feature,
+      reads: stats.reads || 0,
+      calls: stats.calls || 0,
+      getDoc: stats.getDoc || 0,
+      getDocs: stats.getDocs || 0,
+      onSnapshot: stats.onSnapshot || 0,
+      lastAt: stats.lastAt || "",
+    }))
+    .sort((left, right) => right.reads - left.reads);
+
+  if (entries.length === 0) {
+    return "No read analytics recorded yet.";
+  }
+
+  console.table(entries);
+  return [
+    "Estimated Firestore reads:",
+    ...entries.map((entry) => `${entry.feature}: ${entry.reads} reads / ${entry.calls} calls`),
+    "",
+    "Details printed to console.table.",
+  ].join("\n");
+}
 
 async function boot() {
   registerServiceWorker();
@@ -800,7 +934,7 @@ async function refreshAvailableGroups() {
     const rooms = [...state.joinedRooms];
     const roomsRef = collection(state.db, "rooms");
     const joinedRoomsQuery = query(roomsRef, where("members", "array-contains", state.authUser.uid));
-    const joinedSnapshot = await getDocs(joinedRoomsQuery);
+    const joinedSnapshot = await trackedGetDocs("availableGroups.joined", joinedRoomsQuery);
 
     mergeAvailableRooms(
       rooms,
@@ -809,7 +943,7 @@ async function refreshAvailableGroups() {
 
     if (passcode) {
       const passcodeRoomsQuery = query(roomsRef, where("passcode", "==", passcode));
-      const passcodeSnapshot = await getDocs(passcodeRoomsQuery);
+      const passcodeSnapshot = await trackedGetDocs("availableGroups.passcode", passcodeRoomsQuery);
       mergeAvailableRooms(
         rooms,
         passcodeSnapshot.docs.map((roomDoc) => createAvailableRoom(roomDoc.id, roomDoc.data(), "available"))
@@ -929,7 +1063,7 @@ function handleAvailableGroupClick(event) {
 }
 
 function syncGroupUnreadCountListeners(rooms = state.availableGroups) {
-  if (!state.db || !getCurrentUserId()) {
+  if (!state.db || !getCurrentUserId() || state.isRemoteSyncPaused || document.visibilityState !== "visible") {
     clearGroupUnreadCountListeners();
     return;
   }
@@ -973,7 +1107,8 @@ function subscribeToGroupUnreadCount(roomId) {
   );
   const receiptRef = doc(state.db, "rooms", roomId, "readReceipts", userId);
 
-  const unsubscribeMessages = onSnapshot(
+  const unsubscribeMessages = trackedOnSnapshot(
+    "unreadGroups.messages",
     messagesQuery,
     (snapshot) => {
       unreadState.messages = snapshot.docs.map((messageDoc) => ({
@@ -987,7 +1122,8 @@ function subscribeToGroupUnreadCount(roomId) {
     }
   );
 
-  const unsubscribeReceipt = onSnapshot(
+  const unsubscribeReceipt = trackedOnSnapshot(
+    "unreadGroups.receipt",
     receiptRef,
     (snapshot) => {
       unreadState.receipt = snapshot.exists() ? snapshot.data() : null;
@@ -1365,7 +1501,8 @@ function subscribeToPrivacyFeatureConfig() {
     state.unsubscribePrivacyFeatureConfig();
   }
 
-  state.unsubscribePrivacyFeatureConfig = onSnapshot(
+  state.unsubscribePrivacyFeatureConfig = trackedOnSnapshot(
+    "privacyConfig",
     getPrivacyFeatureConfigRef(),
     async (snapshot) => {
       if (!snapshot.exists()) {
@@ -1402,7 +1539,7 @@ function subscribeToPrivacyFeatureConfig() {
 
 async function ensureRoomAccess(roomId, roomPasscode) {
   const roomRef = doc(state.db, "rooms", roomId);
-  const roomSnapshot = await getDoc(roomRef);
+  const roomSnapshot = await trackedGetDoc("roomAccess", roomRef);
 
   if (!roomSnapshot.exists()) {
     const roomData = {
@@ -1448,6 +1585,7 @@ async function connectToRoom(roomId, roomPasscode = "", roomData = null) {
   state.pendingInvitePrivacyMode = pendingInvitePrivacyMode;
   state.roomId = roomId;
   state.roomPasscode = roomPasscode;
+  state.isRemoteSyncPaused = false;
   applyRoomData(roomData);
   state.isAdvancedSettingsVisible = false;
   state.hasHydratedRoom = false;
@@ -1457,6 +1595,7 @@ async function connectToRoom(roomId, roomPasscode = "", roomData = null) {
   resetCommandHistoryNavigation();
   state.taskProcessSession = null;
   state.queryReminderTimeouts = new Map();
+  state.selfReminderTimeouts = new Map();
   state.oldestMessageCursor = null;
   state.hasMoreMessages = true;
   state.isLoadingOlderMessages = false;
@@ -1486,6 +1625,7 @@ async function connectToRoom(roomId, roomPasscode = "", roomData = null) {
   scheduleDayIdleTaskReminder();
   startTaskTimerReminderSync();
   startQueryReminderSync();
+  scheduleSelfReminders();
   startTeamFollowupReminderSync();
   void announceTodaysLeaves();
   void postDailyTaskRolloverReview({ auto: true });
@@ -1499,7 +1639,7 @@ async function loadInitialMessages(roomId) {
     orderBy("createdAt", "desc"),
     limit(MESSAGES_PAGE_SIZE)
   );
-  const snapshot = await getDocs(initialQuery);
+  const snapshot = await trackedGetDocs("messages.initial", initialQuery);
   const docs = snapshot.docs;
 
   state.messages = docs
@@ -1519,10 +1659,71 @@ async function loadInitialMessages(roomId) {
   renderMessages();
 }
 
+function pauseRemoteSync() {
+  if (state.isRemoteSyncPaused) {
+    return;
+  }
+
+  state.isRemoteSyncPaused = true;
+
+  if (state.unsubscribeRoom) {
+    state.unsubscribeRoom();
+    state.unsubscribeRoom = null;
+  }
+
+  if (state.unsubscribeMessages) {
+    state.unsubscribeMessages();
+    state.unsubscribeMessages = null;
+  }
+
+  if (state.unsubscribeReadReceipts) {
+    state.unsubscribeReadReceipts();
+    state.unsubscribeReadReceipts = null;
+  }
+
+  clearReadReceiptTimer();
+  clearGroupUnreadCountListeners();
+  clearTaskTimerReminderSync();
+  clearTaskTimerReminders();
+  clearQueryReminderSync();
+  clearQueryReminders();
+  clearTeamFollowupReminderSync();
+  clearTeamFollowupReminders();
+}
+
+function resumeRemoteSync() {
+  if (!state.isRemoteSyncPaused || !state.roomId || !state.db) {
+    return;
+  }
+
+  state.isRemoteSyncPaused = false;
+
+  if (!state.unsubscribeRoom) {
+    subscribeToRoom(state.roomId);
+  }
+
+  if (!state.unsubscribeReadReceipts) {
+    subscribeToReadReceipts(state.roomId);
+  }
+
+  if (!state.unsubscribeMessages) {
+    subscribeToLatestMessages(state.roomId);
+  }
+
+  syncGroupUnreadCountListeners();
+  startTaskTimerReminderSync();
+  startQueryReminderSync();
+  if (isRoomPluginEnabled(PLUGIN_TEAM)) {
+    startTeamFollowupReminderSync();
+  }
+  queueReadReceiptSync();
+}
+
 function subscribeToRoom(roomId) {
   const roomRef = doc(state.db, "rooms", roomId);
 
-  state.unsubscribeRoom = onSnapshot(
+  state.unsubscribeRoom = trackedOnSnapshot(
+    "room.settings",
     roomRef,
     (snapshot) => {
       if (!snapshot.exists()) {
@@ -1547,8 +1748,10 @@ function applyRoomData(roomData = {}) {
     state.roomId,
     state.groupQueryReminderAudience
   );
-  void syncQueryReminders();
-  if (isRoomPluginEnabled(PLUGIN_TEAM)) {
+  if (!state.isRemoteSyncPaused && document.visibilityState === "visible") {
+    void syncQueryReminders();
+  }
+  if (!state.isRemoteSyncPaused && document.visibilityState === "visible" && isRoomPluginEnabled(PLUGIN_TEAM)) {
     void syncTeamFollowupReminders();
   } else {
     clearTeamFollowupReminders();
@@ -1642,7 +1845,8 @@ function subscribeToLatestMessages(roomId) {
     limit(MESSAGES_PAGE_SIZE)
   );
 
-  state.unsubscribeMessages = onSnapshot(
+  state.unsubscribeMessages = trackedOnSnapshot(
+    "messages.live",
     latestMessagesQuery,
     (snapshot) => {
       const previousIds = new Set(state.messages.map((message) => message.id));
@@ -1695,7 +1899,7 @@ async function loadOlderMessages() {
       startAfter(state.oldestMessageCursor),
       limit(MESSAGES_PAGE_SIZE)
     );
-    const snapshot = await getDocs(olderMessagesQuery);
+    const snapshot = await trackedGetDocs("messages.older", olderMessagesQuery);
     const docs = snapshot.docs;
     const olderMessages = docs
       .map((messageDoc) => ({
@@ -1744,6 +1948,7 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   clearTaskTimerReminders();
   clearQueryReminderSync();
   clearQueryReminders();
+  clearSelfReminders();
   clearTeamFollowupReminderSync();
   clearTeamFollowupReminders();
   clearDayIdleTaskReminder();
@@ -1754,8 +1959,10 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   state.roomCommands = { ...DEFAULT_ROOM_COMMANDS };
   state.groupRoomCommands = {};
   state.roomPlugins = {};
+  state.isRemoteSyncPaused = false;
   state.groupQueryReminderAudience = DEFAULT_QUERY_REMINDER_AUDIENCE;
   state.queryReminderAudience = DEFAULT_QUERY_REMINDER_AUDIENCE;
+  state.selfReminderTimeouts = new Map();
   state.teamFollowupReminderTimeouts = new Map();
   state.activeBreakStartedAt = null;
   state.lastBreakActivityPromptAt = 0;
@@ -3786,6 +3993,16 @@ async function sendSubmittedText(text) {
       return;
     }
 
+    if (isSelfReminderCommand(text)) {
+      handleSelfReminderCommand(text);
+      return;
+    }
+
+    if (isDebugCommand(text)) {
+      handleDebugCommand(text);
+      return;
+    }
+
     if (isPluginCommand(text)) {
       await handlePluginCommand(text);
       return;
@@ -4288,6 +4505,8 @@ function isHandledCommand(command) {
     isChangeCommand(command) ||
     isCodexCommand(command) ||
     isQueryCommand(command) ||
+    isSelfReminderCommand(command) ||
+    isDebugCommand(command) ||
     isPluginCommand(command) ||
     isLeadCommand(command) ||
     isTeamCommand(command)
@@ -4491,6 +4710,16 @@ function isCodexCommand(text) {
 function isQueryCommand(text) {
   const normalized = text.trim().toLowerCase();
   return normalized === QUERY_COMMAND || normalized.startsWith(`${QUERY_COMMAND} `);
+}
+
+function isSelfReminderCommand(text) {
+  const normalized = text.trim().toLowerCase();
+  return normalized === SELF_REMINDER_COMMAND || normalized.startsWith(`${SELF_REMINDER_COMMAND} `);
+}
+
+function isDebugCommand(text) {
+  const normalized = text.trim().toLowerCase();
+  return normalized === DEBUG_COMMAND || normalized.startsWith(`${DEBUG_COMMAND} `);
 }
 
 function isPluginCommand(text) {
@@ -4867,6 +5096,51 @@ async function handleQueryCommand(text) {
   }
 
   await createQuery(payload);
+}
+
+function handleSelfReminderCommand(text) {
+  const rawCommand = text.trim();
+  const payload = rawCommand.slice(SELF_REMINDER_COMMAND.length).trim();
+  const [action = "", ...rest] = payload.split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+
+  if (!payload || normalizedAction === "help") {
+    postLocalSelfReminderMessage(
+      "Reminder commands:\n/remind 15m <note>\n/remind after 1h <note>\n/remind list\n/remind cancel <id>"
+    );
+    return;
+  }
+
+  if (normalizedAction === "list") {
+    postSelfReminderList();
+    return;
+  }
+
+  if (normalizedAction === "cancel" || normalizedAction === "done") {
+    cancelSelfReminder(rest.join(" "));
+    return;
+  }
+
+  createSelfReminder(payload);
+}
+
+function handleDebugCommand(text) {
+  const payload = text.trim().slice(DEBUG_COMMAND.length).trim().toLowerCase();
+
+  if (payload === "reads reset") {
+    resetReadAnalytics();
+    postLocalDebugMessage("Read analytics reset.");
+    setStatus("Read analytics reset.", "success");
+    return;
+  }
+
+  if (payload === "reads" || payload === "read") {
+    postLocalDebugMessage(formatReadAnalyticsReport());
+    setStatus("Read analytics shown.", "success");
+    return;
+  }
+
+  postLocalDebugMessage("Debug commands:\n/debug reads\n/debug reads reset");
 }
 
 async function handlePluginCommand(text) {
@@ -6147,6 +6421,116 @@ function parseQueryReminderDuration(value) {
   return amount * 24 * 60 * 60 * 1000;
 }
 
+function createSelfReminder(input) {
+  const parsedReminder = parseSelfReminderInput(input);
+
+  if (parsedReminder.error) {
+    postLocalSelfReminderMessage(parsedReminder.error);
+    setStatus("Self reminder not created.", "error");
+    return;
+  }
+
+  const createdAt = new Date();
+  const reminder = {
+    id: generateSelfReminderId(),
+    text: parsedReminder.text,
+    reminderIntervalMs: parsedReminder.reminderIntervalMs,
+    createdAt: createdAt.toISOString(),
+    reminderAt: new Date(createdAt.getTime() + parsedReminder.reminderIntervalMs).toISOString(),
+  };
+  const reminders = [...loadSelfReminders(), reminder].sort(compareSelfRemindersByReminderAt);
+
+  saveSelfReminders(reminders);
+  scheduleSelfReminder(reminder);
+  postLocalSelfReminderMessage(
+    `Reminder ${formatSelfReminderId(reminder.id)} set for ${formatSelfReminderTime(reminder.reminderAt)} (${formatDuration(parsedReminder.reminderIntervalMs)}): ${reminder.text}`
+  );
+  setStatus("Self reminder set.", "success");
+}
+
+function parseSelfReminderInput(input) {
+  const tokens = String(input || "").trim().split(/\s+/).filter(Boolean);
+  const firstToken = tokens[0] || "";
+  const secondToken = tokens[1] || "";
+  const hasDuration =
+    isQueryReminderDurationToken(firstToken) ||
+    (["after", "in", "remind", "reminder"].includes(firstToken.toLowerCase()) &&
+      isQueryReminderDurationToken(secondToken));
+
+  if (!hasDuration) {
+    return {
+      text: "",
+      reminderIntervalMs: QUERY_REMINDER_MS,
+      error: "Use /remind 15m <note>, /remind 1h <note>, or /remind 1d <note>.",
+    };
+  }
+
+  const parsedReminder = parseQueryReminderInput(input);
+
+  if (parsedReminder.error) {
+    return parsedReminder;
+  }
+
+  if (parsedReminder.reminderIntervalMs > SELF_REMINDER_MAX_MS) {
+    return {
+      text: "",
+      reminderIntervalMs: QUERY_REMINDER_MS,
+      error: `Self reminder duration must be ${formatDuration(SELF_REMINDER_MAX_MS)} or less.`,
+    };
+  }
+
+  if (!parsedReminder.text) {
+    return {
+      text: "",
+      reminderIntervalMs: parsedReminder.reminderIntervalMs,
+      error: "Add a note after the reminder time.",
+    };
+  }
+
+  return parsedReminder;
+}
+
+function postSelfReminderList() {
+  const reminders = loadSelfReminders().sort(compareSelfRemindersByReminderAt);
+
+  if (reminders.length === 0) {
+    postLocalSelfReminderMessage("No self reminders.");
+    setStatus("No self reminders.", "success");
+    return;
+  }
+
+  postLocalSelfReminderMessage(
+    `Self reminders:\n${reminders
+      .map((reminder) => `${formatSelfReminderId(reminder.id)} - ${formatSelfReminderTime(reminder.reminderAt)} - ${reminder.text}`)
+      .join("\n")}`
+  );
+  setStatus(`${reminders.length} self reminder${reminders.length === 1 ? "" : "s"} listed.`, "success");
+}
+
+function cancelSelfReminder(reminderIdInput) {
+  const reminderId = normalizeSelfReminderId(reminderIdInput);
+
+  if (!reminderId) {
+    postLocalSelfReminderMessage("Use /remind cancel <id>.");
+    setStatus("Reminder id needed.", "error");
+    return;
+  }
+
+  const reminders = loadSelfReminders();
+  const reminder = reminders.find((item) => normalizeSelfReminderId(item.id) === reminderId);
+
+  if (!reminder) {
+    postLocalSelfReminderMessage(`Reminder ${reminderIdInput} was not found.`);
+    setStatus("Self reminder not found.", "error");
+    return;
+  }
+
+  saveSelfReminders(reminders.filter((item) => normalizeSelfReminderId(item.id) !== reminderId));
+  clearSelfReminder(reminder.id);
+  postLocalSelfReminderMessage(`Canceled reminder ${formatSelfReminderId(reminder.id)}: ${reminder.text}`);
+  setStatus("Self reminder canceled.", "success");
+}
+
 async function addQueryTaskComment(taskId, text) {
   await addDoc(collection(state.db, "rooms", state.roomId, "tasks", taskId, "comments"), {
     taskId,
@@ -7389,7 +7773,7 @@ async function stopTaskTimer(taskIdInput) {
   const taskId = taskIdInput.trim();
 
   if (!taskId) {
-    await stopGeneralTimer();
+    await stopCurrentActiveTimer();
     return;
   }
 
@@ -7432,6 +7816,44 @@ async function stopTaskTimer(taskIdInput) {
     `Task ${formatTaskId(task.id)} timer stopped after ${formatDuration(elapsedMs)}: ${getTaskTimerDisplayDescription(task)}`
   );
   setStatus("Task timer stopped.", "success");
+}
+
+async function stopCurrentActiveTimer() {
+  const activeTimer = await findCurrentActiveTimerForCurrentUser();
+
+  if (!activeTimer) {
+    await postTaskMessage("No active timer is running.");
+    setStatus("No active timer.", "success");
+    return;
+  }
+
+  if (activeTimer.type === "general") {
+    await stopGeneralTimer();
+    return;
+  }
+
+  await stopTaskTimer(activeTimer.task.id);
+}
+
+async function findCurrentActiveTimerForCurrentUser() {
+  const [tasks, generalTimer] = await Promise.all([loadRoomTasks(), findActiveGeneralTimer()]);
+  const activeTimers = tasks
+    .filter((task) => task.activeTimerStartedAt && isCurrentUserTaskTimerOwner(task))
+    .map((task) => ({
+      type: "task",
+      task,
+      startedAt: task.activeTimerStartedAt,
+    }));
+
+  if (generalTimer?.data?.activeTimerStartedAt) {
+    activeTimers.push({
+      type: "general",
+      workDay: generalTimer,
+      startedAt: generalTimer.data.activeTimerStartedAt,
+    });
+  }
+
+  return activeTimers.sort(compareActiveTimerRecordsByStartedAt)[0] || null;
 }
 
 async function startGeneralTimer(description = "") {
@@ -8400,7 +8822,7 @@ async function announceTodaysLeaves() {
         "leaveAnnouncements",
         announcementId
       );
-      const announcementSnapshot = await getDoc(announcementRef);
+      const announcementSnapshot = await trackedGetDoc("leaves.announcements", announcementRef);
 
       if (announcementSnapshot.exists()) {
         continue;
@@ -8551,7 +8973,7 @@ async function findTaskById(taskIdInput) {
     return null;
   }
 
-  const directSnapshot = await getDoc(doc(state.db, "rooms", state.roomId, "tasks", normalizedId));
+  const directSnapshot = await trackedGetDoc("tasks.find", doc(state.db, "rooms", state.roomId, "tasks", normalizedId));
 
   if (directSnapshot.exists()) {
     return {
@@ -8850,7 +9272,7 @@ async function findQueryById(queryIdInput) {
     return null;
   }
 
-  const directSnapshot = await getDoc(doc(state.db, "rooms", state.roomId, "queries", normalizedId));
+  const directSnapshot = await trackedGetDoc("queries.find", doc(state.db, "rooms", state.roomId, "queries", normalizedId));
 
   if (directSnapshot.exists()) {
     return {
@@ -8866,7 +9288,7 @@ async function findQueryById(queryIdInput) {
 }
 
 async function loadRoomQueries() {
-  const queriesSnapshot = await getDocs(collection(state.db, "rooms", state.roomId, "queries"));
+  const queriesSnapshot = await trackedGetDocs("queries.all", collection(state.db, "rooms", state.roomId, "queries"));
 
   return queriesSnapshot.docs.map((queryDoc) => ({
     id: queryDoc.id,
@@ -8879,7 +9301,7 @@ async function loadPendingRoomQueries() {
     collection(state.db, "rooms", state.roomId, "queries"),
     where("status", "==", "pending")
   );
-  const queriesSnapshot = await getDocs(pendingQueries);
+  const queriesSnapshot = await trackedGetDocs("queries.pending", pendingQueries);
 
   return queriesSnapshot.docs.map((queryDoc) => ({
     id: queryDoc.id,
@@ -8894,7 +9316,7 @@ async function findLeadById(leadIdInput) {
     return null;
   }
 
-  const directSnapshot = await getDoc(doc(state.db, "rooms", state.roomId, "leads", normalizedId));
+  const directSnapshot = await trackedGetDoc("leads.find", doc(state.db, "rooms", state.roomId, "leads", normalizedId));
 
   if (directSnapshot.exists()) {
     return {
@@ -8916,7 +9338,7 @@ async function findTeamMemberById(memberIdInput) {
     return null;
   }
 
-  const directSnapshot = await getDoc(doc(state.db, "rooms", state.roomId, "teamMembers", normalizedId));
+  const directSnapshot = await trackedGetDoc("teamMembers.find", doc(state.db, "rooms", state.roomId, "teamMembers", normalizedId));
 
   if (directSnapshot.exists()) {
     return {
@@ -8942,7 +9364,7 @@ async function findTeamFollowupById(followupIdInput) {
     return null;
   }
 
-  const directSnapshot = await getDoc(doc(state.db, "rooms", state.roomId, "followups", normalizedId));
+  const directSnapshot = await trackedGetDoc("followups.find", doc(state.db, "rooms", state.roomId, "followups", normalizedId));
 
   if (directSnapshot.exists()) {
     return {
@@ -8958,7 +9380,7 @@ async function findTeamFollowupById(followupIdInput) {
 }
 
 async function loadRoomLeads() {
-  const leadsSnapshot = await getDocs(collection(state.db, "rooms", state.roomId, "leads"));
+  const leadsSnapshot = await trackedGetDocs("leads.all", collection(state.db, "rooms", state.roomId, "leads"));
 
   return leadsSnapshot.docs.map((leadDoc) => ({
     id: leadDoc.id,
@@ -8967,7 +9389,7 @@ async function loadRoomLeads() {
 }
 
 async function loadRoomTeamMembers() {
-  const membersSnapshot = await getDocs(collection(state.db, "rooms", state.roomId, "teamMembers"));
+  const membersSnapshot = await trackedGetDocs("teamMembers.all", collection(state.db, "rooms", state.roomId, "teamMembers"));
 
   return membersSnapshot.docs.map((memberDoc) => ({
     id: memberDoc.id,
@@ -8976,7 +9398,7 @@ async function loadRoomTeamMembers() {
 }
 
 async function loadRoomTeamFollowups() {
-  const followupsSnapshot = await getDocs(collection(state.db, "rooms", state.roomId, "followups"));
+  const followupsSnapshot = await trackedGetDocs("followups.all", collection(state.db, "rooms", state.roomId, "followups"));
 
   return followupsSnapshot.docs.map((followupDoc) => ({
     id: followupDoc.id,
@@ -8989,7 +9411,7 @@ async function loadPendingTeamFollowups() {
     collection(state.db, "rooms", state.roomId, "followups"),
     where("status", "==", "pending")
   );
-  const followupsSnapshot = await getDocs(followupsQuery);
+  const followupsSnapshot = await trackedGetDocs("followups.pending", followupsQuery);
 
   return followupsSnapshot.docs.map((followupDoc) => ({
     id: followupDoc.id,
@@ -9002,7 +9424,7 @@ async function loadRoomChanges() {
     collection(state.db, "rooms", state.roomId, "changelog"),
     orderBy("createdAt", "desc")
   );
-  const changesSnapshot = await getDocs(changesQuery);
+  const changesSnapshot = await trackedGetDocs("changes.all", changesQuery);
 
   return changesSnapshot.docs.map((changeDoc) => ({
     id: changeDoc.id,
@@ -9011,7 +9433,7 @@ async function loadRoomChanges() {
 }
 
 async function loadRoomTasks() {
-  const tasksSnapshot = await getDocs(collection(state.db, "rooms", state.roomId, "tasks"));
+  const tasksSnapshot = await trackedGetDocs("tasks.all", collection(state.db, "rooms", state.roomId, "tasks"));
 
   return tasksSnapshot.docs.map((taskDoc) => ({
     id: taskDoc.id,
@@ -9028,7 +9450,7 @@ async function loadCurrentUserActiveTaskTimers() {
     collection(state.db, "rooms", state.roomId, "tasks"),
     where("activeTimerStartedBy", "==", state.profile.id)
   );
-  const tasksSnapshot = await getDocs(activeTasksQuery);
+  const tasksSnapshot = await trackedGetDocs("tasks.activeTimers", activeTasksQuery);
 
   return tasksSnapshot.docs
     .map((taskDoc) => ({
@@ -9053,7 +9475,7 @@ async function loadTasksByIds(taskIds) {
 }
 
 async function loadRoomWorkDays() {
-  const workDaysSnapshot = await getDocs(collection(state.db, "rooms", state.roomId, "workDays"));
+  const workDaysSnapshot = await trackedGetDocs("workDays.all", collection(state.db, "rooms", state.roomId, "workDays"));
 
   return workDaysSnapshot.docs.map((workDayDoc) => ({
     id: workDayDoc.id,
@@ -9063,7 +9485,8 @@ async function loadRoomWorkDays() {
 }
 
 async function loadTaskTimeEntries(taskId) {
-  const entriesSnapshot = await getDocs(
+  const entriesSnapshot = await trackedGetDocs(
+    "taskTimeEntries",
     collection(state.db, "rooms", state.roomId, "tasks", taskId, "timeEntries")
   );
 
@@ -9078,7 +9501,7 @@ async function loadTaskComments(taskId) {
     collection(state.db, "rooms", state.roomId, "tasks", taskId, "comments"),
     orderBy("createdAt", "asc")
   );
-  const commentsSnapshot = await getDocs(commentsQuery);
+  const commentsSnapshot = await trackedGetDocs("taskComments", commentsQuery);
 
   return commentsSnapshot.docs.map((commentDoc) => ({
     id: commentDoc.id,
@@ -9096,7 +9519,7 @@ async function loadTaskCommentSummary(task) {
 }
 
 async function loadWorkDayTimeEntries(workDayRef = getWorkDayRef()) {
-  const entriesSnapshot = await getDocs(collection(workDayRef, "timeEntries"));
+  const entriesSnapshot = await trackedGetDocs("workDayTimeEntries", collection(workDayRef, "timeEntries"));
 
   return entriesSnapshot.docs.map((entryDoc) => ({
     id: entryDoc.id,
@@ -9105,12 +9528,12 @@ async function loadWorkDayTimeEntries(workDayRef = getWorkDayRef()) {
 }
 
 async function getWorkDay(dateKey = getTodayKey()) {
-  const snapshot = await getDoc(getWorkDayRef(dateKey));
+  const snapshot = await trackedGetDoc("workDay.current", getWorkDayRef(dateKey));
   return snapshot.exists() ? snapshot.data() : null;
 }
 
 async function findActiveGeneralTimer() {
-  const todaySnapshot = await getDoc(getWorkDayRef());
+  const todaySnapshot = await trackedGetDoc("workDay.today", getWorkDayRef());
 
   if (todaySnapshot.exists() && todaySnapshot.data()?.activeTimerStartedAt) {
     return {
@@ -9288,7 +9711,7 @@ function getTimesheetPersonLabel({ handle, workDay, taskEntriesByTask, generalEn
 }
 
 async function loadRoomLeaves() {
-  const leavesSnapshot = await getDocs(collection(state.db, "rooms", state.roomId, "leaves"));
+  const leavesSnapshot = await trackedGetDocs("leaves.all", collection(state.db, "rooms", state.roomId, "leaves"));
 
   return leavesSnapshot.docs.map((leaveDoc) => ({
     id: leaveDoc.id,
@@ -9303,7 +9726,7 @@ async function findLeaveById(leaveIdInput) {
     return null;
   }
 
-  const directSnapshot = await getDoc(doc(state.db, "rooms", state.roomId, "leaves", normalizedId));
+  const directSnapshot = await trackedGetDoc("leaves.find", doc(state.db, "rooms", state.roomId, "leaves", normalizedId));
 
   if (directSnapshot.exists()) {
     return {
@@ -9324,7 +9747,7 @@ async function loadPendingRoomTasks() {
     collection(state.db, "rooms", state.roomId, "tasks"),
     where("status", "==", "pending")
   );
-  const tasksSnapshot = await getDocs(pendingTasksQuery);
+  const tasksSnapshot = await trackedGetDocs("tasks.pending", pendingTasksQuery);
 
   return tasksSnapshot.docs.map((taskDoc) => ({
     id: taskDoc.id,
@@ -9337,7 +9760,7 @@ async function loadCompletedRoomTasks() {
     collection(state.db, "rooms", state.roomId, "tasks"),
     where("status", "==", "complete")
   );
-  const tasksSnapshot = await getDocs(completedTasksQuery);
+  const tasksSnapshot = await trackedGetDocs("tasks.completed", completedTasksQuery);
 
   return tasksSnapshot.docs.map((taskDoc) => ({
     id: taskDoc.id,
@@ -9597,6 +10020,14 @@ function postLocalQueryMessage(text, actions = [], extra = {}) {
   postLocalMessage(text, "Queries (only you)", extra.type || "query", actions, extra);
 }
 
+function postLocalSelfReminderMessage(text, actions = [], extra = {}) {
+  postLocalMessage(text, "Reminders (only you)", extra.type || "self-reminder", actions, extra);
+}
+
+function postLocalDebugMessage(text) {
+  postLocalMessage(text, "Debug (only you)", "debug");
+}
+
 function postLocalPluginMessage(text) {
   postLocalMessage(text, "Plugins (only you)", "plugin");
 }
@@ -9726,6 +10157,10 @@ function updateLocalMessagesUi() {
 }
 
 function startQueryReminderSync() {
+  if (state.isRemoteSyncPaused || document.visibilityState !== "visible") {
+    return;
+  }
+
   clearQueryReminderSync();
   void syncQueryReminders();
 
@@ -9879,7 +10314,148 @@ function getQueryReminderLeadText(queryData) {
     : "Please respond to this query.";
 }
 
+function scheduleSelfReminders() {
+  clearSelfReminders();
+  loadSelfReminders().forEach((reminder) => scheduleSelfReminder(reminder));
+}
+
+function scheduleSelfReminder(reminder) {
+  clearSelfReminder(reminder.id);
+
+  const reminderTime = getSelfReminderTime(reminder.reminderAt);
+
+  if (!reminderTime) {
+    return;
+  }
+
+  const delayMs = Math.max(0, reminderTime - Date.now());
+  const timeoutId = window.setTimeout(() => {
+    handleSelfReminderDue(reminder.id);
+  }, delayMs);
+
+  state.selfReminderTimeouts.set(reminder.id, { timeoutId });
+}
+
+function handleSelfReminderDue(reminderId) {
+  state.selfReminderTimeouts.delete(reminderId);
+
+  const reminders = loadSelfReminders();
+  const reminder = reminders.find((item) => item.id === reminderId);
+
+  if (!reminder) {
+    return;
+  }
+
+  saveSelfReminders(reminders.filter((item) => item.id !== reminderId));
+  postLocalSelfReminderMessage(`Reminder ${formatSelfReminderId(reminder.id)}: ${reminder.text}`);
+  void showSelfReminderNotification(reminder);
+  setStatus("Self reminder.", "success");
+}
+
+function clearSelfReminder(reminderId) {
+  const reminder = state.selfReminderTimeouts.get(reminderId);
+
+  if (!reminder?.timeoutId) {
+    return;
+  }
+
+  window.clearTimeout(reminder.timeoutId);
+  state.selfReminderTimeouts.delete(reminderId);
+}
+
+function clearSelfReminders() {
+  state.selfReminderTimeouts.forEach((reminder) => {
+    if (reminder?.timeoutId) {
+      window.clearTimeout(reminder.timeoutId);
+    }
+  });
+  state.selfReminderTimeouts.clear();
+}
+
+function loadSelfReminders() {
+  const key = getSelfReminderStorageKey();
+
+  if (!key) {
+    return [];
+  }
+
+  try {
+    const reminders = JSON.parse(localStorage.getItem(key) || "[]");
+    return Array.isArray(reminders)
+      ? reminders.filter((reminder) => reminder?.id && reminder?.text && getSelfReminderTime(reminder.reminderAt) > 0)
+      : [];
+  } catch (error) {
+    console.warn("Self reminders could not be loaded:", error);
+    return [];
+  }
+}
+
+function saveSelfReminders(reminders) {
+  const key = getSelfReminderStorageKey();
+
+  if (!key) {
+    return;
+  }
+
+  try {
+    localStorage.setItem(key, JSON.stringify(reminders));
+  } catch (error) {
+    console.warn("Self reminders could not be saved:", error);
+  }
+}
+
+function getSelfReminderStorageKey() {
+  if (!state.roomId || !state.profile?.id) {
+    return "";
+  }
+
+  return `selfReminders:${state.roomId}:${state.profile.id}`;
+}
+
+function generateSelfReminderId() {
+  return `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
+}
+
+function formatSelfReminderId(reminderId) {
+  const normalizedId = normalizeSelfReminderId(reminderId);
+  return normalizedId ? `#${normalizedId.slice(0, 6)}` : "#reminder";
+}
+
+function normalizeSelfReminderId(reminderId) {
+  return String(reminderId || "").trim().replace(/^#/, "").toLowerCase();
+}
+
+function compareSelfRemindersByReminderAt(left, right) {
+  return getSelfReminderTime(left.reminderAt) - getSelfReminderTime(right.reminderAt);
+}
+
+function getSelfReminderTime(value) {
+  if (value instanceof Date) {
+    return value.getTime();
+  }
+
+  const time = Date.parse(String(value || ""));
+  return Number.isFinite(time) ? time : 0;
+}
+
+function formatSelfReminderTime(value) {
+  const time = getSelfReminderTime(value);
+
+  if (!time) {
+    return "unknown time";
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(time));
+}
+
 function startTeamFollowupReminderSync() {
+  if (state.isRemoteSyncPaused || document.visibilityState !== "visible") {
+    return;
+  }
+
   clearTeamFollowupReminderSync();
   void syncTeamFollowupReminders();
 
@@ -10031,6 +10607,10 @@ function scheduleTaskTimerReminder(task) {
 }
 
 function startTaskTimerReminderSync() {
+  if (state.isRemoteSyncPaused || document.visibilityState !== "visible") {
+    return;
+  }
+
   clearTaskTimerReminderSync();
   void syncActiveTaskTimerReminders();
 
@@ -10523,6 +11103,19 @@ function compareActiveTimersByStartedAt(left, right) {
   }
 
   return String(left.id || "").localeCompare(String(right.id || ""));
+}
+
+function compareActiveTimerRecordsByStartedAt(left, right) {
+  const leftTime = getTimestampMillis(left.startedAt);
+  const rightTime = getTimestampMillis(right.startedAt);
+
+  if (leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+
+  return String(left.task?.id || left.workDay?.id || "").localeCompare(
+    String(right.task?.id || right.workDay?.id || "")
+  );
 }
 
 function compareTasksByCreatedAt(left, right) {
@@ -11622,7 +12215,8 @@ function hidePrivacyPreview() {
 function subscribeToReadReceipts(roomId) {
   const receiptsRef = collection(state.db, "rooms", roomId, "readReceipts");
 
-  state.unsubscribeReadReceipts = onSnapshot(
+  state.unsubscribeReadReceipts = trackedOnSnapshot(
+    "readReceipts.live",
     receiptsRef,
     (snapshot) => {
       const nextReadReceipts = snapshot.docs.map((receiptDoc) => ({
@@ -11993,6 +12587,33 @@ async function showQueryReminderNotification(queryData) {
   }
 }
 
+async function showSelfReminderNotification(reminder) {
+  if (
+    !state.isNotificationsEnabled ||
+    typeof Notification === "undefined" ||
+    Notification.permission !== "granted"
+  ) {
+    return;
+  }
+
+  try {
+    await showBrowserNotification("Self reminder", {
+      body: reminder.text || "A reminder is due.",
+      tag: `self-reminder-${state.roomId}-${reminder.id}`,
+      renotify: true,
+      badge: "./icons/icon-192.png",
+      icon: "./icons/icon-192.png",
+      data: {
+        roomId: state.roomId,
+        reminderId: reminder.id,
+        notificationType: "self-reminder",
+      },
+    });
+  } catch (error) {
+    console.error("Self reminder notification failed:", error);
+  }
+}
+
 async function showTeamFollowupNotification(followup) {
   if (
     !state.isNotificationsEnabled ||
@@ -12290,10 +12911,39 @@ function registerServiceWorker() {
     return;
   }
 
+  let isRefreshing = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (isRefreshing) {
+      return;
+    }
+
+    isRefreshing = true;
+    window.location.reload();
+  });
+
   window.addEventListener("load", () => {
     navigator.serviceWorker
       .register("./sw.js")
-      .then((registration) => registration.update())
+      .then((registration) => {
+        if (registration.waiting) {
+          registration.waiting.postMessage({ type: "SKIP_WAITING" });
+        }
+
+        registration.addEventListener("updatefound", () => {
+          const newWorker = registration.installing;
+          if (!newWorker) {
+            return;
+          }
+
+          newWorker.addEventListener("statechange", () => {
+            if (newWorker.state === "installed" && navigator.serviceWorker.controller) {
+              newWorker.postMessage({ type: "SKIP_WAITING" });
+            }
+          });
+        });
+
+        return registration.update();
+      })
       .catch((error) => {
         console.error("Service worker registration failed:", error);
       });
@@ -12371,8 +13021,13 @@ function handleAttentionChange() {
     return;
   }
 
+  if (document.visibilityState === "hidden") {
+    pauseRemoteSync();
+    return;
+  }
+
   if (document.visibilityState === "visible") {
-    void syncActiveTaskTimerReminders();
+    resumeRemoteSync();
   }
 
   if (!shouldAutoMarkAsRead()) {

@@ -7,12 +7,13 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { firebaseConfig } from "../firebase-config.js";
 
-const DEFAULT_POLL_MS = 5000;
+const DEFAULT_POLL_MS = 60000;
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_OUTPUT_CHARS = 12000;
 const DEFAULT_LOCAL_HOST = "127.0.0.1";
 const DEFAULT_LOCAL_PORT = 17345;
 const DEFAULT_QUEUE_DIR = ".codex-queue";
+const readStats = new Map();
 const DEFAULT_CODEX_BIN_CANDIDATES = [
   "/Applications/Codex.app/Contents/Resources/codex",
   "codex",
@@ -52,6 +53,7 @@ async function main() {
       projectId: firebaseConfig.projectId,
       roomId,
       token: auth.idToken,
+      debugReads: options.debugReads,
     });
 
     if (command) {
@@ -72,6 +74,7 @@ function parseArgs(args) {
     localServer: false,
     maxOutputChars: DEFAULT_MAX_OUTPUT_CHARS,
     once: false,
+    debugReads: false,
     pollMs: DEFAULT_POLL_MS,
     queueDir: DEFAULT_QUEUE_DIR,
     sandbox: "read-only",
@@ -93,6 +96,11 @@ function parseArgs(args) {
 
     if (arg === "--local-server") {
       options.localServer = true;
+      continue;
+    }
+
+    if (arg === "--debug-reads") {
+      options.debugReads = true;
       continue;
     }
 
@@ -199,6 +207,7 @@ Options:
       --poll-ms <number>       Queue polling interval. Defaults to ${DEFAULT_POLL_MS}.
       --timeout-ms <number>    Max runtime per Codex command. Defaults to ${DEFAULT_TIMEOUT_MS}.
       --max-output-chars <n>   Max result text posted to chat. Defaults to ${DEFAULT_MAX_OUTPUT_CHARS}.
+      --debug-reads            Print estimated Firestore reads from bridge polling.
       --once                   Process at most one queued command and exit.
   -h, --help                   Show this help.
 
@@ -393,7 +402,7 @@ async function signInAnonymously(apiKey) {
   };
 }
 
-async function loadNextQueuedCommand({ projectId, roomId, token }) {
+async function loadNextQueuedCommand({ projectId, roomId, token, debugReads }) {
   const parentPath = getRoomDocumentPath(projectId, roomId);
   const response = await fetch(`https://firestore.googleapis.com/v1/${parentPath}:runQuery`, {
     method: "POST",
@@ -408,6 +417,7 @@ async function loadNextQueuedCommand({ projectId, roomId, token }) {
             value: { stringValue: "queued" },
           },
         },
+        limit: 1,
       },
     }),
   });
@@ -417,12 +427,26 @@ async function loadNextQueuedCommand({ projectId, roomId, token }) {
     throw new Error(getFirestoreErrorMessage(payload, "Could not load Codex commands."));
   }
 
+  recordRestReadEstimate("codexBridge.queue", payload, debugReads);
+
   const commands = payload
     .filter((row) => row.document)
     .map((row) => parseDocument(row.document))
     .sort(compareCommandsByCreatedAt);
 
   return commands[0] || null;
+}
+
+function recordRestReadEstimate(feature, payload, debugReads = false) {
+  const reads = Math.max(payload.filter?.((row) => row.document).length || 0, 1);
+  const current = readStats.get(feature) || { reads: 0, calls: 0 };
+  current.reads += reads;
+  current.calls += 1;
+  readStats.set(feature, current);
+
+  if (debugReads) {
+    console.log(`[reads] ${feature}: +${reads}, total ${current.reads} reads / ${current.calls} calls`);
+  }
 }
 
 async function processCommand({ auth, roomId, command, options }) {

@@ -230,7 +230,7 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 - `/task start` starts a general timer without linking it to a task.
 - `/task start deployment work` starts a general timer with an optional description.
 - `/task start <id> deployment work` starts a timer on a task with an optional timer description. Timers remind you locally after 25 minutes, then every 5 minutes until you continue, complete, or stop it. If two reminders go unanswered, the timer auto-stops and records time only through the first unanswered reminder.
-- `/task stop` stops your general timer and records the elapsed time.
+- `/task stop` stops your current active timer, whether it is general or linked to a task.
 - `/task stop <id>` stops your running timer and adds the elapsed time to the task.
 - `/task continue` keeps the general timer active and resets the next reminder to 25 minutes.
 - `/task continue <id>` keeps the running timer active and resets the next reminder to 25 minutes.
@@ -252,6 +252,14 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 - `/query close <id>` marks one of your queries answered without response text.
 - Pending queries remind users locally every 10 minutes by default while the app is open. A custom query duration changes both the first reminder delay and repeat interval for that query.
 - Advanced Settings can change the query reminder audience to `All`, `Asker`, or `Others`, either for the group or only for you. If browser notifications are enabled, query reminders also use notifications.
+
+## Self reminder commands
+
+- `/remind 15m Follow up with Rahul` creates a local-only reminder for yourself. Durations support `m`, `h`, and `d`, such as `15m`, `1h`, or `1d`.
+- `/remind after 1h Check deployment` also creates a self reminder.
+- `/remind list` shows your saved self reminders only to you.
+- `/remind cancel <id>` cancels a self reminder.
+- Self reminders are stored in this browser and do not add Firestore reads.
 
 ## Changelog commands
 
