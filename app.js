@@ -209,6 +209,11 @@ const BASE_SLASH_COMMANDS = [
   {
     label: "/task view <id>",
     insertText: "/task view ",
+    hint: "View task",
+  },
+  {
+    label: "/task share <id>",
+    insertText: "/task share ",
     hint: "Share task",
   },
   {
@@ -2692,6 +2697,21 @@ function renderTaskViewMessage(message) {
   container.append(renderTaskPreviewCard(message.task, { showDescription: true }));
   container.append(renderTaskActionButtons(message.task));
 
+  if (message.isLocalOnly) {
+    const shareActions = document.createElement("div");
+    shareActions.className = "task-view-share-actions";
+
+    const shareButton = document.createElement("button");
+    shareButton.type = "button";
+    shareButton.className = "task-list-edit primary-task-action";
+    shareButton.textContent = "Share to group";
+    shareButton.dataset.action = "task-share";
+    shareButton.dataset.taskId = message.task.id;
+
+    shareActions.append(shareButton);
+    container.append(shareActions);
+  }
+
   if (Array.isArray(message.comments)) {
     container.append(
       renderTaskCommentsPanel(message.task, message.comments, {
@@ -3594,6 +3614,13 @@ function handleMessageActionClick(event) {
   if (actionButton.dataset.action === "task-view") {
     actionButton.disabled = true;
     void postTaskView(actionButton.dataset.taskId || "").finally(() => {
+      actionButton.disabled = false;
+    });
+  }
+
+  if (actionButton.dataset.action === "task-share") {
+    actionButton.disabled = true;
+    void shareTaskView(actionButton.dataset.taskId || "").finally(() => {
       actionButton.disabled = false;
     });
   }
@@ -4898,7 +4925,7 @@ async function handleTaskCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     await postTaskMessage(
-      "Task commands:\n/task create fix that issue #bug\n/task list\n/task list #bug\n/task completed\n/task completed #bug\n/task current\n/task today #abc123 #def456\n/task today list\n/task today review\n/task view <id>\n/task codex <id> [instruction]\n/task process\n/task process #bug\n/task process continue\n/task process stop\n/task edit <id> <description> #label\n/task comment <id> <comment>\n/task comments <id>\n/task subtask <id> <description>\n/task subtasks <id>\n/task subtask done <id> <subtask>\n/task subtask reopen <id> <subtask>\n/task subtask remove <id> <subtask>\n/task start [description]\n/task start <id> [description]\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task timers\n/task summary\n/task summary share\n/task complete <id>\n/task reopen <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nMention a task id like #abc123 in a message to preview it.\nUse /day for attendance and leave commands."
+      "Task commands:\n/task create fix that issue #bug\n/task list\n/task list #bug\n/task completed\n/task completed #bug\n/task current\n/task today #abc123 #def456\n/task today list\n/task today review\n/task view <id>\n/task share <id>\n/task codex <id> [instruction]\n/task process\n/task process #bug\n/task process continue\n/task process stop\n/task edit <id> <description> #label\n/task comment <id> <comment>\n/task comments <id>\n/task subtask <id> <description>\n/task subtasks <id>\n/task subtask done <id> <subtask>\n/task subtask reopen <id> <subtask>\n/task subtask remove <id> <subtask>\n/task start [description]\n/task start <id> [description]\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task timers\n/task summary\n/task summary share\n/task complete <id>\n/task reopen <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nMention a task id like #abc123 in a message to preview it.\nUse /day for attendance and leave commands."
     );
     return;
   }
@@ -4935,6 +4962,11 @@ async function handleTaskCommand(text) {
 
   if (normalizedAction === "view") {
     await postTaskView(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "share") {
+    await shareTaskView(rest.join(" "));
     return;
   }
 
@@ -7762,35 +7794,71 @@ async function postTaskView(taskIdInput) {
   const taskId = taskIdInput.trim();
 
   if (!taskId) {
-    await postTaskMessage("Use /task view <id> to share a task.");
+    postLocalTaskMessage("Use /task view <id> to view a task.");
     return;
   }
 
   const task = await findTaskById(taskId);
 
   if (!task) {
-    await postTaskMessage(`Task ${taskId} was not found.`);
+    postLocalTaskMessage(`Task ${taskId} was not found.`);
     setStatus("Task not found.", "error");
     return;
   }
 
-  const comments = await loadTaskComments(task.id);
-  const taskPreview = serializeTaskForMessage({
-    ...task,
-    commentCount: comments.length,
-  });
+  const taskView = await buildTaskViewMessageData(task);
+
+  postLocalMessage(
+    `Task ${formatTaskId(task.id)}: ${task.description}`,
+    "Tasks (only you)",
+    "task-view",
+    [],
+    taskView
+  );
+  setStatus("Task shown only to you.", "success");
+}
+
+async function shareTaskView(taskIdInput) {
+  const taskId = taskIdInput.trim();
+
+  if (!taskId) {
+    postLocalTaskMessage("Use /task share <id> to share a task with the group.");
+    return;
+  }
+
+  const task = await findTaskById(taskId);
+
+  if (!task) {
+    postLocalTaskMessage(`Task ${taskId} was not found.`);
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  const taskView = await buildTaskViewMessageData(task);
 
   await addDoc(collection(state.db, "rooms", state.roomId, "messages"), {
     text: `Task ${formatTaskId(task.id)}: ${task.description}`,
     senderId: state.profile.id,
     senderName: "Tasks",
     type: "task-view",
+    ...taskView,
+    createdAt: serverTimestamp(),
+  });
+  setStatus("Task shared with group.", "success");
+}
+
+async function buildTaskViewMessageData(task) {
+  const comments = await loadTaskComments(task.id);
+  const taskPreview = serializeTaskForMessage({
+    ...task,
+    commentCount: comments.length,
+  });
+
+  return {
     task: taskPreview,
     comments: comments.map(serializeTaskCommentForMessage),
     maskIdentity: isPrivacyModeActive(),
-    createdAt: serverTimestamp(),
-  });
-  setStatus("Task shared.", "success");
+  };
 }
 
 async function postCurrentTask() {

@@ -217,6 +217,8 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 - `/task list` shows the pending task list only to you. Completed tasks are hidden by default.
 - `/task list #bug` shows pending tasks with that label only to you.
 - `/task current` shows your current active task with quick action buttons.
+- `/task view <id>` shows a task only to you. Clicking a task ID in task lists uses this private view.
+- `/task share <id>` posts a task view to the group. Private task views also include a Share to group button.
 - `/task edit <id> <description> #bug` updates a task description. Labels are replaced only when new labels are included.
 - Typing `#` in the composer suggests task IDs and task labels. In `/task edit <id>`, selecting or typing a task ID loads the current task text into the composer for easier editing.
 - `/task comment <id> <comment>` adds a comment to a task.

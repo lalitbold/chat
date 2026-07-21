@@ -1148,6 +1148,24 @@ button.task-list-id:focus-visible {
   gap: 6px;
 }
 
+.task-view-share-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.primary-task-action {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+.primary-task-action:hover,
+.primary-task-action:focus-visible {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: #ffffff;
+}
+
 .task-list-main > .task-list-actions {
   justify-content: flex-end;
   max-width: 360px;
