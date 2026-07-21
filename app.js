@@ -64,6 +64,10 @@ const messagesContainer = document.getElementById("messages");
 const messageForm = document.getElementById("message-form");
 const advancedSettingsPanel = document.getElementById("advanced-settings");
 const composerCount = document.getElementById("composer-count");
+const replyPreview = document.getElementById("reply-preview");
+const replyPreviewSender = document.getElementById("reply-preview-sender");
+const replyPreviewText = document.getElementById("reply-preview-text");
+const cancelReplyButton = document.getElementById("cancel-reply");
 const messageInput = document.getElementById("message-input");
 const messageMaskOverlay = document.getElementById("message-mask-overlay");
 let commandSuggestions = document.getElementById("command-suggestions");
@@ -547,6 +551,7 @@ const state = {
   voiceRecordingStartedAt: 0,
   messages: [],
   localMessages: [],
+  pendingReply: null,
   hasHydratedRoom: false,
   hasMoreMessages: true,
   isLoadingOlderMessages: false,
@@ -764,6 +769,7 @@ function wireEvents() {
   messageInput.addEventListener("input", handleMessageInputChange);
   messageInput.addEventListener("scroll", syncMessageMaskOverlayScroll);
   messageInput.addEventListener("blur", scheduleCommandAutocompleteHide);
+  cancelReplyButton.addEventListener("click", clearPendingReply);
   commandSuggestions.addEventListener("mousedown", handleCommandSuggestionMouseDown);
   messagesContainer.addEventListener("click", handleMessageActionClick);
   messagesContainer.addEventListener("scroll", handleMessageListScroll);
@@ -1591,6 +1597,7 @@ async function connectToRoom(roomId, roomPasscode = "", roomData = null) {
   state.hasHydratedRoom = false;
   state.messages = [];
   state.localMessages = [];
+  clearPendingReply();
   state.commandHistory = loadCommandHistory();
   resetCommandHistoryNavigation();
   state.taskProcessSession = null;
@@ -1972,6 +1979,7 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   state.hasHydratedRoom = false;
   state.messages = [];
   state.localMessages = [];
+  clearPendingReply();
   state.commandHistory = [];
   resetCommandHistoryNavigation();
   state.hasMoreMessages = true;
@@ -2038,6 +2046,10 @@ function renderMessage(message, context = {}) {
 
   meta.append(sender, timestamp);
   wrapper.append(meta);
+
+  if (message.replyTo) {
+    wrapper.append(renderReplyReference(message.replyTo, context));
+  }
 
   if (message.type === "task-list" && Array.isArray(message.tasks)) {
     wrapper.append(renderTaskListMessage(message));
@@ -2137,6 +2149,16 @@ function renderMessageReactions(message) {
   const container = document.createElement("div");
   container.className = "message-reaction-bar";
 
+  const replyButton = document.createElement("button");
+  replyButton.type = "button";
+  replyButton.className = "message-reply-button";
+  replyButton.textContent = "Reply";
+  replyButton.title = "Reply to message";
+  replyButton.setAttribute("aria-label", "Reply to message");
+  replyButton.dataset.action = "message-reply";
+  replyButton.dataset.messageId = message.id || "";
+  container.append(replyButton);
+
   const picker = document.createElement("details");
   picker.className = "message-reaction-picker";
 
@@ -2172,6 +2194,124 @@ function renderMessageReactions(message) {
   }
 
   return container;
+}
+
+function renderReplyReference(replyTo, context = {}) {
+  const reference = document.createElement("button");
+  reference.type = "button";
+  reference.className = "message-reply-reference";
+
+  if (replyTo.id) {
+    reference.dataset.action = "message-scroll-to";
+    reference.dataset.messageId = replyTo.id;
+  }
+
+  const sender = document.createElement("span");
+  sender.className = "message-reply-sender";
+  sender.textContent = getReplySenderName(replyTo, context);
+
+  const text = document.createElement("span");
+  text.className = "message-reply-text";
+  text.textContent = replyTo.text || "Message";
+
+  reference.append(sender, text);
+  return reference;
+}
+
+function beginMessageReply(messageId) {
+  const message = findMessageById(messageId);
+
+  if (!message || message.isLocalOnly) {
+    return;
+  }
+
+  state.pendingReply = {
+    id: message.id,
+    senderId: message.senderId || null,
+    senderName: message.senderName || "Anonymous",
+    text: getReplyPreviewText(message),
+  };
+  updateReplyPreview();
+  messageInput.focus();
+  setStatus("Replying to message.", "success");
+}
+
+function clearPendingReply() {
+  state.pendingReply = null;
+  updateReplyPreview();
+}
+
+function updateReplyPreview() {
+  if (!replyPreview) {
+    return;
+  }
+
+  const reply = state.pendingReply;
+  replyPreview.hidden = !reply;
+
+  if (!reply) {
+    replyPreviewSender.textContent = "";
+    replyPreviewText.textContent = "";
+    return;
+  }
+
+  replyPreviewSender.textContent = reply.senderName || "Anonymous";
+  replyPreviewText.textContent = reply.text || "Message";
+}
+
+function scrollToMessage(messageId) {
+  if (!messageId) {
+    return;
+  }
+
+  const target = messagesContainer.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
+
+  if (!target) {
+    setStatus("Original message is not currently loaded.", "error");
+    return;
+  }
+
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
+  target.classList.add("message-highlight");
+  window.setTimeout(() => target.classList.remove("message-highlight"), 1400);
+}
+
+function findMessageById(messageId) {
+  return state.messages.find((message) => message.id === messageId) || null;
+}
+
+function getReplySenderName(replyTo, context = {}) {
+  if (state.isPrivacyEnabled && state.isPrivacyPreviewVisible) {
+    return getPrivateAlias(replyTo.senderId, context.privateAliases);
+  }
+
+  return replyTo.senderName || "Anonymous";
+}
+
+function getReplyPreviewText(message) {
+  if (message.type === "voice") {
+    return "Voice message";
+  }
+
+  if (message.type === "task-list") {
+    return message.heading || "Task list";
+  }
+
+  if (message.type) {
+    return message.text || `${message.type} message`;
+  }
+
+  return truncateText(message.text || "Message", 140);
+}
+
+function truncateText(text, maxLength) {
+  const value = String(text || "").replace(/\s+/g, " ").trim();
+
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return `${value.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
 }
 
 function renderMessageReactionSummary(reactions) {
@@ -3420,6 +3560,14 @@ function handleMessageActionClick(event) {
     });
   }
 
+  if (actionButton.dataset.action === "message-reply") {
+    beginMessageReply(actionButton.dataset.messageId || "");
+  }
+
+  if (actionButton.dataset.action === "message-scroll-to") {
+    scrollToMessage(actionButton.dataset.messageId || "");
+  }
+
   if (actionButton.dataset.action === "task-edit-draft") {
     draftTaskEdit(actionButton.dataset.taskId || "", actionButton.dataset.taskDescription || "");
   }
@@ -4030,7 +4178,12 @@ async function sendSubmittedText(text) {
       messagePayload.taskPreviews = taskPreviews;
     }
 
+    if (state.pendingReply) {
+      messagePayload.replyTo = { ...state.pendingReply };
+    }
+
     await addDoc(collection(state.db, "rooms", state.roomId, "messages"), messagePayload);
+    clearPendingReply();
 
     if (state.isPrivacyEnabled && state.isPrivacyPreviewVisible) {
       hidePrivacyPreview();

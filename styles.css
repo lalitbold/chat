@@ -610,6 +610,11 @@ button:disabled {
   border-style: dashed;
 }
 
+.message-highlight {
+  outline: 2px solid rgba(15, 118, 110, 0.42);
+  outline-offset: 2px;
+}
+
 .message-task-list {
   width: min(100%, 42rem);
   max-width: min(100%, 42rem);
@@ -630,6 +635,80 @@ button:disabled {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.45;
+}
+
+.message-reply-reference,
+.reply-preview {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(15, 118, 110, 0.18);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: rgba(215, 243, 238, 0.36);
+  color: var(--ink);
+}
+
+.message-reply-reference {
+  grid-template-columns: 1fr;
+  width: 100%;
+  margin-bottom: 8px;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.message-reply-reference:hover,
+.message-reply-reference:focus-visible {
+  background: var(--accent-soft);
+  outline: none;
+}
+
+.message-reply-sender,
+.reply-preview-sender {
+  color: var(--accent-strong);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.message-reply-text,
+.reply-preview-text {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reply-preview-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.reply-cancel {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid rgba(15, 118, 110, 0.24);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.reply-cancel:hover,
+.reply-cancel:focus-visible {
+  background: var(--accent-soft);
+  outline: none;
 }
 
 .voice-message {
@@ -1101,6 +1180,7 @@ button.task-list-id:focus-visible {
   position: relative;
 }
 
+.message-reply-button,
 .message-reaction-trigger {
   min-width: 28px;
   min-height: 28px;
@@ -1122,7 +1202,15 @@ button.task-list-id:focus-visible {
   transition: opacity 140ms ease, background 140ms ease, border-color 140ms ease;
 }
 
+.message-reply-button {
+  width: auto;
+  padding: 0 9px;
+  font-size: 0.78rem;
+}
+
+.message:hover .message-reply-button,
 .message:hover .message-reaction-trigger,
+.message:focus-within .message-reply-button,
 .message:focus-within .message-reaction-trigger,
 .message-reaction-picker[open] .message-reaction-trigger {
   opacity: 0.58;
@@ -1132,6 +1220,8 @@ button.task-list-id:focus-visible {
   display: none;
 }
 
+.message-reply-button:hover,
+.message-reply-button:focus-visible,
 .message-reaction-trigger:hover,
 .message-reaction-trigger:focus-visible,
 .message-reaction-picker[open] .message-reaction-trigger {

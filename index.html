@@ -149,6 +149,21 @@
 
         <form id="message-form" class="composer card" autocomplete="off">
           <div id="composer-count" class="composer-count" aria-live="polite"></div>
+          <div id="reply-preview" class="reply-preview" hidden>
+            <div class="reply-preview-copy">
+              <span id="reply-preview-sender" class="reply-preview-sender"></span>
+              <span id="reply-preview-text" class="reply-preview-text"></span>
+            </div>
+            <button
+              id="cancel-reply"
+              class="reply-cancel"
+              type="button"
+              aria-label="Cancel reply"
+              title="Cancel reply"
+            >
+              ×
+            </button>
+          </div>
           <div class="message-input-wrap">
             <textarea
               id="message-input"
