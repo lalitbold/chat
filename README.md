@@ -227,7 +227,9 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 - `/task today #abc123 #def456` adds existing pending tasks to today's plan.
 - `/task today list` shows today's planned tasks only to you.
 - `/task today review` shows unfinished planned tasks from yesterday with carry, complete, and skip actions.
+- `/task important [#label]` asks the local Codex bridge to recommend important pending tasks without changing task state.
 - `/task codex <id> [instruction]` queues a task directly for the trusted Codex bridge.
+- `/task summarize <id>` asks Codex to summarize task comments/context into a suggested `/task edit` command.
 - `/task process continue` resumes the last task process for the current room and user.
 - `/task start` starts a general timer without linking it to a task.
 - `/task start deployment work` starts a general timer with an optional description.
@@ -242,6 +244,35 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 - `/task reopen <id>` moves a completed task back to pending.
 - `/task label <id> #bug` adds a label to an existing task.
 - `/task unlabel <id> #bug` removes a label from an existing task.
+
+## Terminal slash commands
+
+Slash commands can also run from a terminal through the shared Firestore data model.
+
+Save a default room and display name:
+
+```powershell
+npm run chat:command -- profile --room testroom --user Lalit
+```
+
+Run commands:
+
+```powershell
+npm run chat:command -- "/task list"
+npm run chat:command -- "/task create Fix terminal command support #feature" --yes
+npm run chat:command -- "/query Is this ready to deploy?" --yes
+npm run chat:command -- "/codex review the latest diff" --yes
+```
+
+Useful options:
+
+```powershell
+npm run chat:command -- "/task list" --room testroom --user Lalit
+npm run chat:command -- "/task create Check safety #ops" --dry-run
+npm run chat:command -- "/task list" --json
+```
+
+Read-only commands run immediately. Write and risky commands ask for confirmation unless `--yes` is passed. The CLI currently supports `/task help|create|list|completed|complete|reopen`, `/change help|add|list|summary`, `/query help|create|list|respond|close`, `/codex`, `/plugin list|enable|disable`, `/lead list`, and `/team member|task|followup list`. Browser-local commands such as `/remind`, `/debug`, and detailed day timer workflows still need the browser.
 
 ## Query commands
 
@@ -384,6 +415,7 @@ The script signs in anonymously with the Firebase web app config and reads pendi
 - `/day plan Ship feature X` saves and posts your plan to the group.
 - `/day free tired` marks your current status as free with an optional reason and posts it to the group.
 - `/day status` shows your current day status only to you.
+- `/day coach` asks the local Codex bridge for a short AI day-coach recommendation.
 - `/day timesheet` shows your timesheet for today only to you.
 - `/day timesheet 2026-07-01 @lalit` shows a timesheet for a specific day and display-name handle.
 - `/day break start` changes the app color while your break is active. Activity during a break shows a local prompt to stop it.

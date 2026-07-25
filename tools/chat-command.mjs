@@ -1,0 +1,712 @@
+#!/usr/bin/env node
+
+import { constants as fsConstants } from "node:fs";
+import { access, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { createInterface } from "node:readline/promises";
+import { stdin as input, stdout as output } from "node:process";
+import {
+  createDocument,
+  getDocument,
+  patchDocument,
+  roomPath,
+  runCollectionQuery,
+  signInAnonymously,
+} from "./chat-firestore.mjs";
+
+const PROFILE_PATH = join(process.cwd(), ".chat-command-profile.json");
+const DEFAULT_LIMIT = 50;
+const COMMANDS = new Set(["/task", "/change", "/query", "/codex", "/plugin", "/day", "/lead", "/team", "/remind", "/debug"]);
+
+main().catch((error) => {
+  console.error(`Error: ${error.message}`);
+  process.exitCode = 1;
+});
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2));
+
+  if (options.help) {
+    printHelp();
+    return;
+  }
+
+  if (options.profileCommand) {
+    await saveProfile(options);
+    return;
+  }
+
+  const profile = await loadProfile();
+  const roomId = options.room || profile.room;
+  const userName = options.user || profile.userName;
+  const commandText = options.command.join(" ").trim();
+
+  if (!commandText) {
+    throw new Error("Missing command text. Example: npm run chat:command -- /task list");
+  }
+
+  if (!roomId) {
+    throw new Error("Missing room. Run profile setup or pass --room <roomId>.");
+  }
+
+  if (!userName) {
+    throw new Error("Missing user name. Run profile setup or pass --user <name>.");
+  }
+
+  const command = parseCommand(commandText);
+  const risk = classifyRisk(command);
+
+  if (options.dryRun) {
+    printResult({ ok: true, dryRun: true, roomId, userName, command: commandText, risk }, options);
+    return;
+  }
+
+  if (risk !== "read" && !options.yes) {
+    const confirmed = await confirm(`Run ${risk} command in room "${roomId}" as "${userName}"?`);
+    if (!confirmed) {
+      throw new Error("Command cancelled.");
+    }
+  }
+
+  const auth = await signInAnonymously();
+  const context = {
+    token: auth.idToken,
+    uid: auth.uid,
+    roomId,
+    userName,
+    parentPath: roomPath(roomId),
+    now: new Date(),
+    limit: options.limit,
+  };
+  const result = await dispatchCommand(command, context);
+  printResult(result, options);
+}
+
+function parseArgs(args) {
+  const options = {
+    command: [],
+    dryRun: false,
+    help: false,
+    json: false,
+    limit: DEFAULT_LIMIT,
+    yes: false,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    if (arg === "--help" || arg === "-h") {
+      options.help = true;
+      continue;
+    }
+
+    if (arg === "--json") {
+      options.json = true;
+      continue;
+    }
+
+    if (arg === "--dry-run") {
+      options.dryRun = true;
+      continue;
+    }
+
+    if (arg === "--yes" || arg === "-y") {
+      options.yes = true;
+      continue;
+    }
+
+    if (arg === "--room" || arg === "-r") {
+      options.room = readValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--user" || arg === "-u") {
+      options.user = readValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--limit") {
+      const limit = Number(readValue(args, index, arg));
+      if (!Number.isInteger(limit) || limit < 1) {
+        throw new Error("--limit must be a positive integer.");
+      }
+      options.limit = limit;
+      index += 1;
+      continue;
+    }
+
+    if (arg === "profile") {
+      options.profileCommand = true;
+      continue;
+    }
+
+    options.command.push(arg);
+  }
+
+  return options;
+}
+
+function readValue(args, index, optionName) {
+  const value = args[index + 1];
+
+  if (!value || value.startsWith("--")) {
+    throw new Error(`${optionName} requires a value.`);
+  }
+
+  return value;
+}
+
+async function saveProfile(options) {
+  if (!options.room || !options.user) {
+    throw new Error("Profile setup needs --room <roomId> and --user <name>.");
+  }
+
+  const profile = {
+    room: options.room,
+    userName: options.user,
+    savedAt: new Date().toISOString(),
+  };
+  await writeFile(PROFILE_PATH, `${JSON.stringify(profile, null, 2)}\n`, "utf8");
+  console.log(`Saved chat command profile for room "${profile.room}" as "${profile.userName}".`);
+}
+
+async function loadProfile() {
+  try {
+    await access(PROFILE_PATH, fsConstants.R_OK);
+  } catch {
+    return {};
+  }
+
+  return JSON.parse(await readFile(PROFILE_PATH, "utf8"));
+}
+
+function parseCommand(commandText) {
+  const [name = "", ...rest] = commandText.trim().split(/\s+/);
+  const commandName = name.toLowerCase();
+
+  if (!COMMANDS.has(commandName)) {
+    throw new Error(`Unsupported command prefix: ${name}`);
+  }
+
+  return {
+    name: commandName,
+    payload: rest.join(" ").trim(),
+    raw: commandText.trim(),
+  };
+}
+
+function classifyRisk(command) {
+  if (["/codex", "/plugin"].includes(command.name)) return "risky";
+  if (["/remind", "/debug"].includes(command.name)) return "local";
+
+  const [action = ""] = command.payload.split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+
+  if (command.name === "/task" && ["", "help", "list", "completed", "view", "comments", "summary", "timers", "current"].includes(normalizedAction)) {
+    return "read";
+  }
+
+  if (command.name === "/change" && ["", "help", "list", "recent", "summary"].includes(normalizedAction)) {
+    return "read";
+  }
+
+  if (command.name === "/query" && ["", "help", "list"].includes(normalizedAction)) {
+    return "read";
+  }
+
+  if (command.name === "/lead" && ["", "help", "list"].includes(normalizedAction)) {
+    return "read";
+  }
+
+  if (command.name === "/team" && (normalizedAction === "" || normalizedAction === "help" || command.payload.includes(" list"))) {
+    return "read";
+  }
+
+  if (command.name === "/day" && ["", "help", "status", "summary", "timesheet", "sheet"].includes(normalizedAction)) {
+    return "read";
+  }
+
+  return ["complete", "reopen", "edit", "update", "disable", "done", "cancel"].includes(normalizedAction)
+    ? "risky"
+    : "write";
+}
+
+async function dispatchCommand(command, context) {
+  if (command.name === "/task") return dispatchTask(command.payload, context);
+  if (command.name === "/change") return dispatchChange(command.payload, context);
+  if (command.name === "/query") return dispatchQuery(command.payload, context);
+  if (command.name === "/codex") return dispatchCodex(command.payload, context);
+  if (command.name === "/plugin") return dispatchPlugin(command.payload, context);
+  if (command.name === "/lead") return dispatchLead(command.payload, context);
+  if (command.name === "/team") return dispatchTeam(command.payload, context);
+  return unsupported(command.name, "This command depends on browser-local state and is not available in the terminal yet.");
+}
+
+async function dispatchTask(payload, context) {
+  const [action = "", ...rest] = payload.split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+  const input = rest.join(" ").trim();
+
+  if (!payload || normalizedAction === "help") {
+    return textResult(taskHelp());
+  }
+
+  if (normalizedAction === "create") {
+    const { text, labels } = extractLabels(input);
+    if (!text) return textResult("Add a task description after /task create.");
+    const task = await createDocument({
+      token: context.token,
+      path: `${context.parentPath}/tasks`,
+      fields: {
+        description: text,
+        labels,
+        status: "pending",
+        createdAt: context.now,
+        createdBy: context.uid,
+        createdByName: context.userName,
+        completedAt: null,
+        completedBy: null,
+        completedByName: null,
+        totalTrackedMs: 0,
+        activeTimerStartedAt: null,
+        activeTimerStartedBy: null,
+        activeTimerStartedByName: null,
+        subtasks: [],
+      },
+    });
+    await postMessage(context, `Task ${formatShortId(task.id, "#")} created: ${text}${formatLabels(labels)}`, "Tasks");
+    return textResult(`Created ${formatShortId(task.id, "#")}: ${text}${formatLabels(labels)}`, { task });
+  }
+
+  if (normalizedAction === "list" || normalizedAction === "completed") {
+    const labels = parseLabels(input);
+    const status = normalizedAction === "completed" ? "complete" : "pending";
+    const tasks = (await loadTasks(context, status))
+      .filter((task) => hasLabels(task, labels))
+      .sort(compareTasks)
+      .slice(0, context.limit);
+    return textResult(formatTaskList(tasks, status, labels), { tasks });
+  }
+
+  if (normalizedAction === "complete" || normalizedAction === "reopen") {
+    const task = await findByShortId(context, "tasks", input);
+    if (!task) return textResult(`Task ${input} was not found.`);
+    const complete = normalizedAction === "complete";
+    await patchDocument({
+      token: context.token,
+      name: task.name,
+      fields: complete
+        ? { status: "complete", completedAt: context.now, completedBy: context.uid, completedByName: context.userName }
+        : { status: "pending", completedAt: null, completedBy: null, completedByName: null, reopenedAt: context.now, reopenedBy: context.uid, reopenedByName: context.userName },
+    });
+    await postMessage(context, `Task ${formatShortId(task.id, "#")} ${complete ? "completed" : "reopened"}: ${task.description}`, "Tasks");
+    return textResult(`Task ${formatShortId(task.id, "#")} ${complete ? "completed" : "reopened"}: ${task.description}`);
+  }
+
+  return unsupported("/task", `Terminal /task supports help, create, list, completed, complete, and reopen. Received: ${payload}`);
+}
+
+async function dispatchChange(payload, context) {
+  const [action = "", ...rest] = payload.split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+  const input = rest.join(" ").trim();
+
+  if (!payload || normalizedAction === "help") {
+    return textResult("Change commands:\n/change add <summary> #label\n/change list");
+  }
+
+  if (["add", "log", "record"].includes(normalizedAction)) {
+    const { text, labels } = extractLabels(input);
+    if (!text) return textResult("Use /change add <summary> #label.");
+    const change = await createDocument({
+      token: context.token,
+      path: `${context.parentPath}/changelog`,
+      fields: { text, labels, createdAt: context.now, createdBy: context.uid, createdByName: context.userName },
+    });
+    await postMessage(context, `Change ${formatShortId(change.id, "~")} logged: ${text}${formatLabels(labels)}`, "Changes");
+    return textResult(`Logged ${formatShortId(change.id, "~")}: ${text}${formatLabels(labels)}`, { change });
+  }
+
+  if (["list", "recent", "summary"].includes(normalizedAction)) {
+    const changes = (await loadCollection(context, "changelog")).sort(compareCreatedDesc).slice(0, context.limit);
+    return textResult(formatChangeList(changes), { changes });
+  }
+
+  return unsupported("/change", `Terminal /change supports help, add, list, and summary. Received: ${payload}`);
+}
+
+async function dispatchQuery(payload, context) {
+  const [action = "", ...rest] = payload.split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+
+  if (!payload || normalizedAction === "help") {
+    return textResult("Query commands:\n/query <question>\n/query list\n/query respond <id> <response>\n/query close <id>");
+  }
+
+  if (normalizedAction === "list") {
+    const queries = (await loadCollection(context, "queries"))
+      .filter((query) => query.status === "pending")
+      .sort(compareCreatedAsc)
+      .slice(0, context.limit);
+    return textResult(formatQueryList(queries), { queries });
+  }
+
+  if (normalizedAction === "respond" || normalizedAction === "answer") {
+    const [queryId = "", ...responseParts] = rest;
+    const responseText = responseParts.join(" ").trim();
+    if (!queryId || !responseText) return textResult("Use /query respond <id> <response>.");
+    const query = await findByShortId(context, "queries", queryId);
+    if (!query) return textResult(`Query ${queryId} was not found.`);
+    await patchDocument({
+      token: context.token,
+      name: query.name,
+      fields: { status: "answered", answeredAt: context.now, answeredBy: context.uid, answeredByName: context.userName, responseText, updatedAt: context.now },
+    });
+    await postMessage(context, `Query ${formatShortId(query.id, "?")} answered by ${context.userName}: ${responseText}`, "Queries");
+    return textResult(`Answered ${formatShortId(query.id, "?")}: ${responseText}`);
+  }
+
+  if (normalizedAction === "close" || normalizedAction === "done") {
+    const queryId = rest.join(" ").trim();
+    if (!queryId) return textResult("Use /query close <id>.");
+    const query = await findByShortId(context, "queries", queryId);
+    if (!query) return textResult(`Query ${queryId} was not found.`);
+    await patchDocument({
+      token: context.token,
+      name: query.name,
+      fields: { status: "answered", answeredAt: context.now, answeredBy: context.uid, answeredByName: context.userName, responseText: null, updatedAt: context.now },
+    });
+    return textResult(`Closed ${formatShortId(query.id, "?")}.`);
+  }
+
+  const question = payload.trim();
+  const query = await createDocument({
+    token: context.token,
+    path: `${context.parentPath}/queries`,
+    fields: {
+      text: question,
+      status: "pending",
+      createdAt: context.now,
+      createdBy: context.uid,
+      createdByName: context.userName,
+      answeredAt: null,
+      answeredBy: null,
+      answeredByName: null,
+      responseText: null,
+      taskId: null,
+      taskDescription: null,
+      reminderIntervalMs: 600000,
+      lastReminderAt: null,
+      reminderCount: 0,
+    },
+  });
+  await postMessage(context, `Query ${formatShortId(query.id, "?")}: ${question}`, "Queries");
+  return textResult(`Created query ${formatShortId(query.id, "?")}: ${question}`, { query });
+}
+
+async function dispatchCodex(payload, context) {
+  const prompt = payload.trim();
+  if (!prompt || prompt.toLowerCase() === "help") {
+    return textResult("Codex commands:\n/codex <instruction>");
+  }
+
+  const command = await createDocument({
+    token: context.token,
+    path: `${context.parentPath}/codexCommands`,
+    fields: {
+      prompt,
+      status: "queued",
+      requestedBy: context.uid,
+      requestedByName: context.userName,
+      createdAt: context.now,
+      updatedAt: context.now,
+      startedAt: null,
+      completedAt: null,
+      result: null,
+      error: null,
+    },
+  });
+  await postMessage(context, `Queued Codex command ${formatShortId(command.id, "#")} from ${context.userName}.\n${prompt}`, "Codex");
+  return textResult(`Queued Codex command ${formatShortId(command.id, "#")}: ${prompt}`, { command });
+}
+
+async function dispatchPlugin(payload, context) {
+  const [action = "", plugin = ""] = payload.split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+  const normalizedPlugin = plugin.toLowerCase();
+
+  if (!payload || normalizedAction === "help") {
+    return textResult("Plugin commands:\n/plugin enable leads\n/plugin disable leads\n/plugin enable team\n/plugin disable team\n/plugin list");
+  }
+
+  if (normalizedAction === "list") {
+    const room = await getRoom(context);
+    return textResult(formatPluginList(room.plugins));
+  }
+
+  if (!["enable", "disable"].includes(normalizedAction) || !["leads", "team"].includes(normalizedPlugin)) {
+    return textResult("Supported plugins: leads, team.");
+  }
+
+  const enabled = normalizedAction === "enable";
+  const room = await getRoom(context).catch(() => ({ plugins: {} }));
+  const plugins = {
+    ...(room.plugins || {}),
+    [normalizedPlugin]: {
+      ...(room.plugins?.[normalizedPlugin] || {}),
+      enabled,
+    },
+  };
+  await patchDocument({
+    token: context.token,
+    name: context.parentPath,
+    fields: { plugins },
+  });
+  return textResult(`${formatPluginName(normalizedPlugin)} plugin ${enabled ? "enabled" : "disabled"} for this group.`);
+}
+
+async function dispatchLead(payload, context) {
+  const [action = ""] = payload.split(/\s+/);
+  if (!payload || action.toLowerCase() === "help") {
+    return textResult("Lead commands:\n/lead list");
+  }
+
+  if (action.toLowerCase() === "list") {
+    const leads = (await loadCollection(context, "leads")).sort(compareCreatedDesc).slice(0, context.limit);
+    return textResult(formatLeadList(leads), { leads });
+  }
+
+  return unsupported("/lead", "Terminal /lead currently supports list only.");
+}
+
+async function dispatchTeam(payload, context) {
+  const parts = payload.split(/\s+/).map((part) => part.toLowerCase());
+
+  if (!payload || parts[0] === "help") {
+    return textResult("Team commands:\n/team member list\n/team task list\n/team followup list");
+  }
+
+  if (parts[0] === "member" && parts[1] === "list") {
+    const members = (await loadCollection(context, "teamMembers")).sort(compareCreatedAsc).slice(0, context.limit);
+    return textResult(formatTeamMemberList(members), { members });
+  }
+
+  if (parts[0] === "followup" && parts[1] === "list") {
+    const followups = (await loadCollection(context, "followups")).filter((item) => item.status !== "complete").sort(compareCreatedAsc).slice(0, context.limit);
+    return textResult(formatFollowupList(followups), { followups });
+  }
+
+  if (parts[0] === "task" && parts[1] === "list") {
+    const tasks = (await loadCollection(context, "tasks")).filter((task) => task.assignedTeamMemberId || task.jiraKey).sort(compareTasks).slice(0, context.limit);
+    return textResult(formatTaskList(tasks, "team", []), { tasks });
+  }
+
+  return unsupported("/team", "Terminal /team currently supports member list, task list, and followup list.");
+}
+
+async function loadTasks(context, status) {
+  return runCollectionQuery({
+    token: context.token,
+    parentPath: context.parentPath,
+    collectionId: "tasks",
+    where: {
+      fieldFilter: {
+        field: { fieldPath: "status" },
+        op: "EQUAL",
+        value: { stringValue: status },
+      },
+    },
+  });
+}
+
+async function getRoom(context) {
+  return getDocument({
+    token: context.token,
+    name: context.parentPath,
+  });
+}
+
+async function loadCollection(context, collectionId) {
+  return runCollectionQuery({
+    token: context.token,
+    parentPath: context.parentPath,
+    collectionId,
+  });
+}
+
+async function findByShortId(context, collectionId, inputId) {
+  const normalized = String(inputId || "").replace(/^[#~?!%]/, "").toLowerCase();
+  const items = await loadCollection(context, collectionId);
+  return items.find((item) => item.id.toLowerCase() === normalized || item.id.toLowerCase().startsWith(normalized)) || null;
+}
+
+async function postMessage(context, text, senderName = context.userName) {
+  return createDocument({
+    token: context.token,
+    path: `${context.parentPath}/messages`,
+    fields: {
+      text,
+      senderId: context.uid,
+      senderName,
+      createdAt: context.now,
+    },
+  });
+}
+
+function extractLabels(value) {
+  const labels = parseLabels(value);
+  const text = String(value || "")
+    .replace(/(^|\s)#[a-z0-9][a-z0-9_-]*/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return { text, labels };
+}
+
+function parseLabels(value) {
+  return [...String(value || "").matchAll(/(?:^|\s)#([a-z0-9][a-z0-9_-]*)/gi)].map((match) => match[1].toLowerCase());
+}
+
+function hasLabels(item, labels) {
+  if (labels.length === 0) return true;
+  const itemLabels = new Set(Array.isArray(item.labels) ? item.labels : []);
+  return labels.every((label) => itemLabels.has(label));
+}
+
+function formatTaskList(tasks, status, labels) {
+  const heading = status === "complete" ? "Completed tasks" : status === "team" ? "Team tasks" : "Pending tasks";
+  const filter = labels.length > 0 ? ` ${formatLabels(labels).trim()}` : "";
+  if (tasks.length === 0) return `No ${heading.toLowerCase()}${filter}.`;
+  return [
+    `${heading}${filter}:`,
+    ...tasks.map((task) => `${formatShortId(task.id, "#")} - ${task.description || "(no description)"}${formatLabels(task.labels)} (${task.createdByName || "Unknown"})`),
+    `Total: ${tasks.length}`,
+  ].join("\n");
+}
+
+function formatChangeList(changes) {
+  if (changes.length === 0) return "No changes logged yet.";
+  return ["Recent changes:", ...changes.map((change) => `${formatShortId(change.id, "~")} ${change.text || "Untitled change"}${formatLabels(change.labels)} (${change.createdByName || "Unknown"})`)].join("\n");
+}
+
+function formatQueryList(queries) {
+  if (queries.length === 0) return "No pending queries.";
+  return ["Pending queries:", ...queries.map((query) => `${formatShortId(query.id, "?")} ${query.text || "(no question)"} (${query.createdByName || "Unknown"})`)].join("\n");
+}
+
+function formatLeadList(leads) {
+  if (leads.length === 0) return "No leads found.";
+  return ["Recent leads:", ...leads.map((lead) => `~${lead.id.slice(0, 6)} ${lead.name || "Unnamed"} ${lead.status || "new"}${lead.phone ? ` phone:${lead.phone}` : ""}`)].join("\n");
+}
+
+function formatTeamMemberList(members) {
+  if (members.length === 0) return "No team members found.";
+  return ["Team members:", ...members.map((member) => `%${member.id.slice(0, 6)} ${member.name || "Unnamed"} ${member.role || ""} ${member.status || "active"}`.trim())].join("\n");
+}
+
+function formatFollowupList(followups) {
+  if (followups.length === 0) return "No pending followups.";
+  return ["Pending followups:", ...followups.map((item) => `!${item.id.slice(0, 6)} ${item.text || item.note || "(no text)"}`)].join("\n");
+}
+
+function formatPluginList(plugins = {}) {
+  return [
+    "Group plugins:",
+    `- Leads: ${plugins?.leads?.enabled ? "enabled" : "disabled"}`,
+    `- Team: ${plugins?.team?.enabled ? "enabled" : "disabled"}`,
+  ].join("\n");
+}
+
+function formatPluginName(pluginName) {
+  if (pluginName === "leads") return "Leads";
+  if (pluginName === "team") return "Team";
+  return pluginName;
+}
+
+function formatLabels(labels) {
+  return Array.isArray(labels) && labels.length > 0 ? ` ${labels.map((label) => `#${label}`).join(" ")}` : "";
+}
+
+function formatShortId(id, prefix) {
+  return `${prefix}${String(id || "").slice(0, 6)}`;
+}
+
+function compareTasks(left, right) {
+  return (Date.parse(left.createdAt || "") || 0) - (Date.parse(right.createdAt || "") || 0) || left.id.localeCompare(right.id);
+}
+
+function compareCreatedAsc(left, right) {
+  return (Date.parse(left.createdAt || "") || 0) - (Date.parse(right.createdAt || "") || 0) || left.id.localeCompare(right.id);
+}
+
+function compareCreatedDesc(left, right) {
+  return compareCreatedAsc(right, left);
+}
+
+function unsupported(commandName, message) {
+  return { ok: false, unsupported: true, commandName, text: message };
+}
+
+function textResult(text, data = {}) {
+  return { ok: true, text, ...data };
+}
+
+function printResult(result, options) {
+  if (result.ok === false) {
+    process.exitCode = 2;
+  }
+
+  if (options.json) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(result.text || JSON.stringify(result, null, 2));
+}
+
+async function confirm(question) {
+  const rl = createInterface({ input, output });
+  const answer = await rl.question(`${question} Type yes to continue: `);
+  rl.close();
+  return answer.trim().toLowerCase() === "yes";
+}
+
+function taskHelp() {
+  return [
+    "Task commands:",
+    "/task create <description> #label",
+    "/task list [#label]",
+    "/task completed [#label]",
+    "/task complete <id>",
+    "/task reopen <id>",
+  ].join("\n");
+}
+
+function printHelp() {
+  console.log(`Usage:
+  npm run chat:command -- profile --room <roomId> --user <name>
+  npm run chat:command -- "/task list"
+  npm run chat:command -- /task create "Fix bug" "#bug" --yes
+
+Options:
+  -r, --room <roomId>      Override saved room.
+  -u, --user <name>        Override saved user display name.
+      --dry-run            Print what would run without touching Firestore.
+      --json               Print JSON instead of plain text.
+  -y, --yes                Skip confirmation for write and risky commands.
+      --limit <number>     Max items for list commands. Defaults to ${DEFAULT_LIMIT}.
+  -h, --help               Show this help.
+
+Implemented:
+  /task help|create|list|completed|complete|reopen
+  /change help|add|list|summary
+  /query help|create|list|respond|close
+  /codex help|<instruction>
+  /plugin list|enable|disable
+  /lead list
+  /team member list
+  /team task list
+  /team followup list
+`);
+}

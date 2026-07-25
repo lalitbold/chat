@@ -222,9 +222,10 @@ Examples:
 async function startLocalServer({ roomId, options }) {
   const queueDir = join(options.cwd, options.queueDir);
   await mkdir(queueDir, { recursive: true });
+  const localCommands = new Map();
 
   const server = createServer((request, response) => {
-    handleLocalRequest(request, response, { roomId, queueDir, options }).catch((error) => {
+    handleLocalRequest(request, response, { roomId, queueDir, localCommands, options }).catch((error) => {
       sendJson(response, 500, { error: error.message });
     });
   });
@@ -267,6 +268,14 @@ async function handleLocalRequest(request, response, context) {
     return;
   }
 
+  const statusMatch = request.url.match(/^\/commands\/([^/?#]+)$/);
+
+  if (request.method === "GET" && statusMatch) {
+    const command = context.localCommands.get(decodeURIComponent(statusMatch[1]));
+    sendJson(response, command ? 200 : 404, command || { error: "Command not found." });
+    return;
+  }
+
   if (request.method !== "POST" || request.url !== "/commands") {
     sendJson(response, 404, { error: "Not found." });
     return;
@@ -287,6 +296,10 @@ async function handleLocalRequest(request, response, context) {
     roomId: body.roomId || context.roomId || null,
     createdAt: new Date().toISOString(),
   };
+  context.localCommands.set(command.id, {
+    ...command,
+    status: "queued",
+  });
 
   await appendJsonLine(join(context.queueDir, "commands.jsonl"), {
     ...command,
@@ -304,13 +317,16 @@ async function handleLocalRequest(request, response, context) {
   });
 }
 
-async function processLocalCommand(command, { queueDir, options }) {
+async function processLocalCommand(command, { queueDir, localCommands, options }) {
   const shortId = formatCommandId(command.id);
   console.log(`Running local ${shortId}: ${command.prompt}`);
-  await appendJsonLine(join(queueDir, "results.jsonl"), {
+  localCommands.set(command.id, {
     ...command,
     status: "running",
     startedAt: new Date().toISOString(),
+  });
+  await appendJsonLine(join(queueDir, "results.jsonl"), {
+    ...localCommands.get(command.id),
   });
 
   const result = await runCodex(command.prompt, options);
@@ -327,13 +343,15 @@ async function processLocalCommand(command, { queueDir, options }) {
     await maybeAppendChangelog(command, resultText, options);
   }
 
-  await appendJsonLine(join(queueDir, "results.jsonl"), {
+  const completedCommand = {
     ...command,
     status: result.ok ? "completed" : "failed",
     completedAt,
     result: result.ok ? resultText : null,
     error: result.ok ? null : resultText,
-  });
+  };
+  localCommands.set(command.id, completedCommand);
+  await appendJsonLine(join(queueDir, "results.jsonl"), completedCommand);
 
   console.log(`${result.ok ? "Completed" : "Failed"} local ${shortId}`);
 }
@@ -541,7 +559,13 @@ async function maybeAppendChangelog(command, resultText, options) {
 
 function runCodex(prompt, options) {
   return new Promise((resolve) => {
-    const child = spawn(options.codexBin, ["exec", "--sandbox", options.sandbox, prompt], {
+    const command = getCodexSpawnCommand(options.codexBin, [
+      "exec",
+      "--sandbox",
+      options.sandbox,
+      prompt,
+    ]);
+    const child = spawn(command.file, command.args, {
       cwd: options.cwd,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -559,9 +583,11 @@ function runCodex(prompt, options) {
 
     child.stdout.on("data", (chunk) => {
       stdout += chunk;
+      process.stdout.write(chunk);
     });
     child.stderr.on("data", (chunk) => {
       stderr += chunk;
+      process.stderr.write(chunk);
     });
     child.on("error", (error) => {
       clearTimeout(timeoutId);
@@ -621,13 +647,46 @@ function runNodeScript(scriptPath, args) {
 }
 
 function findDefaultCodexBin() {
-  return DEFAULT_CODEX_BIN_CANDIDATES.find((candidate) => {
-    if (candidate.includes("/")) {
+  const candidates =
+    process.platform === "win32"
+      ? [
+          join(process.env.APPDATA || "", "npm", "codex.ps1"),
+          join(process.env.APPDATA || "", "npm", "codex.cmd"),
+          ...DEFAULT_CODEX_BIN_CANDIDATES,
+        ]
+      : DEFAULT_CODEX_BIN_CANDIDATES;
+
+  return candidates.find((candidate) => {
+    if (/[\\/]/.test(candidate)) {
       return existsSync(candidate);
     }
 
     return true;
   });
+}
+
+function getCodexSpawnCommand(codexBin, codexArgs) {
+  if (process.platform !== "win32") {
+    return { file: codexBin, args: codexArgs };
+  }
+
+  const normalizedBin = String(codexBin || "").toLowerCase();
+
+  if (normalizedBin.endsWith(".ps1")) {
+    return {
+      file: "powershell.exe",
+      args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", codexBin, ...codexArgs],
+    };
+  }
+
+  if (normalizedBin.endsWith(".cmd") || normalizedBin.endsWith(".bat")) {
+    return {
+      file: "cmd.exe",
+      args: ["/d", "/s", "/c", codexBin, ...codexArgs],
+    };
+  }
+
+  return { file: codexBin, args: codexArgs };
 }
 
 async function updateDocument(documentName, token, fields) {
