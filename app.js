@@ -207,6 +207,11 @@ const BASE_SLASH_COMMANDS = [
     hint: "Create task",
   },
   {
+    label: "/task create-start <description> #label",
+    insertText: "/task create-start ",
+    hint: "Create and start",
+  },
+  {
     label: "/task list",
     insertText: "/task list",
     hint: "Pending tasks",
@@ -514,6 +519,13 @@ const BASE_SLASH_COMMANDS = [
 ];
 const PRIVACY_INVITE_COMMAND = "/privacy invite";
 const PRIVACY_HIDE_ALL_COMMANDS = new Set(["/privacy hideall", "/privacy hide all"]);
+const PRIVACY_MODE_VISIBILITY = {
+  incomingMessages: false,
+  ownMessages: false,
+  taskCommandResponses: true,
+  localOnlyMessages: true,
+  readReceipts: false,
+};
 const PRIVACY_PREVIEW_MS = 10000;
 const SESSION_KEY = "firestore-chat-session";
 const JOINED_ROOMS_KEY = "openbox-joined-rooms";
@@ -2060,7 +2072,11 @@ function renderMessage(message, context = {}) {
     wrapper.classList.add(`message-${message.type}`);
   }
 
-  if (!message.isLocalOnly && message.senderId === state.profile?.id) {
+  if (
+    (!state.isPrivacyEnabled || state.isPrivacyPreviewVisible || PRIVACY_MODE_VISIBILITY.readReceipts) &&
+    !message.isLocalOnly &&
+    message.senderId === state.profile?.id
+  ) {
     wrapper.classList.add("own");
   }
 
@@ -3773,11 +3789,13 @@ function renderEmptyState(message) {
 function renderPrivacyState() {
   updateLocalMessagesUi();
 
-  if (state.localMessages.length > 0) {
-    const renderContext = createRenderContext(state.localMessages);
+  const localMessages = getPrivacyVisibleLocalMessages();
+
+  if (localMessages.length > 0) {
+    const renderContext = createRenderContext(localMessages);
     const fragment = document.createDocumentFragment();
 
-    state.localMessages.forEach((message) => {
+    localMessages.forEach((message) => {
       fragment.appendChild(renderMessage(message, renderContext));
     });
 
@@ -4964,13 +4982,18 @@ async function handleTaskCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     await postTaskMessage(
-      "Task commands:\n/task create fix that issue #bug\n/task list\n/task list #bug\n/task completed\n/task completed #bug\n/task current\n/task today #abc123 #def456\n/task today list\n/task today review\n/task important [#label]\n/task summarize <id>\n/task view <id>\n/task share <id>\n/task codex <id> [instruction]\n/task process\n/task process #bug\n/task process continue\n/task process stop\n/task edit <id> <description> #label\n/task comment <id> <comment>\n/task comments <id>\n/task subtask <id> <description>\n/task subtasks <id>\n/task subtask done <id> <subtask>\n/task subtask reopen <id> <subtask>\n/task subtask remove <id> <subtask>\n/task start [description]\n/task start <id> [description]\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task timers\n/task summary\n/task summary share\n/task complete <id>\n/task reopen <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nMention a task id like #abc123 in a message to preview it.\nUse /day for attendance and leave commands."
+      "Task commands:\n/task create fix that issue #bug\n/task create-start fix that issue #bug\n/task list\n/task list #bug\n/task completed\n/task completed #bug\n/task current\n/task today #abc123 #def456\n/task today list\n/task today review\n/task important [#label]\n/task summarize <id>\n/task view <id>\n/task share <id>\n/task codex <id> [instruction]\n/task process\n/task process #bug\n/task process continue\n/task process stop\n/task edit <id> <description> #label\n/task comment <id> <comment>\n/task comments <id>\n/task subtask <id> <description>\n/task subtasks <id>\n/task subtask done <id> <subtask>\n/task subtask reopen <id> <subtask>\n/task subtask remove <id> <subtask>\n/task start [description]\n/task start <id> [description]\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task timers\n/task summary\n/task summary share\n/task complete <id>\n/task reopen <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nMention a task id like #abc123 in a message to preview it.\nUse /day for attendance and leave commands."
     );
     return;
   }
 
   if (normalizedAction === "create") {
     await createTask(rest.join(" "));
+    return;
+  }
+
+  if (["create-start", "start-create", "start-task"].includes(normalizedAction)) {
+    await createAndStartTask(rest.join(" "));
     return;
   }
 
@@ -6960,12 +6983,13 @@ async function addQueryTaskComment(taskId, text) {
   });
 }
 
-async function createTask(description) {
+async function createTask(description, options = {}) {
+  const shouldAnnounce = options.announce !== false;
   const { text: trimmedDescription, labels } = extractLabels(description);
 
   if (!trimmedDescription) {
     await postTaskMessage("Add a task description after /task create.");
-    return;
+    return null;
   }
 
   const taskRef = await addDoc(collection(state.db, "rooms", state.roomId, "tasks"), {
@@ -6985,10 +7009,44 @@ async function createTask(description) {
     subtasks: [],
   });
 
-  await postTaskMessage(
-    `Task ${formatTaskId(taskRef.id)} created: ${trimmedDescription}${formatTaskLabels(labels)}`
-  );
-  setStatus("Task created.", "success");
+  const task = {
+    id: taskRef.id,
+    description: trimmedDescription,
+    labels,
+    status: "pending",
+    totalTrackedMs: 0,
+    activeTimerStartedAt: null,
+    activeTimerStartedBy: null,
+    activeTimerStartedByName: null,
+    subtasks: [],
+  };
+
+  if (shouldAnnounce) {
+    await postTaskMessage(
+      `Task ${formatTaskId(taskRef.id)} created: ${trimmedDescription}${formatTaskLabels(labels)}`
+    );
+    setStatus("Task created.", "success");
+  }
+
+  return task;
+}
+
+async function createAndStartTask(description) {
+  const unavailableReason = await getTimerUnavailableReason();
+
+  if (unavailableReason) {
+    await postTaskMessage(unavailableReason);
+    setStatus("Timer cannot start right now.", "error");
+    return;
+  }
+
+  const task = await createTask(description, { announce: false });
+
+  if (!task) {
+    return;
+  }
+
+  await startTaskTimer(task.id);
 }
 
 async function postTaskList(filterText = "") {
@@ -12950,7 +13008,7 @@ function updatePrivacyIndicator() {
   const shouldShowCount = count > 0 && (!state.isPrivacyEnabled || !state.isPrivacyPreviewVisible);
   const shouldShowComposerCount =
     state.isPrivacyEnabled &&
-    !(state.isPrivacyEnabled && !state.isPrivacyPreviewVisible && state.localMessages.length > 0);
+    !(state.isPrivacyEnabled && !state.isPrivacyPreviewVisible && getPrivacyVisibleLocalMessages().length > 0);
 
   privacyIndicator.textContent = shouldShowCount ? String(count) : "";
   privacyIndicator.className = shouldShowCount ? "privacy-indicator active" : "privacy-indicator";
@@ -13549,7 +13607,7 @@ function syncStealthLayout() {
   );
   document.body.classList.toggle(
     "local-tasks-visible",
-    state.isPrivacyEnabled && !state.isPrivacyPreviewVisible && state.localMessages.length > 0
+    state.isPrivacyEnabled && !state.isPrivacyPreviewVisible && getPrivacyVisibleLocalMessages().length > 0
   );
 }
 
@@ -13606,7 +13664,7 @@ function getVisibleMessages() {
     if (state.isPrivacyEnabled) {
       const hiddenIds = new Set(state.hiddenMessageIds);
       return state.messages.filter(
-        (message) => !hiddenIds.has(message.id) && (!isOwnMessage(message) || isPrivacyVisibleOwnMessage(message))
+        (message) => !hiddenIds.has(message.id) && isPrivacyVisibleMessage(message)
       );
     }
 
@@ -13621,18 +13679,34 @@ function isOwnMessage(message) {
   return Boolean(message.senderId && message.senderId === state.profile?.id);
 }
 
-function isPrivacyVisibleOwnMessage(message) {
-  return message.type === "task" && message.senderName === "Tasks";
+function isPrivacyVisibleMessage(message) {
+  if (!isOwnMessage(message)) {
+    return PRIVACY_MODE_VISIBILITY.incomingMessages;
+  }
+
+  if (PRIVACY_MODE_VISIBILITY.ownMessages) {
+    return true;
+  }
+
+  return PRIVACY_MODE_VISIBILITY.taskCommandResponses && message.type === "task" && message.senderName === "Tasks";
+}
+
+function getPrivacyVisibleLocalMessages() {
+  return PRIVACY_MODE_VISIBILITY.localOnlyMessages ? state.localMessages : [];
 }
 
 function getVisibleMessagesWithLocal() {
   const visibleMessages = getVisibleMessages();
 
-  if (state.localMessages.length === 0) {
+  const localMessages = state.isPrivacyEnabled && !state.isPrivacyPreviewVisible
+    ? getPrivacyVisibleLocalMessages()
+    : state.localMessages;
+
+  if (localMessages.length === 0) {
     return visibleMessages;
   }
 
-  return [...visibleMessages, ...state.localMessages].sort(compareMessagesByTime);
+  return [...visibleMessages, ...localMessages].sort(compareMessagesByTime);
 }
 
 function getLatestReadableMessage() {

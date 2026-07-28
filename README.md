@@ -214,6 +214,7 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 ## Task commands
 
 - `/task create fix that issue #bug #urgent` creates a pending task with optional labels.
+- `/task create-start fix that issue #bug` creates a task and starts its timer immediately.
 - `/task list` shows the pending task list only to you. Completed tasks are hidden by default.
 - `/task list #bug` shows pending tasks with that label only to you.
 - `/task current` shows your current active task with quick action buttons.
