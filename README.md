@@ -47,6 +47,10 @@ This project is a lightweight realtime chat app built with:
 rooms/{roomId}
   createdAt
   createdBy
+  plugins.day.enabled
+  plugins.day.schedule.timezone
+  plugins.day.schedule.weekdays.{sun|mon|tue|wed|thu|fri|sat}
+  plugins.day.userOverrides.{userId}.weekdays.{sun|mon|tue|wed|thu|fri|sat}
   settings.queryReminderAudience
 
 rooms/{roomId}/messages/{messageId}
@@ -197,6 +201,8 @@ rooms/{roomId}/workDays/{userId_dateKey}/timeEntries/{entryId}
 rooms/{roomId}/leaves/{leaveId}
   userId
   userName
+  recurrence
+  weekdays
   startDateKey
   endDateKey
   reason
@@ -318,6 +324,8 @@ When `npm run codex:bridge` runs with a write-enabled sandbox, it appends a chan
 - `/plugin disable leads` disables lead capture for the current group.
 - `/plugin enable team` enables team management for the current group.
 - `/plugin disable team` disables team management for the current group.
+- `/plugin enable day` enables attendance, day schedules, breaks, and leave for the current group.
+- `/plugin disable day` disables day commands and removes the `/day start` requirement before timers.
 - `/plugin list` shows enabled and disabled group plugins only to you.
 
 ## Lead commands
@@ -411,11 +419,18 @@ The script signs in anonymously with the Firebase web app config and reads pendi
 
 ## Day commands
 
+Day commands are available after `/plugin enable day`. The Day plugin is disabled by default.
+
 - `/day start` starts your day and posts attendance to the group.
 - When your day is started and no task timer is running, the app reminds you locally every 5 minutes and counts those reminders in the day summary.
 - `/day plan Ship feature X` saves and posts your plan to the group.
 - `/day free tired` marks your current status as free with an optional reason and posts it to the group.
 - `/day status` shows your current day status only to you.
+- `/day schedule` shows your effective schedule using your override when present, otherwise the group schedule.
+- `/day schedule set mon-fri 09:30 18:30` sets the group default schedule.
+- `/day schedule off sat sun` marks group weekdays off.
+- `/day schedule user set mon-fri 10:00 19:00` sets your personal schedule override.
+- `/day schedule user clear` clears your personal schedule override.
 - `/day coach` asks the local Codex bridge for a short AI day-coach recommendation.
 - `/day timesheet` shows your timesheet for today only to you.
 - `/day timesheet 2026-07-01 @lalit` shows a timesheet for a specific day and display-name handle.
@@ -423,10 +438,13 @@ The script signs in anonymously with the Firebase web app config and reads pendi
 - `/day end` ends your day and posts your work summary to the group.
 - `/day leave tomorrow Sick leave` schedules leave and posts it to the group.
 - `/day leave 2026-05-20 to 2026-05-22 PTO` schedules a multi-day leave.
+- `/day leave weekly sat sun Weekly off` schedules recurring weekly leave until canceled.
 - `/day leave list` shows your upcoming leaves only to you.
 - `/day leave cancel <id>` cancels one of your leaves and posts the cancellation to the group.
 
-Leave dates support `today`, `tomorrow`, and `YYYY-MM-DD`. Day-of leave announcements are created when a room participant opens the room on that leave date.
+Schedule weekdays support `sun`, `mon`, `tue`, `wed`, `thu`, `fri`, `sat`, ranges like `mon-fri`, plus `weekdays`, `weekends`, and `all`. Schedule times use `HH:mm` in `Asia/Kolkata` by default. Start time posts a local prompt only. End time auto-ends the day only when no timer or break is active; otherwise it posts a local prompt.
+
+Leave dates support `today`, `tomorrow`, and `YYYY-MM-DD`. Day-of leave announcements are created when a room participant opens the room on that leave date. Weekly leaves announce on matching weekdays using the same daily announcement lock.
 
 ## Hidden chat behavior
 

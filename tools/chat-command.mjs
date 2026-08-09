@@ -438,7 +438,7 @@ async function dispatchPlugin(payload, context) {
   const normalizedPlugin = plugin.toLowerCase();
 
   if (!payload || normalizedAction === "help") {
-    return textResult("Plugin commands:\n/plugin enable leads\n/plugin disable leads\n/plugin enable team\n/plugin disable team\n/plugin list");
+    return textResult("Plugin commands:\n/plugin enable leads\n/plugin disable leads\n/plugin enable team\n/plugin disable team\n/plugin enable day\n/plugin disable day\n/plugin list");
   }
 
   if (normalizedAction === "list") {
@@ -446,8 +446,8 @@ async function dispatchPlugin(payload, context) {
     return textResult(formatPluginList(room.plugins));
   }
 
-  if (!["enable", "disable"].includes(normalizedAction) || !["leads", "team"].includes(normalizedPlugin)) {
-    return textResult("Supported plugins: leads, team.");
+  if (!["enable", "disable"].includes(normalizedAction) || !["leads", "team", "day"].includes(normalizedPlugin)) {
+    return textResult("Supported plugins: leads, team, day.");
   }
 
   const enabled = normalizedAction === "enable";
@@ -615,12 +615,14 @@ function formatPluginList(plugins = {}) {
     "Group plugins:",
     `- Leads: ${plugins?.leads?.enabled ? "enabled" : "disabled"}`,
     `- Team: ${plugins?.team?.enabled ? "enabled" : "disabled"}`,
+    `- Day: ${plugins?.day?.enabled ? "enabled" : "disabled"}`,
   ].join("\n");
 }
 
 function formatPluginName(pluginName) {
   if (pluginName === "leads") return "Leads";
   if (pluginName === "team") return "Team";
+  if (pluginName === "day") return "Day";
   return pluginName;
 }
 

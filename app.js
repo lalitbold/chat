@@ -131,6 +131,7 @@ const QUERY_REMINDER_AUDIENCE_ALL = "all";
 const QUERY_REMINDER_AUDIENCE_ASKER = "asker";
 const QUERY_REMINDER_AUDIENCE_OTHERS = "others";
 const DEFAULT_QUERY_REMINDER_AUDIENCE = QUERY_REMINDER_AUDIENCE_ALL;
+const DEFAULT_DAY_SCHEDULE_TIMEZONE = "Asia/Kolkata";
 const SpeechRecognitionConstructor = window.SpeechRecognition || window.webkitSpeechRecognition || null;
 const VOICE_RECORDING_MAX_MS = 45 * 1000;
 const VOICE_RECORDING_MAX_BYTES = 700 * 1024;
@@ -141,7 +142,19 @@ const QUERY_REMINDER_AUDIENCES = new Set([
 ]);
 const PLUGIN_LEADS = "leads";
 const PLUGIN_TEAM = "team";
-const SUPPORTED_PLUGINS = new Set([PLUGIN_LEADS, PLUGIN_TEAM]);
+const PLUGIN_DAY = "day";
+const SUPPORTED_PLUGINS = new Set([PLUGIN_LEADS, PLUGIN_TEAM, PLUGIN_DAY]);
+const WEEKDAY_KEYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+const WEEKDAY_LABELS = {
+  sun: "Sun",
+  mon: "Mon",
+  tue: "Tue",
+  wed: "Wed",
+  thu: "Thu",
+  fri: "Fri",
+  sat: "Sat",
+};
+const DAY_SCHEDULE_LOCK_MS = 30 * 1000;
 const LEAD_FIELDS = [
   "name",
   "phone",
@@ -187,6 +200,11 @@ const BASE_SLASH_COMMANDS = [
     hint: "Enable team",
   },
   {
+    label: "/plugin enable day",
+    insertText: "/plugin enable day",
+    hint: "Enable day",
+  },
+  {
     label: "/plugin disable leads",
     insertText: "/plugin disable leads",
     hint: "Disable leads",
@@ -195,6 +213,11 @@ const BASE_SLASH_COMMANDS = [
     label: "/plugin disable team",
     insertText: "/plugin disable team",
     hint: "Disable team",
+  },
+  {
+    label: "/plugin disable day",
+    insertText: "/plugin disable day",
+    hint: "Disable day",
   },
   {
     label: "/plugin list",
@@ -342,76 +365,6 @@ const BASE_SLASH_COMMANDS = [
     hint: "Share summary",
   },
   {
-    label: "/day start",
-    insertText: "/day start",
-    hint: "Start day",
-  },
-  {
-    label: "/day plan <plan>",
-    insertText: "/day plan ",
-    hint: "Save plan",
-  },
-  {
-    label: "/day free <reason>",
-    insertText: "/day free ",
-    hint: "Set free status",
-  },
-  {
-    label: "/day status",
-    insertText: "/day status",
-    hint: "Day status",
-  },
-  {
-    label: "/day summary",
-    insertText: "/day summary",
-    hint: "Day summary",
-  },
-  {
-    label: "/day coach",
-    insertText: "/day coach",
-    hint: "AI day coach",
-  },
-  {
-    label: "/day timesheet [date] [@handle]",
-    insertText: "/day timesheet ",
-    hint: "Timesheet",
-  },
-  {
-    label: "/day end",
-    insertText: "/day end",
-    hint: "End day",
-  },
-  {
-    label: "/day break start",
-    insertText: "/day break start",
-    hint: "Start break",
-  },
-  {
-    label: "/day break stop",
-    insertText: "/day break stop",
-    hint: "Stop break",
-  },
-  {
-    label: "/day break list",
-    insertText: "/day break list",
-    hint: "Breaks",
-  },
-  {
-    label: "/day leave tomorrow <reason>",
-    insertText: "/day leave tomorrow ",
-    hint: "Schedule leave",
-  },
-  {
-    label: "/day leave list",
-    insertText: "/day leave list",
-    hint: "Your leaves",
-  },
-  {
-    label: "/day leave cancel <id>",
-    insertText: "/day leave cancel ",
-    hint: "Cancel leave",
-  },
-  {
     label: "/change add <summary> #label",
     insertText: "/change add ",
     hint: "Log change",
@@ -515,6 +468,103 @@ const BASE_SLASH_COMMANDS = [
     label: "/debug reads reset",
     insertText: "/debug reads reset",
     hint: "Reset reads",
+  },
+];
+const DAY_SLASH_COMMANDS = [
+  {
+    label: "/day start",
+    insertText: "/day start",
+    hint: "Start day",
+  },
+  {
+    label: "/day plan <plan>",
+    insertText: "/day plan ",
+    hint: "Save plan",
+  },
+  {
+    label: "/day free <reason>",
+    insertText: "/day free ",
+    hint: "Set free status",
+  },
+  {
+    label: "/day status",
+    insertText: "/day status",
+    hint: "Day status",
+  },
+  {
+    label: "/day summary",
+    insertText: "/day summary",
+    hint: "Day summary",
+  },
+  {
+    label: "/day schedule",
+    insertText: "/day schedule",
+    hint: "Day schedule",
+  },
+  {
+    label: "/day schedule set mon-fri 09:30 18:30",
+    insertText: "/day schedule set mon-fri 09:30 18:30",
+    hint: "Group schedule",
+  },
+  {
+    label: "/day schedule user set mon-fri 10:00 19:00",
+    insertText: "/day schedule user set mon-fri 10:00 19:00",
+    hint: "Your schedule",
+  },
+  {
+    label: "/day schedule user clear",
+    insertText: "/day schedule user clear",
+    hint: "Clear override",
+  },
+  {
+    label: "/day coach",
+    insertText: "/day coach",
+    hint: "AI day coach",
+  },
+  {
+    label: "/day timesheet [date] [@handle]",
+    insertText: "/day timesheet ",
+    hint: "Timesheet",
+  },
+  {
+    label: "/day end",
+    insertText: "/day end",
+    hint: "End day",
+  },
+  {
+    label: "/day break start",
+    insertText: "/day break start",
+    hint: "Start break",
+  },
+  {
+    label: "/day break stop",
+    insertText: "/day break stop",
+    hint: "Stop break",
+  },
+  {
+    label: "/day break list",
+    insertText: "/day break list",
+    hint: "Breaks",
+  },
+  {
+    label: "/day leave tomorrow <reason>",
+    insertText: "/day leave tomorrow ",
+    hint: "Schedule leave",
+  },
+  {
+    label: "/day leave weekly sat sun <reason>",
+    insertText: "/day leave weekly sat sun ",
+    hint: "Weekly leave",
+  },
+  {
+    label: "/day leave list",
+    insertText: "/day leave list",
+    hint: "Your leaves",
+  },
+  {
+    label: "/day leave cancel <id>",
+    insertText: "/day leave cancel ",
+    hint: "Cancel leave",
   },
 ];
 const PRIVACY_INVITE_COMMAND = "/privacy invite";
@@ -631,6 +681,9 @@ const state = {
   taskProcessSession: null,
   dayIdleTaskReminderTimeoutId: null,
   dayIdleTaskReminderClientId: `day-idle-${Math.random().toString(36).slice(2)}`,
+  dayScheduleStartTimeoutId: null,
+  dayScheduleEndTimeoutId: null,
+  dayScheduleClientId: `day-schedule-${Math.random().toString(36).slice(2)}`,
   activeBreakStartedAt: null,
   lastBreakActivityPromptAt: 0,
   isNotificationsEnabled: loadNotificationsEnabled(),
@@ -1671,6 +1724,7 @@ async function connectToRoom(roomId, roomPasscode = "", roomData = null) {
   subscribeToLatestMessages(roomId);
   queueReadReceiptSync();
   scheduleDayIdleTaskReminder();
+  scheduleDayScheduleChecks();
   startTaskTimerReminderSync();
   startQueryReminderSync();
   scheduleSelfReminders();
@@ -1737,6 +1791,7 @@ function pauseRemoteSync() {
   clearQueryReminders();
   clearTeamFollowupReminderSync();
   clearTeamFollowupReminders();
+  clearDayScheduleChecks();
 }
 
 function resumeRemoteSync() {
@@ -1761,6 +1816,7 @@ function resumeRemoteSync() {
   syncGroupUnreadCountListeners();
   startTaskTimerReminderSync();
   startQueryReminderSync();
+  scheduleDayScheduleChecks();
   if (isRoomPluginEnabled(PLUGIN_TEAM)) {
     startTeamFollowupReminderSync();
   }
@@ -1804,6 +1860,8 @@ function applyRoomData(roomData = {}) {
   } else {
     clearTeamFollowupReminders();
   }
+  scheduleDayIdleTaskReminder();
+  scheduleDayScheduleChecks();
   updatePrivacyFeatureAccess();
 
   if (messageInput.value.trimStart().startsWith("/")) {
@@ -2000,6 +2058,7 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   clearTeamFollowupReminderSync();
   clearTeamFollowupReminders();
   clearDayIdleTaskReminder();
+  clearDayScheduleChecks();
   clearMessageMaskRevealTimer();
   clearPrivacyPreviewTimer();
   state.roomId = null;
@@ -4432,6 +4491,10 @@ function compareTasksForAutocomplete(left, right) {
 function getAvailableSlashCommands() {
   const commands = [...BASE_SLASH_COMMANDS];
 
+  if (isRoomPluginEnabled(PLUGIN_DAY)) {
+    commands.push(...DAY_SLASH_COMMANDS);
+  }
+
   if (isRoomPluginEnabled(PLUGIN_LEADS)) {
     commands.push(
       {
@@ -5126,6 +5189,12 @@ async function handleTaskCommand(text) {
 }
 
 async function handleDayCommand(text) {
+  if (!isRoomPluginEnabled(PLUGIN_DAY)) {
+    postLocalDayMessage("Day plugin is disabled for this group. Enable it with /plugin enable day.");
+    setStatus("Day plugin is disabled.", "error");
+    return;
+  }
+
   const rawCommand = text.trim();
   const payload = rawCommand.slice(DAY_COMMAND.length).trim();
   const [action = "", ...rest] = payload.split(/\s+/);
@@ -5133,7 +5202,7 @@ async function handleDayCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     postLocalDayMessage(
-      "Day commands:\n/day start\n/day plan <plan>\n/day free <reason>\n/day status\n/day summary\n/day coach\n/day timesheet [today|yesterday|YYYY-MM-DD] [@handle]\n/day break start\n/day break stop\n/day break list\n/day end\n/day leave <date-or-range> <reason>\n/day leave list\n/day leave cancel <id>"
+      "Day commands:\n/day start\n/day plan <plan>\n/day free <reason>\n/day status\n/day summary\n/day schedule\n/day schedule set mon-fri 09:30 18:30\n/day schedule off sat sun\n/day schedule user set mon-fri 10:00 19:00\n/day schedule user clear\n/day coach\n/day timesheet [today|yesterday|YYYY-MM-DD] [@handle]\n/day break start\n/day break stop\n/day break list\n/day end\n/day leave <date-or-range> <reason>\n/day leave weekly sat sun <reason>\n/day leave list\n/day leave cancel <id>"
     );
     return;
   }
@@ -5165,6 +5234,11 @@ async function handleDayCommand(text) {
 
   if (normalizedAction === "summary") {
     await postDaySummary();
+    return;
+  }
+
+  if (normalizedAction === "schedule") {
+    await handleDayScheduleCommand(rest.join(" "));
     return;
   }
 
@@ -5594,7 +5668,7 @@ async function handlePluginCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     postLocalPluginMessage(
-      "Plugin commands:\n/plugin enable leads\n/plugin disable leads\n/plugin enable team\n/plugin disable team\n/plugin list"
+      "Plugin commands:\n/plugin enable leads\n/plugin disable leads\n/plugin enable team\n/plugin disable team\n/plugin enable day\n/plugin disable day\n/plugin list"
     );
     return;
   }
@@ -5611,7 +5685,7 @@ async function handlePluginCommand(text) {
   }
 
   if (!SUPPORTED_PLUGINS.has(normalizedPlugin)) {
-    postLocalPluginMessage("Supported plugins: leads, team.");
+    postLocalPluginMessage("Supported plugins: leads, team, day.");
     setStatus("Unknown plugin.", "error");
     return;
   }
@@ -5633,6 +5707,16 @@ async function handlePluginCommand(text) {
     } else {
       clearTeamFollowupReminderSync();
       clearTeamFollowupReminders();
+    }
+  }
+  if (normalizedPlugin === PLUGIN_DAY) {
+    if (enabled) {
+      scheduleDayIdleTaskReminder();
+      scheduleDayScheduleChecks();
+      void announceTodaysLeaves();
+    } else {
+      clearDayIdleTaskReminder();
+      clearDayScheduleChecks();
     }
   }
   void updateCommandAutocomplete();
@@ -8347,6 +8431,7 @@ async function startTaskTimer(input) {
     timerDescription,
   });
   clearDayIdleTaskReminder();
+  scheduleDayScheduleChecks();
   await postTaskMessage(
     `Task ${formatTaskId(task.id)} timer started: ${getTaskTimerDisplayDescription(task, timerDescription)}`
   );
@@ -8434,6 +8519,7 @@ async function stopTaskTimer(taskIdInput) {
   await recordTaskTimeEntry(task, task.activeTimerStartedAt, stoppedAt, elapsedMs);
   clearTaskTimerReminder(task.id);
   scheduleDayIdleTaskReminder();
+  scheduleDayScheduleChecks();
   await postTaskMessage(
     `Task ${formatTaskId(task.id)} timer stopped after ${formatDuration(elapsedMs)}: ${getTaskTimerDisplayDescription(task)}`
   );
@@ -8521,6 +8607,7 @@ async function startGeneralTimer(description = "") {
     timerDescription,
   });
   clearDayIdleTaskReminder();
+  scheduleDayScheduleChecks();
   await postTaskMessage(`General timer started${timerDescription ? `: ${timerDescription}` : ""}.`);
   setStatus("General timer started.", "success");
 }
@@ -8560,6 +8647,7 @@ async function stopGeneralTimer() {
   );
   clearGeneralTimerReminders();
   scheduleDayIdleTaskReminder();
+  scheduleDayScheduleChecks();
   await postTaskMessage(
     `General timer stopped after ${formatDuration(elapsedMs)}${activeTimer.data.activeTimerDescription ? `: ${activeTimer.data.activeTimerDescription}` : ""}.`
   );
@@ -8567,6 +8655,10 @@ async function stopGeneralTimer() {
 }
 
 async function getTimerUnavailableReason() {
+  if (!isRoomPluginEnabled(PLUGIN_DAY)) {
+    return "";
+  }
+
   const workDay = await getWorkDay();
 
   if (!workDay?.startedAt) {
@@ -8861,6 +8953,7 @@ async function startWorkDay() {
     `${getProfileDisplayName()} started the day.\nPlan can be shared with /day plan <plan>.`
   );
   scheduleDayIdleTaskReminder();
+  scheduleDayScheduleChecks();
   setStatus("Day started.", "success");
 }
 
@@ -8888,7 +8981,7 @@ async function saveWorkDayPlan(planInput) {
   setStatus("Day plan saved.", "success");
 }
 
-async function endWorkDay() {
+async function endWorkDay(options = {}) {
   await stopActiveBreak({ announce: false });
   await pauseActiveTimersForCurrentUser("day end");
 
@@ -8905,9 +8998,11 @@ async function endWorkDay() {
   );
 
   const summary = await buildDailyTaskSummary({ includePlan: true });
-  await postDayMessage(summary);
+  await postDayMessage(options.autoEnded ? `${summary}\nAuto-ended at the configured day end time.` : summary);
   clearDayIdleTaskReminder();
-  setStatus("Day ended and summary shared.", "success");
+  clearDayScheduleChecks();
+  scheduleDayScheduleChecks();
+  setStatus(options.autoEnded ? "Day auto-ended and summary shared." : "Day ended and summary shared.", "success");
 }
 
 async function setFreeDayStatus(reasonInput = "") {
@@ -8985,6 +9080,227 @@ async function postDaySummary() {
   const summary = await buildDailyTaskSummary({ includePlan: true });
   postLocalDayMessage(summary);
   setStatus("Day summary ready.", "success");
+}
+
+async function handleDayScheduleCommand(input = "") {
+  const trimmedInput = input.trim();
+  const [action = "", ...rest] = trimmedInput.split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+
+  if (!trimmedInput || ["show", "status", "list"].includes(normalizedAction)) {
+    postLocalDayMessage(formatEffectiveDaySchedule());
+    setStatus("Day schedule shown.", "success");
+    return;
+  }
+
+  if (normalizedAction === "set") {
+    await saveDaySchedule(rest, { userOverride: false });
+    return;
+  }
+
+  if (normalizedAction === "off") {
+    await saveDayScheduleOff(rest, { userOverride: false });
+    return;
+  }
+
+  if (normalizedAction === "user") {
+    await handleUserDayScheduleCommand(rest);
+    return;
+  }
+
+  postLocalDayMessage(
+    "Use /day schedule, /day schedule set mon-fri 09:30 18:30, /day schedule off sat sun, /day schedule user set mon-fri 10:00 19:00, or /day schedule user clear."
+  );
+}
+
+async function handleUserDayScheduleCommand(parts = []) {
+  const [action = "", ...rest] = parts;
+  const normalizedAction = action.toLowerCase();
+
+  if (normalizedAction === "set") {
+    await saveDaySchedule(rest, { userOverride: true });
+    return;
+  }
+
+  if (normalizedAction === "off") {
+    await saveDayScheduleOff(rest, { userOverride: true });
+    return;
+  }
+
+  if (normalizedAction === "clear") {
+    await clearUserDayScheduleOverride();
+    return;
+  }
+
+  postLocalDayMessage("Use /day schedule user set mon-fri 10:00 19:00, /day schedule user off sat sun, or /day schedule user clear.");
+}
+
+async function saveDaySchedule(parts = [], options = {}) {
+  if (parts.length < 3) {
+    postLocalDayMessage(
+      options.userOverride
+        ? "Use /day schedule user set mon-fri 10:00 19:00."
+        : "Use /day schedule set mon-fri 09:30 18:30."
+    );
+    return;
+  }
+
+  const endTime = parts[parts.length - 1];
+  const startTime = parts[parts.length - 2];
+  const weekdayParts = parts.slice(0, -2);
+  const weekdays = parseWeekdaySelection(weekdayParts);
+
+  if (weekdays.length === 0 || !isValidDayScheduleTime(startTime) || !isValidDayScheduleTime(endTime)) {
+    postLocalDayMessage("Use valid weekdays and 24-hour times like /day schedule set mon-fri 09:30 18:30.");
+    setStatus("Day schedule not saved.", "error");
+    return;
+  }
+
+  const weekdayUpdates = Object.fromEntries(
+    weekdays.map((weekday) => [
+      weekday,
+      {
+        enabled: true,
+        startTime,
+        endTime,
+      },
+    ])
+  );
+
+  await saveDayScheduleWeekdayUpdates(weekdayUpdates, options);
+  postLocalDayMessage(
+    `${options.userOverride ? "Your day schedule override" : "Group day schedule"} saved for ${formatWeekdays(weekdays)}: ${startTime} - ${endTime}.`
+  );
+  setStatus("Day schedule saved.", "success");
+}
+
+async function saveDayScheduleOff(parts = [], options = {}) {
+  const weekdays = parseWeekdaySelection(parts);
+
+  if (weekdays.length === 0) {
+    postLocalDayMessage(options.userOverride ? "Use /day schedule user off sat sun." : "Use /day schedule off sat sun.");
+    return;
+  }
+
+  const weekdayUpdates = Object.fromEntries(
+    weekdays.map((weekday) => [
+      weekday,
+      {
+        enabled: false,
+      },
+    ])
+  );
+
+  await saveDayScheduleWeekdayUpdates(weekdayUpdates, options);
+  postLocalDayMessage(`${options.userOverride ? "Your day schedule override" : "Group day schedule"} marked off for ${formatWeekdays(weekdays)}.`);
+  setStatus("Day schedule saved.", "success");
+}
+
+async function saveDayScheduleWeekdayUpdates(weekdayUpdates, options = {}) {
+  const dayPlugin = getDayPluginConfig();
+  const schedule = normalizeDaySchedule(dayPlugin.schedule);
+  const userOverrides = normalizeDayUserOverrides(dayPlugin.userOverrides);
+
+  if (options.userOverride) {
+    const currentOverride = normalizeDayUserOverride(userOverrides[state.profile.id]);
+    userOverrides[state.profile.id] = {
+      ...currentOverride,
+      weekdays: {
+        ...currentOverride.weekdays,
+        ...weekdayUpdates,
+      },
+    };
+  } else {
+    schedule.weekdays = {
+      ...schedule.weekdays,
+      ...weekdayUpdates,
+    };
+  }
+
+  await setDoc(
+    doc(state.db, "rooms", state.roomId),
+    {
+      plugins: {
+        [PLUGIN_DAY]: {
+          ...dayPlugin,
+          enabled: true,
+          schedule,
+          userOverrides,
+        },
+      },
+    },
+    { merge: true }
+  );
+
+  state.roomPlugins = {
+    ...state.roomPlugins,
+    [PLUGIN_DAY]: {
+      ...dayPlugin,
+      enabled: true,
+      schedule,
+      userOverrides,
+    },
+  };
+  clearDayScheduleRunKeys();
+  scheduleDayScheduleChecks();
+  void updateCommandAutocomplete();
+}
+
+async function clearUserDayScheduleOverride() {
+  const dayPlugin = getDayPluginConfig();
+  const userOverrides = {
+    ...normalizeDayUserOverrides(dayPlugin.userOverrides),
+    [state.profile.id]: {
+      weekdays: {},
+    },
+  };
+
+  await setDoc(
+    doc(state.db, "rooms", state.roomId),
+    {
+      plugins: {
+        [PLUGIN_DAY]: {
+          ...dayPlugin,
+          enabled: true,
+          userOverrides,
+        },
+      },
+    },
+    { merge: true }
+  );
+
+  state.roomPlugins = {
+    ...state.roomPlugins,
+    [PLUGIN_DAY]: {
+      ...dayPlugin,
+      enabled: true,
+      userOverrides,
+    },
+  };
+  clearDayScheduleRunKeys();
+  scheduleDayScheduleChecks();
+  postLocalDayMessage("Your day schedule override was cleared.");
+  setStatus("Day schedule override cleared.", "success");
+}
+
+function formatEffectiveDaySchedule() {
+  const dayPlugin = getDayPluginConfig();
+  const schedule = normalizeDaySchedule(dayPlugin.schedule);
+  const override = normalizeDayUserOverride(dayPlugin.userOverrides?.[state.profile?.id]);
+  const lines = [`Day schedule (${schedule.timezone})`];
+
+  WEEKDAY_KEYS.slice(1).concat(WEEKDAY_KEYS[0]).forEach((weekday) => {
+    const groupDay = schedule.weekdays[weekday];
+    const overrideDay = override.weekdays[weekday];
+    const effectiveDay = getEffectiveDayScheduleForWeekday(weekday);
+    const source = overrideDay ? "your override" : groupDay ? "group" : "not set";
+    const status = effectiveDay?.enabled
+      ? `${effectiveDay.startTime} - ${effectiveDay.endTime}`
+      : "off";
+    lines.push(`- ${WEEKDAY_LABELS[weekday]}: ${status} (${source})`);
+  });
+
+  return lines.join("\n");
 }
 
 async function queueDayCoachForCodex(options = {}) {
@@ -9294,6 +9610,7 @@ async function startBreak() {
     `${getProfileDisplayName()} started a break.${pausedTimerCount > 0 ? ` Paused ${pausedTimerCount} active timer${pausedTimerCount === 1 ? "" : "s"}.` : ""}`
   );
   clearDayIdleTaskReminder();
+  scheduleDayScheduleChecks();
   setActiveBreakState(startedAt);
   setStatus("Break started.", "success");
 }
@@ -9340,6 +9657,7 @@ async function stopActiveBreak(options = {}) {
   if (options.announce !== false) {
     await postDayMessage(`${getProfileDisplayName()} ended a break after ${formatDuration(durationMs)}.`);
     scheduleDayIdleTaskReminder();
+    scheduleDayScheduleChecks();
     setStatus("Break stopped.", "success");
   }
 
@@ -9395,6 +9713,11 @@ async function handleLeaveCommand(input = "") {
     return;
   }
 
+  if (normalizedAction === "weekly") {
+    await scheduleWeeklyLeave(rest.join(" "));
+    return;
+  }
+
   await scheduleLeave(trimmedInput);
 }
 
@@ -9423,13 +9746,72 @@ async function scheduleLeave(input) {
   setStatus("Leave scheduled.", "success");
 }
 
+async function scheduleWeeklyLeave(input) {
+  const parsedLeave = parseWeeklyLeaveInput(input);
+
+  if (!parsedLeave) {
+    postLocalDayMessage("Use /day leave weekly sat sun Weekly off.");
+    return;
+  }
+
+  const leaveRef = await addDoc(collection(state.db, "rooms", state.roomId, "leaves"), {
+    userId: state.profile.id,
+    userName: getProfileDisplayName(),
+    recurrence: "weekly",
+    weekdays: parsedLeave.weekdays,
+    startDateKey: getTodayKey(),
+    endDateKey: null,
+    reason: parsedLeave.reason,
+    status: "scheduled",
+    createdAt: serverTimestamp(),
+    canceledAt: null,
+  });
+
+  await postDayMessage(
+    `${getProfileDisplayName()} scheduled weekly leave on ${formatWeekdays(parsedLeave.weekdays)}: ${parsedLeave.reason} (${formatLeaveId(leaveRef.id)})`
+  );
+  setStatus("Weekly leave scheduled.", "success");
+}
+
+function parseWeeklyLeaveInput(input = "") {
+  const parts = input.trim().split(/\s+/).filter(Boolean);
+  const weekdays = [];
+  const seen = new Set();
+  let reasonStartIndex = 0;
+
+  for (let index = 0; index < parts.length; index += 1) {
+    const expandedWeekdays = expandWeekdayToken(parts[index]);
+
+    if (expandedWeekdays.length === 0) {
+      reasonStartIndex = index;
+      break;
+    }
+
+    expandedWeekdays.forEach((weekday) => {
+      if (!seen.has(weekday)) {
+        seen.add(weekday);
+        weekdays.push(weekday);
+      }
+    });
+    reasonStartIndex = index + 1;
+  }
+
+  const reason = parts.slice(reasonStartIndex).join(" ").trim();
+
+  if (weekdays.length === 0 || !reason) {
+    return null;
+  }
+
+  return { weekdays, reason };
+}
+
 async function postLeaveList() {
   const leaves = (await loadRoomLeaves())
     .filter(
       (leave) =>
         leave.userId === state.profile.id &&
         leave.status !== "canceled" &&
-        leave.endDateKey >= getTodayKey()
+        (leave.recurrence === "weekly" || leave.endDateKey >= getTodayKey())
     )
     .sort(compareLeavesByStartDate);
 
@@ -9441,7 +9823,7 @@ async function postLeaveList() {
 
   const lines = leaves.map(
     (leave) =>
-      `${formatLeaveId(leave.id)} - ${formatDateRange(leave.startDateKey, leave.endDateKey)}: ${leave.reason}`
+      `${formatLeaveId(leave.id)} - ${formatLeaveSchedule(leave)}: ${leave.reason}`
   );
   postLocalDayMessage(`Upcoming leaves:\n${lines.join("\n")}`);
   setStatus(`${leaves.length} leave${leaves.length === 1 ? "" : "s"} listed.`, "success");
@@ -9481,24 +9863,20 @@ async function cancelLeave(leaveIdInput) {
   });
 
   await postDayMessage(
-    `${getProfileDisplayName()} canceled leave ${formatDateRange(leave.startDateKey, leave.endDateKey)}: ${leave.reason} (${formatLeaveId(leave.id)})`
+    `${getProfileDisplayName()} canceled leave ${formatLeaveSchedule(leave)}: ${leave.reason} (${formatLeaveId(leave.id)})`
   );
   setStatus("Leave canceled.", "success");
 }
 
 async function announceTodaysLeaves() {
-  if (!state.db || !state.roomId || !state.profile) {
+  if (!state.db || !state.roomId || !state.profile || !isRoomPluginEnabled(PLUGIN_DAY)) {
     return;
   }
 
   try {
     const todayKey = getTodayKey();
-    const leaves = (await loadRoomLeaves()).filter(
-      (leave) =>
-        leave.status !== "canceled" &&
-        leave.startDateKey <= todayKey &&
-        leave.endDateKey >= todayKey
-    );
+    const todayWeekday = getTodayWeekdayKey();
+    const leaves = (await loadRoomLeaves()).filter((leave) => isLeaveActiveOnDate(leave, todayKey, todayWeekday));
 
     for (const leave of leaves) {
       const announcementId = `${todayKey}_${leave.id}`;
@@ -9516,7 +9894,7 @@ async function announceTodaysLeaves() {
       }
 
       await postDayMessage(
-        `${leave.userName || "Someone"} is on leave today (${formatDateRange(leave.startDateKey, leave.endDateKey)}): ${leave.reason}`
+        `${leave.userName || "Someone"} is on leave today (${formatLeaveSchedule(leave)}): ${leave.reason}`
       );
       await setDoc(announcementRef, {
         leaveId: leave.id,
@@ -11634,7 +12012,7 @@ function clearGeneralTimerReminders() {
 function scheduleDayIdleTaskReminder() {
   clearDayIdleTaskReminder();
 
-  if (!state.db || !state.roomId || !state.profile) {
+  if (!state.db || !state.roomId || !state.profile || !isRoomPluginEnabled(PLUGIN_DAY)) {
     return;
   }
 
@@ -11793,6 +12171,214 @@ function clearDayIdleTaskReminder() {
 
   window.clearTimeout(state.dayIdleTaskReminderTimeoutId);
   state.dayIdleTaskReminderTimeoutId = null;
+}
+
+function scheduleDayScheduleChecks() {
+  clearDayScheduleChecks();
+
+  if (!state.db || !state.roomId || !state.profile || !isRoomPluginEnabled(PLUGIN_DAY)) {
+    return;
+  }
+
+  const todaySchedule = getTodayEffectiveDaySchedule();
+
+  if (!todaySchedule?.enabled) {
+    return;
+  }
+
+  const now = Date.now();
+  const startAt = getTodayDateForScheduleTime(todaySchedule.startTime).getTime();
+  const endAt = getTodayDateForScheduleTime(todaySchedule.endTime).getTime();
+
+  if (startAt > now) {
+    state.dayScheduleStartTimeoutId = window.setTimeout(() => {
+      void handleDayScheduleStartPrompt();
+    }, startAt - now);
+  } else if (!hasDayScheduleCheckRunToday("start")) {
+    state.dayScheduleStartTimeoutId = window.setTimeout(() => {
+      void handleDayScheduleStartPrompt();
+    }, 0);
+  }
+
+  if (endAt > now) {
+    state.dayScheduleEndTimeoutId = window.setTimeout(() => {
+      void handleDayScheduleEndCheck();
+    }, endAt - now);
+  } else if (!hasDayScheduleCheckRunToday("end")) {
+    state.dayScheduleEndTimeoutId = window.setTimeout(() => {
+      void handleDayScheduleEndCheck();
+    }, 0);
+  }
+}
+
+function clearDayScheduleChecks() {
+  if (state.dayScheduleStartTimeoutId) {
+    window.clearTimeout(state.dayScheduleStartTimeoutId);
+    state.dayScheduleStartTimeoutId = null;
+  }
+
+  if (state.dayScheduleEndTimeoutId) {
+    window.clearTimeout(state.dayScheduleEndTimeoutId);
+    state.dayScheduleEndTimeoutId = null;
+  }
+}
+
+async function handleDayScheduleStartPrompt() {
+  state.dayScheduleStartTimeoutId = null;
+
+  if (!isRoomPluginEnabled(PLUGIN_DAY) || document.hidden) {
+    return;
+  }
+
+  if (!claimDayScheduleCheck("start")) {
+    return;
+  }
+
+  try {
+    const workDay = await getWorkDay();
+
+    if (!workDay?.startedAt || workDay.endedAt) {
+      postLocalDayMessage("Scheduled day start time reached. Start your day with /day start.");
+      setStatus("Scheduled day start reminder.", "success");
+    }
+  } finally {
+    markDayScheduleCheckRunToday("start");
+    releaseDayScheduleCheck("start");
+    scheduleDayScheduleChecks();
+  }
+}
+
+async function handleDayScheduleEndCheck() {
+  state.dayScheduleEndTimeoutId = null;
+
+  if (!isRoomPluginEnabled(PLUGIN_DAY) || document.hidden) {
+    return;
+  }
+
+  if (!claimDayScheduleCheck("end")) {
+    return;
+  }
+
+  try {
+    const todaySchedule = getTodayEffectiveDaySchedule();
+    const workDay = await getWorkDay();
+
+    if (!todaySchedule?.enabled || !workDay?.startedAt || workDay.endedAt) {
+      return;
+    }
+
+    if (workDay.activeBreakStartedAt || (await findActiveGeneralTimer()) || (await loadCurrentUserActiveTaskTimers()).length > 0) {
+      postLocalDayMessage("Configured day end time reached, but a timer or break is still active. Stop it, then end the day with /day end.");
+      setStatus("Day end needs attention.", "error");
+      return;
+    }
+
+    markDayScheduleCheckRunToday("end");
+    await endWorkDay({ autoEnded: true });
+  } finally {
+    markDayScheduleCheckRunToday("end");
+    releaseDayScheduleCheck("end");
+    scheduleDayScheduleChecks();
+  }
+}
+
+function getTodayDateForScheduleTime(timeValue) {
+  const [hours = "0", minutes = "0"] = String(timeValue || "00:00").split(":");
+  const date = new Date();
+  date.setHours(Number(hours), Number(minutes), 0, 0);
+  return date;
+}
+
+function claimDayScheduleCheck(kind) {
+  const key = getDayScheduleLockKey(kind);
+
+  if (!key) {
+    return true;
+  }
+
+  try {
+    const now = Date.now();
+    const existingClaim = JSON.parse(localStorage.getItem(key) || "null");
+
+    if (
+      existingClaim?.expiresAt > now &&
+      existingClaim?.clientId &&
+      existingClaim.clientId !== state.dayScheduleClientId
+    ) {
+      return false;
+    }
+
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        clientId: state.dayScheduleClientId,
+        expiresAt: now + DAY_SCHEDULE_LOCK_MS,
+      })
+    );
+
+    const savedClaim = JSON.parse(localStorage.getItem(key) || "null");
+    return savedClaim?.clientId === state.dayScheduleClientId;
+  } catch (error) {
+    console.warn("Day schedule lock failed:", error);
+    return true;
+  }
+}
+
+function releaseDayScheduleCheck(kind) {
+  const key = getDayScheduleLockKey(kind);
+
+  if (!key) {
+    return;
+  }
+
+  try {
+    const existingClaim = JSON.parse(localStorage.getItem(key) || "null");
+
+    if (existingClaim?.clientId === state.dayScheduleClientId) {
+      localStorage.removeItem(key);
+    }
+  } catch (error) {
+    console.warn("Day schedule unlock failed:", error);
+  }
+}
+
+function getDayScheduleLockKey(kind) {
+  if (!state.roomId || !state.profile?.id) {
+    return "";
+  }
+
+  return `daySchedule:${kind}:${state.roomId}:${state.profile.id}:${getTodayKey()}`;
+}
+
+function hasDayScheduleCheckRunToday(kind) {
+  const key = getDayScheduleRunKey(kind);
+  return Boolean(key && localStorage.getItem(key));
+}
+
+function markDayScheduleCheckRunToday(kind) {
+  const key = getDayScheduleRunKey(kind);
+
+  if (key) {
+    localStorage.setItem(key, new Date().toISOString());
+  }
+}
+
+function clearDayScheduleRunKeys() {
+  ["start", "end"].forEach((kind) => {
+    const key = getDayScheduleRunKey(kind);
+
+    if (key) {
+      localStorage.removeItem(key);
+    }
+  });
+}
+
+function getDayScheduleRunKey(kind) {
+  if (!state.roomId || !state.profile?.id) {
+    return "";
+  }
+
+  return `dayScheduleRun:${kind}:${state.roomId}:${state.profile.id}:${getTodayKey()}`;
 }
 
 function getGeneralTimerReminderId() {
@@ -12505,6 +13091,162 @@ function getTodayKey() {
   return `${year}-${month}-${day}`;
 }
 
+function getTodayWeekdayKey() {
+  return WEEKDAY_KEYS[new Date().getDay()];
+}
+
+function parseWeekdaySelection(parts = []) {
+  const weekdays = [];
+  const seen = new Set();
+
+  parts.forEach((part) => {
+    expandWeekdayToken(part).forEach((weekday) => {
+      if (!seen.has(weekday)) {
+        seen.add(weekday);
+        weekdays.push(weekday);
+      }
+    });
+  });
+
+  return weekdays;
+}
+
+function expandWeekdayToken(value) {
+  const normalizedValue = String(value || "").trim().toLowerCase();
+
+  if (normalizedValue === "all") {
+    return [...WEEKDAY_KEYS];
+  }
+
+  if (normalizedValue === "weekdays") {
+    return ["mon", "tue", "wed", "thu", "fri"];
+  }
+
+  if (normalizedValue === "weekends") {
+    return ["sat", "sun"];
+  }
+
+  const rangeMatch = normalizedValue.match(/^([a-z]{3})-([a-z]{3})$/);
+  if (rangeMatch) {
+    const startIndex = WEEKDAY_KEYS.indexOf(rangeMatch[1]);
+    const endIndex = WEEKDAY_KEYS.indexOf(rangeMatch[2]);
+
+    if (startIndex === -1 || endIndex === -1) {
+      return [];
+    }
+
+    const range = [];
+    let index = startIndex;
+    while (true) {
+      range.push(WEEKDAY_KEYS[index]);
+      if (index === endIndex) {
+        break;
+      }
+      index = (index + 1) % WEEKDAY_KEYS.length;
+    }
+    return range;
+  }
+
+  return WEEKDAY_KEYS.includes(normalizedValue) ? [normalizedValue] : [];
+}
+
+function isValidDayScheduleTime(value) {
+  const match = String(value || "").match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+  return Boolean(match);
+}
+
+function formatWeekdays(weekdays = []) {
+  return weekdays.map((weekday) => WEEKDAY_LABELS[weekday] || weekday).join(", ");
+}
+
+function normalizeDaySchedule(schedule = {}) {
+  const weekdays = {};
+
+  Object.entries(schedule?.weekdays || {}).forEach(([weekday, dayConfig]) => {
+    const normalizedWeekday = normalizeWeekdayKey(weekday);
+
+    if (!normalizedWeekday) {
+      return;
+    }
+
+    weekdays[normalizedWeekday] = normalizeDayScheduleDay(dayConfig);
+  });
+
+  return {
+    timezone: schedule?.timezone || DEFAULT_DAY_SCHEDULE_TIMEZONE,
+    weekdays,
+  };
+}
+
+function normalizeDayScheduleDay(dayConfig = {}) {
+  const enabled = Boolean(dayConfig?.enabled);
+  const normalized = {
+    enabled,
+  };
+
+  if (enabled && isValidDayScheduleTime(dayConfig?.startTime) && isValidDayScheduleTime(dayConfig?.endTime)) {
+    normalized.startTime = dayConfig.startTime;
+    normalized.endTime = dayConfig.endTime;
+  }
+
+  return normalized;
+}
+
+function normalizeDayUserOverrides(userOverrides = {}) {
+  return Object.fromEntries(
+    Object.entries(userOverrides || {})
+      .filter(([userId]) => Boolean(userId))
+      .map(([userId, override]) => [userId, normalizeDayUserOverride(override)])
+  );
+}
+
+function normalizeDayUserOverride(override = {}) {
+  const weekdays = {};
+
+  Object.entries(override?.weekdays || {}).forEach(([weekday, dayConfig]) => {
+    const normalizedWeekday = normalizeWeekdayKey(weekday);
+
+    if (normalizedWeekday) {
+      weekdays[normalizedWeekday] = normalizeDayScheduleDay(dayConfig);
+    }
+  });
+
+  return { weekdays };
+}
+
+function normalizeWeekdayKey(value) {
+  const normalizedValue = String(value || "").trim().toLowerCase();
+  return WEEKDAY_KEYS.includes(normalizedValue) ? normalizedValue : "";
+}
+
+function getDayPluginConfig() {
+  const dayPlugin = state.roomPlugins?.[PLUGIN_DAY] || {};
+  return {
+    ...dayPlugin,
+    enabled: Boolean(dayPlugin.enabled),
+    schedule: normalizeDaySchedule(dayPlugin.schedule),
+    userOverrides: normalizeDayUserOverrides(dayPlugin.userOverrides),
+  };
+}
+
+function getEffectiveDayScheduleForWeekday(weekday = getTodayWeekdayKey()) {
+  const dayPlugin = getDayPluginConfig();
+  const normalizedWeekday = normalizeWeekdayKey(weekday);
+  const userOverride = normalizeDayUserOverride(dayPlugin.userOverrides?.[state.profile?.id]);
+  const overrideDay = userOverride.weekdays[normalizedWeekday];
+
+  if (overrideDay) {
+    return overrideDay.enabled && overrideDay.startTime && overrideDay.endTime ? overrideDay : { enabled: false };
+  }
+
+  const groupDay = dayPlugin.schedule.weekdays[normalizedWeekday];
+  return groupDay?.enabled && groupDay.startTime && groupDay.endTime ? groupDay : { enabled: false };
+}
+
+function getTodayEffectiveDaySchedule() {
+  return getEffectiveDayScheduleForWeekday(getTodayWeekdayKey());
+}
+
 function parseLeaveInput(input) {
   const trimmedInput = input.trim();
   const rangeMatch = trimmedInput.match(/^(\S+)(?:\s+to\s+(\S+))?\s+(.+)$/i);
@@ -12572,16 +13314,45 @@ function formatDateRange(startDateKey, endDateKey) {
   return startDateKey === endDateKey ? startDateKey : `${startDateKey} to ${endDateKey}`;
 }
 
+function formatLeaveSchedule(leave) {
+  if (leave?.recurrence === "weekly") {
+    return `weekly ${formatWeekdays(Array.isArray(leave.weekdays) ? leave.weekdays : [])}`;
+  }
+
+  return formatDateRange(leave?.startDateKey, leave?.endDateKey);
+}
+
 function formatLeaveId(leaveId) {
   return `#${leaveId.slice(0, 6)}`;
 }
 
 function compareLeavesByStartDate(left, right) {
+  if (left.recurrence === "weekly" || right.recurrence === "weekly") {
+    return String(left.createdAt || "").localeCompare(String(right.createdAt || "")) || left.id.localeCompare(right.id);
+  }
+
   if (left.startDateKey !== right.startDateKey) {
     return left.startDateKey.localeCompare(right.startDateKey);
   }
 
   return left.id.localeCompare(right.id);
+}
+
+function isLeaveActiveOnDate(leave, dateKey, weekdayKey) {
+  if (!leave || leave.status === "canceled") {
+    return false;
+  }
+
+  if (leave.recurrence === "weekly") {
+    const weekdays = Array.isArray(leave.weekdays) ? leave.weekdays.map(normalizeWeekdayKey).filter(Boolean) : [];
+    return (
+      weekdays.includes(weekdayKey) &&
+      (!leave.startDateKey || leave.startDateKey <= dateKey) &&
+      (!leave.endDateKey || leave.endDateKey >= dateKey)
+    );
+  }
+
+  return leave.startDateKey <= dateKey && leave.endDateKey >= dateKey;
 }
 
 function isTimestampWithin(timestamp, start, end) {
@@ -13870,12 +14641,24 @@ function normalizeRoomPlugins(plugins = {}) {
     Object.entries(plugins || {})
       .map(([pluginName, pluginConfig]) => [
         normalizePluginName(pluginName),
-        {
-          enabled: Boolean(pluginConfig?.enabled),
-        },
+        normalizeRoomPluginConfig(pluginName, pluginConfig),
       ])
       .filter(([pluginName]) => SUPPORTED_PLUGINS.has(pluginName))
   );
+}
+
+function normalizeRoomPluginConfig(pluginName, pluginConfig = {}) {
+  const normalizedPlugin = normalizePluginName(pluginName);
+  const config = {
+    enabled: Boolean(pluginConfig?.enabled),
+  };
+
+  if (normalizedPlugin === PLUGIN_DAY) {
+    config.schedule = normalizeDaySchedule(pluginConfig?.schedule);
+    config.userOverrides = normalizeDayUserOverrides(pluginConfig?.userOverrides);
+  }
+
+  return config;
 }
 
 function normalizePluginName(value) {
@@ -13893,6 +14676,10 @@ function formatPluginName(pluginName) {
     return "Team";
   }
 
+  if (pluginName === PLUGIN_DAY) {
+    return "Day";
+  }
+
   return pluginName;
 }
 
@@ -13908,11 +14695,14 @@ async function setRoomPluginEnabled(pluginName, enabled) {
     return;
   }
 
+  const existingConfig = state.roomPlugins?.[normalizedPlugin] || {};
+
   await setDoc(
     doc(state.db, "rooms", state.roomId),
     {
       plugins: {
         [normalizedPlugin]: {
+          ...existingConfig,
           enabled: Boolean(enabled),
         },
       },
