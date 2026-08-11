@@ -208,6 +208,13 @@ function classifyRisk(command) {
     return "read";
   }
 
+  if (command.name === "/task" && normalizedAction === "codex") {
+    const [, subAction = ""] = command.payload.split(/\s+/);
+    if (["list", "status"].includes(subAction.toLowerCase())) {
+      return "read";
+    }
+  }
+
   if (command.name === "/change" && ["", "help", "list", "recent", "summary"].includes(normalizedAction)) {
     return "read";
   }
@@ -274,6 +281,12 @@ async function dispatchTask(payload, context) {
         activeTimerStartedBy: null,
         activeTimerStartedByName: null,
         subtasks: [],
+        codexCommandId: null,
+        codexStatus: null,
+        codexPrompt: null,
+        codexQueuedAt: null,
+        codexCompletedAt: null,
+        codexResultSummary: null,
       },
     });
     await postMessage(context, `Task ${formatShortId(task.id, "#")} created: ${text}${formatLabels(labels)}`, "Tasks");
@@ -288,6 +301,34 @@ async function dispatchTask(payload, context) {
       .sort(compareTasks)
       .slice(0, context.limit);
     return textResult(formatTaskList(tasks, status, labels), { tasks });
+  }
+
+  if (normalizedAction === "codex-create") {
+    if (!(await isPluginEnabled(context, "codex-tasks"))) {
+      return textResult("Codex Tasks plugin is disabled for this group. Enable it with /plugin enable codex-tasks.");
+    }
+    return queueTaskCodexCommand(input, context);
+  }
+
+  if (normalizedAction === "codex") {
+    if (!(await isPluginEnabled(context, "codex-tasks"))) {
+      return textResult("Codex Tasks plugin is disabled for this group. Enable it with /plugin enable codex-tasks.");
+    }
+    const [codexAction = "", ...codexRest] = input.split(/\s+/);
+    const normalizedCodexAction = codexAction.toLowerCase();
+
+    if (normalizedCodexAction === "list") {
+      const tasks = (await loadCollection(context, "tasks"))
+        .filter((task) => task.codexStatus || task.codexCommandId)
+        .sort(compareTasks)
+        .slice(0, context.limit);
+      return textResult(formatTaskList(tasks, "codex", []), { tasks });
+    }
+
+    if (normalizedCodexAction === "status") {
+      const task = await findByShortId(context, "tasks", codexRest.join(" ").trim());
+      return textResult(task ? formatTaskCodexStatus(task) : `Task ${codexRest.join(" ").trim()} was not found.`);
+    }
   }
 
   if (normalizedAction === "complete" || normalizedAction === "reopen") {
@@ -305,7 +346,69 @@ async function dispatchTask(payload, context) {
     return textResult(`Task ${formatShortId(task.id, "#")} ${complete ? "completed" : "reopened"}: ${task.description}`);
   }
 
-  return unsupported("/task", `Terminal /task supports help, create, list, completed, complete, and reopen. Received: ${payload}`);
+  return unsupported("/task", `Terminal /task supports help, create, list, completed, complete, reopen, codex-create, codex list, and codex status. Received: ${payload}`);
+}
+
+async function queueTaskCodexCommand(input, context) {
+  const [taskIdInput = "", ...instructionParts] = input.trim().split(/\s+/);
+
+  if (!taskIdInput) {
+    return textResult("Use /task codex-create <task-id> [instruction].");
+  }
+
+  const task = await findByShortId(context, "tasks", taskIdInput);
+
+  if (!task) {
+    return textResult(`Task ${taskIdInput} was not found.`);
+  }
+
+  const prompt = buildTaskCodexPrompt(task, instructionParts.join(" "));
+  const command = await createDocument({
+    token: context.token,
+    path: `${context.parentPath}/codexCommands`,
+    fields: {
+      prompt,
+      status: "queued",
+      requestedBy: context.uid,
+      requestedByName: context.userName,
+      taskId: task.id,
+      taskDescription: task.description || "Untitled task",
+      taskLink: true,
+      createdAt: context.now,
+      updatedAt: context.now,
+      startedAt: null,
+      completedAt: null,
+      result: null,
+      error: null,
+    },
+  });
+
+  await patchDocument({
+    token: context.token,
+    name: task.name,
+    fields: {
+      codexCommandId: command.id,
+      codexStatus: "queued",
+      codexPrompt: prompt,
+      codexQueuedAt: context.now,
+      codexCompletedAt: null,
+      codexResultSummary: null,
+      updatedAt: context.now,
+      updatedBy: context.uid,
+      updatedByName: context.userName,
+    },
+  });
+
+  await postMessage(
+    context,
+    `Task ${formatShortId(task.id, "#")} linked to Codex command ${formatShortId(command.id, "#")}: ${task.description || "Untitled task"}`,
+    "Tasks"
+  );
+
+  return textResult(`Queued Codex command ${formatShortId(command.id, "#")} for task ${formatShortId(task.id, "#")}.`, {
+    taskId: task.id,
+    command,
+  });
 }
 
 async function dispatchChange(payload, context) {
@@ -435,10 +538,10 @@ async function dispatchCodex(payload, context) {
 async function dispatchPlugin(payload, context) {
   const [action = "", plugin = ""] = payload.split(/\s+/);
   const normalizedAction = action.toLowerCase();
-  const normalizedPlugin = plugin.toLowerCase();
+  const normalizedPlugin = normalizePluginName(plugin);
 
   if (!payload || normalizedAction === "help") {
-    return textResult("Plugin commands:\n/plugin enable leads\n/plugin disable leads\n/plugin enable team\n/plugin disable team\n/plugin enable day\n/plugin disable day\n/plugin list");
+    return textResult("Plugin commands:\n/plugin enable leads\n/plugin disable leads\n/plugin enable team\n/plugin disable team\n/plugin enable day\n/plugin disable day\n/plugin enable codex-tasks\n/plugin disable codex-tasks\n/plugin list");
   }
 
   if (normalizedAction === "list") {
@@ -446,8 +549,8 @@ async function dispatchPlugin(payload, context) {
     return textResult(formatPluginList(room.plugins));
   }
 
-  if (!["enable", "disable"].includes(normalizedAction) || !["leads", "team", "day"].includes(normalizedPlugin)) {
-    return textResult("Supported plugins: leads, team, day.");
+  if (!["enable", "disable"].includes(normalizedAction) || !["leads", "team", "day", "codex-tasks"].includes(normalizedPlugin)) {
+    return textResult("Supported plugins: leads, team, day, codex-tasks.");
   }
 
   const enabled = normalizedAction === "enable";
@@ -575,13 +678,58 @@ function hasLabels(item, labels) {
 }
 
 function formatTaskList(tasks, status, labels) {
-  const heading = status === "complete" ? "Completed tasks" : status === "team" ? "Team tasks" : "Pending tasks";
+  const heading = status === "complete" ? "Completed tasks" : status === "team" ? "Team tasks" : status === "codex" ? "Codex tasks" : "Pending tasks";
   const filter = labels.length > 0 ? ` ${formatLabels(labels).trim()}` : "";
   if (tasks.length === 0) return `No ${heading.toLowerCase()}${filter}.`;
   return [
     `${heading}${filter}:`,
-    ...tasks.map((task) => `${formatShortId(task.id, "#")} - ${task.description || "(no description)"}${formatLabels(task.labels)} (${task.createdByName || "Unknown"})`),
+    ...tasks.map((task) => `${formatShortId(task.id, "#")} - ${task.description || "(no description)"}${formatLabels(task.labels)}${formatCodexTaskSummary(task)} (${task.createdByName || "Unknown"})`),
     `Total: ${tasks.length}`,
+  ].join("\n");
+}
+
+function formatCodexTaskSummary(task) {
+  return task.codexStatus ? ` [Codex ${formatCodexStatus(task.codexStatus)}]` : "";
+}
+
+function formatTaskCodexStatus(task) {
+  const lines = [
+    `Task ${formatShortId(task.id, "#")} Codex status: ${formatCodexStatus(task.codexStatus || "not linked")}`,
+    `Description: ${task.description || "(no description)"}`,
+  ];
+
+  if (task.codexCommandId) lines.push(`Command: ${formatShortId(task.codexCommandId, "#")}`);
+  if (task.codexQueuedAt) lines.push(`Queued: ${task.codexQueuedAt}`);
+  if (task.codexCompletedAt) lines.push(`Completed: ${task.codexCompletedAt}`);
+  if (task.codexResultSummary) lines.push(`Result: ${task.codexResultSummary}`);
+
+  return lines.join("\n");
+}
+
+function formatCodexStatus(status) {
+  const normalized = String(status || "").trim();
+  return normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1) : "Unknown";
+}
+
+function buildTaskCodexPrompt(task, instruction) {
+  const labels = Array.isArray(task.labels) && task.labels.length > 0
+    ? task.labels.map((label) => `#${label}`).join(" ")
+    : "none";
+  const userInstruction = instruction.trim() || "Process this task and report what was done.";
+
+  return [
+    "Process this chat task through Codex.",
+    "If the task lacks enough context, do not guess. Ask concise clarification questions using this exact chat command format:",
+    `/query task ${formatShortId(task.id, "#")} <one clear question>`,
+    "Ask at most 3 questions. If the next step is clear, proceed normally.",
+    "",
+    `Task: ${formatShortId(task.id, "#")}`,
+    `Full ID: ${task.id}`,
+    `Description: ${task.description || "Untitled task"}`,
+    `Labels: ${labels}`,
+    `Creator: ${task.createdByName || "Unknown"}`,
+    "",
+    `Instruction: ${userInstruction}`,
   ].join("\n");
 }
 
@@ -616,14 +764,32 @@ function formatPluginList(plugins = {}) {
     `- Leads: ${plugins?.leads?.enabled ? "enabled" : "disabled"}`,
     `- Team: ${plugins?.team?.enabled ? "enabled" : "disabled"}`,
     `- Day: ${plugins?.day?.enabled ? "enabled" : "disabled"}`,
+    `- Codex Tasks: ${plugins?.["codex-tasks"]?.enabled ? "enabled" : "disabled"}`,
   ].join("\n");
+}
+
+function normalizePluginName(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+
+  if (["codex", "codextasks", "codex_tasks", "codex-task", "codex-tasks"].includes(normalized)) {
+    return "codex-tasks";
+  }
+
+  return normalized;
 }
 
 function formatPluginName(pluginName) {
   if (pluginName === "leads") return "Leads";
   if (pluginName === "team") return "Team";
   if (pluginName === "day") return "Day";
+  if (pluginName === "codex-tasks") return "Codex Tasks";
   return pluginName;
+}
+
+async function isPluginEnabled(context, pluginName) {
+  const room = await getRoom(context).catch(() => ({ plugins: {} }));
+  const normalizedPlugin = normalizePluginName(pluginName);
+  return Boolean(room.plugins?.[normalizedPlugin]?.enabled);
 }
 
 function formatLabels(labels) {

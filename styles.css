@@ -1347,6 +1347,21 @@ button.task-list-id:focus-visible {
   color: #92400e;
 }
 
+.task-list-badge.codex {
+  background: rgba(37, 99, 235, 0.1);
+  color: #1d4ed8;
+}
+
+.task-list-badge.codex.failed {
+  background: rgba(185, 28, 28, 0.1);
+  color: #b91c1c;
+}
+
+.task-list-badge.codex.completed {
+  background: rgba(21, 128, 61, 0.1);
+  color: #15803d;
+}
+
 .task-label {
   background: rgba(130, 108, 55, 0.12);
   color: #6f5b24;

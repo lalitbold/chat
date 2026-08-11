@@ -51,6 +51,7 @@ rooms/{roomId}
   plugins.day.schedule.timezone
   plugins.day.schedule.weekdays.{sun|mon|tue|wed|thu|fri|sat}
   plugins.day.userOverrides.{userId}.weekdays.{sun|mon|tue|wed|thu|fri|sat}
+  plugins.codex-tasks.enabled
   settings.queryReminderAudience
 
 rooms/{roomId}/messages/{messageId}
@@ -156,6 +157,12 @@ rooms/{roomId}/tasks/{taskId}
   jiraStatus
   jiraUpdatedAt
   source
+  codexCommandId
+  codexStatus
+  codexPrompt
+  codexQueuedAt
+  codexCompletedAt
+  codexResultSummary
 
 rooms/{roomId}/tasks/{taskId}/timeEntries/{entryId}
   taskId
@@ -234,9 +241,12 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 - `/task today #abc123 #def456` adds existing pending tasks to today's plan.
 - `/task today list` shows today's planned tasks only to you.
 - `/task today review` shows unfinished planned tasks from yesterday with carry, complete, and skip actions.
-- `/task important [#label]` asks the local Codex bridge to recommend important pending tasks without changing task state.
+- `/task important [#label]` asks the local Codex bridge to recommend important pending tasks without changing task state. Requires `/plugin enable codex-tasks`.
+- `/task codex-create <id> [instruction]` queues the task for Codex and stores the linked Codex command/status on the task.
+- `/task codex list` shows tasks linked to Codex.
+- `/task codex status <id>` shows the linked Codex status and latest result summary for a task.
 - `/task codex <id> [instruction]` queues a task directly for the trusted Codex bridge.
-- `/task summarize <id>` asks Codex to summarize task comments/context into a suggested `/task edit` command.
+- `/task summarize <id>` asks Codex to summarize task comments/context into a suggested `/task edit` command. Requires `/plugin enable codex-tasks`.
 - `/task process continue` resumes the last task process for the current room and user.
 - `/task start` starts a general timer without linking it to a task.
 - `/task start deployment work` starts a general timer with an optional description.
@@ -279,7 +289,7 @@ npm run chat:command -- "/task create Check safety #ops" --dry-run
 npm run chat:command -- "/task list" --json
 ```
 
-Read-only commands run immediately. Write and risky commands ask for confirmation unless `--yes` is passed. The CLI currently supports `/task help|create|list|completed|complete|reopen`, `/change help|add|list|summary`, `/query help|create|list|respond|close`, `/codex`, `/plugin list|enable|disable`, `/lead list`, and `/team member|task|followup list`. Browser-local commands such as `/remind`, `/debug`, and detailed day timer workflows still need the browser.
+Read-only commands run immediately. Write and risky commands ask for confirmation unless `--yes` is passed. The CLI currently supports `/task help|create|list|completed|complete|reopen|codex-create|codex list|codex status`, `/change help|add|list|summary`, `/query help|create|list|respond|close`, `/codex`, `/plugin list|enable|disable`, `/lead list`, and `/team member|task|followup list`. Browser-local commands such as `/remind`, `/debug`, and detailed day timer workflows still need the browser.
 
 ## Query commands
 
@@ -326,6 +336,10 @@ When `npm run codex:bridge` runs with a write-enabled sandbox, it appends a chan
 - `/plugin disable team` disables team management for the current group.
 - `/plugin enable day` enables attendance, day schedules, breaks, and leave for the current group.
 - `/plugin disable day` disables day commands and removes the `/day start` requirement before timers.
+- `/plugin enable timer` enables standalone meeting/regular timers for the current group.
+- `/plugin disable timer` disables standalone timer commands.
+- `/plugin enable codex-tasks` enables task-to-Codex commands for the current group.
+- `/plugin disable codex-tasks` disables task-to-Codex commands for the current group.
 - `/plugin list` shows enabled and disabled group plugins only to you.
 
 ## Lead commands
@@ -361,9 +375,12 @@ Jira integration is prepared through task fields (`jiraKey`, `jiraUrl`, `jiraSta
 
 ## Codex commands
 
+Task-to-Codex commands are available after `/plugin enable codex-tasks`.
+
 - `/codex <instruction>` queues an instruction for a trusted local Codex bridge process.
 - `/codex help` shows local help for the command.
-- `/task codex <id> [instruction]` queues a task for the same local Codex bridge.
+- `/task codex-create <id> [instruction]` queues a task for the same local Codex bridge and links the command status back to the task.
+- `/task codex <id> [instruction]` queues a task for the same local Codex bridge without making it the persistent Codex task link.
 
 Start the local bridge from the machine where Codex should run:
 
@@ -416,6 +433,14 @@ npm run tasks:pending -- --room testroom --json
 ```
 
 The script signs in anonymously with the Firebase web app config and reads pending tasks using the same Firestore rules as the chat app.
+
+## Timer commands
+
+- `/timer start daily standup` starts a standalone non-task timer for meetings or regular work.
+- `/timer stop` stops the standalone timer and saves it to today's time entries with `timerSource: "timer"`.
+- `/timer continue` keeps the standalone timer active and resets the next reminder.
+- `/timer list` shows the active standalone timer only.
+- `/timer history today` shows stopped standalone timer entries for today.
 
 ## Day commands
 

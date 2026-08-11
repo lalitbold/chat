@@ -286,12 +286,26 @@ function formatTaskLine(task) {
     "-",
     task.description || "(no description)",
     formatLabels(task.labels),
+    formatCodexSummary(task),
     formatTaskTimeSummary(task),
     formatCreatorSummary(task),
     `[id: ${task.id}]`,
   ];
 
   return parts.filter(Boolean).join(" ");
+}
+
+function formatCodexSummary(task) {
+  if (!task.codexStatus) {
+    return "";
+  }
+
+  return ` [Codex ${formatCodexStatus(task.codexStatus)}]`;
+}
+
+function formatCodexStatus(status) {
+  const normalized = String(status || "").trim();
+  return normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1) : "Unknown";
 }
 
 function formatTaskId(taskId) {
@@ -384,5 +398,10 @@ function toJsonTask(task) {
     totalTrackedMs: Number.isFinite(task.totalTrackedMs) ? task.totalTrackedMs : 0,
     activeTimerStartedAt: task.activeTimerStartedAt || null,
     activeTimerStartedByName: task.activeTimerStartedByName || null,
+    codexCommandId: task.codexCommandId || null,
+    codexStatus: task.codexStatus || null,
+    codexQueuedAt: task.codexQueuedAt || null,
+    codexCompletedAt: task.codexCompletedAt || null,
+    codexResultSummary: task.codexResultSummary || null,
   };
 }

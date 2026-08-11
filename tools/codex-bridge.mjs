@@ -294,6 +294,9 @@ async function handleLocalRequest(request, response, context) {
     prompt,
     requestedByName: body.requestedByName || "Local user",
     roomId: body.roomId || context.roomId || null,
+    taskId: body.taskId || null,
+    taskDescription: body.taskDescription || null,
+    taskLink: Boolean(body.taskLink),
     createdAt: new Date().toISOString(),
   };
   context.localCommands.set(command.id, {
@@ -498,6 +501,13 @@ async function processCommand({ auth, roomId, command, options }) {
       result: finalText,
       error: null,
     });
+    await updateLinkedTaskFromCommand({
+      command,
+      token: auth.idToken,
+      status: "completed",
+      completedAt,
+      resultText: finalText,
+    });
     await postRoomMessage({
       projectId: firebaseConfig.projectId,
       roomId,
@@ -520,6 +530,13 @@ async function processCommand({ auth, roomId, command, options }) {
     updatedAt: completedAt,
     result: result.stdout.trim() || null,
     error: errorText,
+  });
+  await updateLinkedTaskFromCommand({
+    command,
+    token: auth.idToken,
+    status: "failed",
+    completedAt,
+    resultText: errorText,
   });
   await postRoomMessage({
     projectId: firebaseConfig.projectId,
@@ -731,6 +748,68 @@ async function postRoomMessage({ projectId, roomId, token, senderId, text }) {
   }
 
   return payload;
+}
+
+async function updateLinkedTaskFromCommand({ command, token, status, completedAt, resultText }) {
+  if (!command.taskId || !command.name || !command.taskLink) {
+    return;
+  }
+
+  const taskName = getTaskDocumentNameForCommand(command);
+  const summary = truncateTaskCodexResultSummary(resultText);
+
+  await updateDocument(taskName, token, {
+    codexStatus: status,
+    codexCompletedAt: completedAt,
+    codexResultSummary: summary,
+    updatedAt: completedAt,
+  });
+
+  await createTaskComment({
+    taskName,
+    token,
+    taskId: command.taskId,
+    text: `Codex ${status}: ${summary}`,
+    createdAt: completedAt,
+    createdBy: command.requestedBy || null,
+    createdByName: command.requestedByName || "Codex",
+  });
+}
+
+function getTaskDocumentNameForCommand(command) {
+  return command.name.replace(/\/codexCommands\/[^/]+$/, `/tasks/${encodeURIComponent(command.taskId)}`);
+}
+
+async function createTaskComment({ taskName, token, taskId, text, createdAt, createdBy, createdByName }) {
+  const response = await fetch(`https://firestore.googleapis.com/v1/${taskName}/comments`, {
+    method: "POST",
+    headers: getJsonAuthHeaders(token),
+    body: JSON.stringify({
+      fields: toFirestoreFields({
+        taskId,
+        text,
+        createdAt,
+        createdBy,
+        createdByName,
+      }),
+    }),
+  });
+  const payload = await response.json();
+
+  if (!response.ok) {
+    throw new Error(getFirestoreErrorMessage(payload, "Could not add task comment."));
+  }
+
+  return payload;
+}
+
+function truncateTaskCodexResultSummary(text) {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (normalized.length <= 500) {
+    return normalized || "No Codex result text.";
+  }
+
+  return `${normalized.slice(0, 497)}...`;
 }
 
 function getRoomDocumentPath(projectId, roomId) {

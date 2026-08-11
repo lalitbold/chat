@@ -103,6 +103,7 @@ const DEBUG_COMMAND = "/debug";
 const PLUGIN_COMMAND = "/plugin";
 const LEAD_COMMAND = "/lead";
 const TEAM_COMMAND = "/team";
+const TIMER_COMMAND = "/timer";
 const DEFAULT_CODEX_LOCAL_BRIDGE_URL = "http://127.0.0.1:17345";
 const LOCAL_CODEX_PENDING_KEY = "firestore-chat-local-codex-pending";
 const LOCAL_CODEX_RESULT_SYNC_MS = 5000;
@@ -143,7 +144,9 @@ const QUERY_REMINDER_AUDIENCES = new Set([
 const PLUGIN_LEADS = "leads";
 const PLUGIN_TEAM = "team";
 const PLUGIN_DAY = "day";
-const SUPPORTED_PLUGINS = new Set([PLUGIN_LEADS, PLUGIN_TEAM, PLUGIN_DAY]);
+const PLUGIN_CODEX_TASKS = "codex-tasks";
+const PLUGIN_TIMER = "timer";
+const SUPPORTED_PLUGINS = new Set([PLUGIN_LEADS, PLUGIN_TEAM, PLUGIN_DAY, PLUGIN_CODEX_TASKS, PLUGIN_TIMER]);
 const WEEKDAY_KEYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 const WEEKDAY_LABELS = {
   sun: "Sun",
@@ -200,9 +203,19 @@ const BASE_SLASH_COMMANDS = [
     hint: "Enable team",
   },
   {
+    label: "/plugin enable timer",
+    insertText: "/plugin enable timer",
+    hint: "Enable timer",
+  },
+  {
     label: "/plugin enable day",
     insertText: "/plugin enable day",
     hint: "Enable day",
+  },
+  {
+    label: "/plugin enable codex-tasks",
+    insertText: "/plugin enable codex-tasks",
+    hint: "Enable Codex tasks",
   },
   {
     label: "/plugin disable leads",
@@ -215,9 +228,19 @@ const BASE_SLASH_COMMANDS = [
     hint: "Disable team",
   },
   {
+    label: "/plugin disable timer",
+    insertText: "/plugin disable timer",
+    hint: "Disable timer",
+  },
+  {
     label: "/plugin disable day",
     insertText: "/plugin disable day",
     hint: "Disable day",
+  },
+  {
+    label: "/plugin disable codex-tasks",
+    insertText: "/plugin disable codex-tasks",
+    hint: "Disable Codex tasks",
   },
   {
     label: "/plugin list",
@@ -293,16 +316,6 @@ const BASE_SLASH_COMMANDS = [
     label: "/task today review",
     insertText: "/task today review",
     hint: "Rollover review",
-  },
-  {
-    label: "/task important [#label]",
-    insertText: "/task important ",
-    hint: "AI pick tasks",
-  },
-  {
-    label: "/task summarize <id>",
-    insertText: "/task summarize ",
-    hint: "Summarize context",
   },
   {
     label: "/task edit <id> <description> #label",
@@ -2706,6 +2719,13 @@ function renderTaskListItem(task, options = {}) {
     meta.append(jira);
   }
 
+  if (task.codexStatus) {
+    const codex = document.createElement("span");
+    codex.className = `task-list-badge codex ${normalizeCodexStatus(task.codexStatus)}`;
+    codex.textContent = `Codex ${formatCodexStatus(task.codexStatus)}`;
+    meta.append(codex);
+  }
+
   if (task.plannedToday) {
     const planned = document.createElement("span");
     planned.className = "task-list-badge planned";
@@ -3429,6 +3449,12 @@ function renderTaskPreviewCard(task, options = {}) {
     const jira = document.createElement("span");
     jira.textContent = `Jira ${task.jiraKey}${task.jiraStatus ? ` (${task.jiraStatus})` : ""}`;
     meta.append(jira);
+  }
+
+  if (task.codexStatus) {
+    const codex = document.createElement("span");
+    codex.textContent = `Codex ${formatCodexStatus(task.codexStatus)}`;
+    meta.append(codex);
   }
 
   card.append(meta);
@@ -4299,6 +4325,11 @@ async function sendSubmittedText(text) {
       return;
     }
 
+    if (isTimerCommand(text)) {
+      await handleTimerCommand(text);
+      return;
+    }
+
     if (isLeadCommand(text)) {
       await handleLeadCommand(text);
       return;
@@ -4346,6 +4377,8 @@ async function sendSubmittedText(text) {
           ? "Query command failed. Check the command and room permissions."
         : isPluginCommand(text)
           ? "Plugin command failed. Check the command and room permissions."
+        : isTimerCommand(text)
+          ? "Timer command failed. Check the command and room permissions."
         : isLeadCommand(text)
           ? "Lead command failed. Check the command and room permissions."
         : isTeamCommand(text)
@@ -4495,6 +4528,36 @@ function getAvailableSlashCommands() {
     commands.push(...DAY_SLASH_COMMANDS);
   }
 
+  if (isRoomPluginEnabled(PLUGIN_TIMER)) {
+    commands.push(
+      {
+        label: "/timer start <description>",
+        insertText: "/timer start ",
+        hint: "Start timer",
+      },
+      {
+        label: "/timer stop",
+        insertText: "/timer stop",
+        hint: "Stop timer",
+      },
+      {
+        label: "/timer continue",
+        insertText: "/timer continue",
+        hint: "Continue timer",
+      },
+      {
+        label: "/timer list",
+        insertText: "/timer list",
+        hint: "Active timers",
+      },
+      {
+        label: "/timer history today",
+        insertText: "/timer history today",
+        hint: "Timer history",
+      }
+    );
+  }
+
   if (isRoomPluginEnabled(PLUGIN_LEADS)) {
     commands.push(
       {
@@ -4566,6 +4629,41 @@ function getAvailableSlashCommands() {
         label: "/team followup list",
         insertText: "/team followup list",
         hint: "Followups",
+      }
+    );
+  }
+
+  if (isRoomPluginEnabled(PLUGIN_CODEX_TASKS)) {
+    commands.push(
+      {
+        label: "/task important [#label]",
+        insertText: "/task important ",
+        hint: "AI pick tasks",
+      },
+      {
+        label: "/task summarize <id>",
+        insertText: "/task summarize ",
+        hint: "Summarize context",
+      },
+      {
+        label: "/task codex-create <id> [instruction]",
+        insertText: "/task codex-create ",
+        hint: "Create Codex task",
+      },
+      {
+        label: "/task codex list",
+        insertText: "/task codex list",
+        hint: "Codex tasks",
+      },
+      {
+        label: "/task codex status <id>",
+        insertText: "/task codex status ",
+        hint: "Codex status",
+      },
+      {
+        label: "/task codex <id> [instruction]",
+        insertText: "/task codex ",
+        hint: "Queue Codex",
       }
     );
   }
@@ -4808,6 +4906,7 @@ function isHandledCommand(command) {
     isSelfReminderCommand(command) ||
     isDebugCommand(command) ||
     isPluginCommand(command) ||
+    isTimerCommand(command) ||
     isLeadCommand(command) ||
     isTeamCommand(command)
   );
@@ -5027,6 +5126,11 @@ function isPluginCommand(text) {
   return normalized === PLUGIN_COMMAND || normalized.startsWith(`${PLUGIN_COMMAND} `);
 }
 
+function isTimerCommand(text) {
+  const normalized = text.trim().toLowerCase();
+  return normalized === TIMER_COMMAND || normalized.startsWith(`${TIMER_COMMAND} `);
+}
+
 function isLeadCommand(text) {
   const normalized = text.trim().toLowerCase();
   return normalized === LEAD_COMMAND || normalized.startsWith(`${LEAD_COMMAND} `);
@@ -5037,6 +5141,54 @@ function isTeamCommand(text) {
   return normalized === TEAM_COMMAND || normalized.startsWith(`${TEAM_COMMAND} `);
 }
 
+async function handleTimerCommand(text) {
+  if (!isRoomPluginEnabled(PLUGIN_TIMER)) {
+    postLocalTimerMessage("Timer is not enabled in this group. Enable it with /plugin enable timer.");
+    setStatus("Timer plugin is disabled.", "error");
+    return;
+  }
+
+  const rawCommand = text.trim();
+  const payload = rawCommand.slice(TIMER_COMMAND.length).trim();
+  const [action = "", ...rest] = payload.split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+
+  if (!payload || normalizedAction === "help") {
+    postLocalTimerMessage(
+      "Timer commands:\n/timer start <description>\n/timer stop\n/timer continue\n/timer list\n/timer history [today|YYYY-MM-DD]"
+    );
+    return;
+  }
+
+  if (normalizedAction === "start") {
+    await startStandaloneTimer(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "stop") {
+    await stopStandaloneTimer();
+    return;
+  }
+
+  if (normalizedAction === "continue") {
+    await continueStandaloneTimer();
+    return;
+  }
+
+  if (normalizedAction === "list" || normalizedAction === "active") {
+    await postStandaloneTimerList();
+    return;
+  }
+
+  if (normalizedAction === "history") {
+    await postStandaloneTimerHistory(rest.join(" "));
+    return;
+  }
+
+  postLocalTimerMessage("Unknown timer command. Use /timer help.");
+  setStatus("Unknown timer command.", "error");
+}
+
 async function handleTaskCommand(text) {
   const rawCommand = text.trim();
   const payload = rawCommand.slice(TASK_COMMAND.length).trim();
@@ -5044,9 +5196,13 @@ async function handleTaskCommand(text) {
   const normalizedAction = action.toLowerCase();
 
   if (!payload || normalizedAction === "help") {
-    await postTaskMessage(
-      "Task commands:\n/task create fix that issue #bug\n/task create-start fix that issue #bug\n/task list\n/task list #bug\n/task completed\n/task completed #bug\n/task current\n/task today #abc123 #def456\n/task today list\n/task today review\n/task important [#label]\n/task summarize <id>\n/task view <id>\n/task share <id>\n/task codex <id> [instruction]\n/task process\n/task process #bug\n/task process continue\n/task process stop\n/task edit <id> <description> #label\n/task comment <id> <comment>\n/task comments <id>\n/task subtask <id> <description>\n/task subtasks <id>\n/task subtask done <id> <subtask>\n/task subtask reopen <id> <subtask>\n/task subtask remove <id> <subtask>\n/task start [description]\n/task start <id> [description]\n/task stop\n/task stop <id>\n/task continue\n/task continue <id>\n/task timers\n/task summary\n/task summary share\n/task complete <id>\n/task reopen <id>\n/task label <id> #bug\n/task unlabel <id> #bug\nMention a task id like #abc123 in a message to preview it.\nUse /day for attendance and leave commands."
-    );
+    await postTaskMessage(getTaskHelpText());
+    return;
+  }
+
+  if (isCodexTaskAction(normalizedAction) && !isRoomPluginEnabled(PLUGIN_CODEX_TASKS)) {
+    postLocalTaskMessage("Codex Tasks plugin is disabled for this group. Enable it with /plugin enable codex-tasks.");
+    setStatus("Codex Tasks plugin is disabled.", "error");
     return;
   }
 
@@ -5105,8 +5261,13 @@ async function handleTaskCommand(text) {
     return;
   }
 
+  if (normalizedAction === "codex-create") {
+    await queueTaskForCodex(rest.join(" "), { linkTask: true });
+    return;
+  }
+
   if (normalizedAction === "codex") {
-    await queueTaskForCodex(rest.join(" "));
+    await handleTaskCodexCommand(rest.join(" "));
     return;
   }
 
@@ -5186,6 +5347,73 @@ async function handleTaskCommand(text) {
   }
 
   await postTaskMessage("Unknown task command. Use /task create <description> to add a task, or /task help.");
+}
+
+function getTaskHelpText() {
+  const lines = [
+    "Task commands:",
+    "/task create fix that issue #bug",
+    "/task create-start fix that issue #bug",
+    "/task list",
+    "/task list #bug",
+    "/task completed",
+    "/task completed #bug",
+    "/task current",
+    "/task today #abc123 #def456",
+    "/task today list",
+    "/task today review",
+  ];
+
+  if (isRoomPluginEnabled(PLUGIN_CODEX_TASKS)) {
+    lines.push(
+      "/task important [#label]",
+      "/task summarize <id>",
+      "/task codex-create <id> [instruction]",
+      "/task codex list",
+      "/task codex status <id>",
+      "/task codex <id> [instruction]"
+    );
+  } else {
+    lines.push("Enable Codex task commands with /plugin enable codex-tasks.");
+  }
+
+  lines.push(
+    "/task view <id>",
+    "/task share <id>",
+    "/task process",
+    "/task process #bug",
+    "/task process continue",
+    "/task process stop",
+    "/task edit <id> <description> #label",
+    "/task comment <id> <comment>",
+    "/task comments <id>",
+    "/task subtask <id> <description>",
+    "/task subtasks <id>",
+    "/task subtask done <id> <subtask>",
+    "/task subtask reopen <id> <subtask>",
+    "/task subtask remove <id> <subtask>",
+    "/task start [description]",
+    "/task start <id> [description]",
+    "/task stop",
+    "/task stop <id>",
+    "/task continue",
+    "/task continue <id>",
+    "/task timers",
+    "/task summary",
+    "/task summary share",
+    "/task complete <id>",
+    "/task reopen <id>",
+    "/task label <id> #bug",
+    "/task unlabel <id> #bug",
+    "Mention a task id like #abc123 in a message to preview it.",
+    "Use /day for attendance and leave commands."
+  );
+
+  return lines.join("\n");
+}
+
+function isCodexTaskAction(action) {
+  return ["important", "prioritize", "priority", "summarize", "context", "codex-create", "codex"].includes(action);
 }
 
 async function handleDayCommand(text) {
@@ -5302,7 +5530,7 @@ async function handleCodexCommand(text) {
 
   if (!prompt || prompt.toLowerCase() === "help") {
     postLocalCodexMessage(
-      "Codex commands:\n/codex summarize this repo\n/codex review the latest diff\n/codex fix the failing test\n/codex results\n/task codex #abc123 fix this\nStart the local bridge with npm run codex:bridge -- --local-server --sandbox workspace-write --cwd <path>."
+      "Codex commands:\n/codex summarize this repo\n/codex review the latest diff\n/codex fix the failing test\n/codex results\nEnable task links with /plugin enable codex-tasks, then use /task codex-create #abc123 fix this or /task codex #abc123 fix this.\nStart the local bridge with npm run codex:bridge -- --local-server --sandbox workspace-write --cwd <path>."
     );
     return;
   }
@@ -5315,7 +5543,7 @@ async function handleCodexCommand(text) {
   await queueCodexPrompt(prompt);
 }
 
-async function queueCodexPrompt(prompt) {
+async function queueCodexPrompt(prompt, metadata = {}) {
   const bridgeUrl = getCodexLocalBridgeUrl();
   const response = await fetch(`${bridgeUrl}/commands`, {
     method: "POST",
@@ -5325,6 +5553,9 @@ async function queueCodexPrompt(prompt) {
       roomId: state.roomId,
       requestedBy: state.profile.id,
       requestedByName: getProfileDisplayName(),
+      taskId: metadata.taskId || null,
+      taskDescription: metadata.taskDescription || null,
+      taskLink: Boolean(metadata.taskLink),
     }),
   });
   const payload = await response.json().catch(() => ({}));
@@ -5342,14 +5573,18 @@ async function queueCodexPrompt(prompt) {
     `Queued local Codex command ${payload.shortId || formatCodexCommandId(payload.id)} from ${getProfileDisplayName()}.\n${prompt}`
   );
   setStatus("Local Codex command queued.", "success");
+  return payload;
 }
 
-async function queueFirebaseCodexPrompt(prompt) {
+async function queueFirebaseCodexPrompt(prompt, metadata = {}) {
   const commandRef = await addDoc(collection(state.db, "rooms", state.roomId, "codexCommands"), {
     prompt,
     status: "queued",
     requestedBy: state.profile.id,
     requestedByName: getProfileDisplayName(),
+    taskId: metadata.taskId || null,
+    taskDescription: metadata.taskDescription || null,
+    taskLink: Boolean(metadata.taskLink),
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
     startedAt: null,
@@ -5404,14 +5639,14 @@ async function syncLocalCodexResults() {
         continue;
       }
 
-      postLocalCodexResult(result);
+      await postLocalCodexResult(result);
     } catch {
       // Local bridge is optional and may not be running.
     }
   }
 }
 
-function postLocalCodexResult(result, options = {}) {
+async function postLocalCodexResult(result, options = {}) {
   const resultKey = `${result.id}:${result.status}:${result.completedAt || ""}`;
 
   if (!options.force && state.localCodexSeenResultKeys.has(resultKey)) {
@@ -5426,6 +5661,7 @@ function postLocalCodexResult(result, options = {}) {
     result.status === "completed"
       ? result.result || "Codex completed without a final message."
       : result.error || "Codex failed without an error message.";
+  await updateLinkedTaskFromCodexResult(result, resultText);
   postLocalCodexMessage(`Local Codex command ${formatCodexCommandId(result.id)} ${result.status}.\n\n${resultText}`);
 }
 
@@ -5446,7 +5682,7 @@ async function postLatestLocalCodexResult() {
     return;
   }
 
-  postLocalCodexResult(
+  await postLocalCodexResult(
     {
       ...latestResult,
       id: latestResult.id || "latest",
@@ -5484,11 +5720,71 @@ function saveLocalCodexPendingCommandIds() {
   localStorage.setItem(LOCAL_CODEX_PENDING_KEY, JSON.stringify([...state.localCodexPendingCommandIds]));
 }
 
-async function queueTaskForCodex(payload) {
+async function updateLinkedTaskFromCodexResult(result, resultText) {
+  if (!result?.taskId || !result.taskLink) {
+    return;
+  }
+
+  const completedAt = result.completedAt || new Date().toISOString();
+  const summary = truncateTaskCodexResultSummary(resultText);
+
+  await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", result.taskId), {
+    codexStatus: result.status,
+    codexCompletedAt: completedAt,
+    codexResultSummary: summary,
+    updatedAt: serverTimestamp(),
+    updatedBy: state.profile.id,
+    updatedByName: getProfileDisplayName(),
+  });
+
+  await addCodexTaskComment(
+    result.taskId,
+    `Codex ${result.status}: ${summary}`
+  );
+}
+
+async function addCodexTaskComment(taskId, text) {
+  await addDoc(collection(state.db, "rooms", state.roomId, "tasks", taskId, "comments"), {
+    taskId,
+    text,
+    createdAt: serverTimestamp(),
+    createdBy: state.profile.id,
+    createdByName: getProfileDisplayName(),
+  });
+}
+
+function truncateTaskCodexResultSummary(text) {
+  const normalized = String(text || "").replace(/\s+/g, " ").trim();
+  if (normalized.length <= 500) {
+    return normalized || "No Codex result text.";
+  }
+
+  return `${normalized.slice(0, 497)}...`;
+}
+
+async function handleTaskCodexCommand(payload) {
+  const [action = "", ...rest] = payload.trim().split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+
+  if (normalizedAction === "list") {
+    await postCodexTaskList();
+    return;
+  }
+
+  if (normalizedAction === "status") {
+    await postCodexTaskStatus(rest.join(" "));
+    return;
+  }
+
+  await queueTaskForCodex(payload, { linkTask: false });
+}
+
+async function queueTaskForCodex(payload, options = {}) {
   const [taskIdInput = "", ...instructionParts] = payload.trim().split(/\s+/);
+  const shouldLinkTask = Boolean(options.linkTask);
 
   if (!taskIdInput) {
-    postLocalTaskMessage("Use /task codex <id> [instruction].");
+    postLocalTaskMessage(shouldLinkTask ? "Use /task codex-create <id> [instruction]." : "Use /task codex <id> [instruction].");
     return;
   }
 
@@ -5499,7 +5795,110 @@ async function queueTaskForCodex(payload) {
     return;
   }
 
-  await queueCodexPrompt(buildTaskCodexPrompt(task, instructionParts.join(" ")));
+  const prompt = buildTaskCodexPrompt(task, instructionParts.join(" "));
+  const command = await queueCodexPrompt(prompt, {
+    taskId: task.id,
+    taskDescription: task.description || "Untitled task",
+    taskLink: shouldLinkTask,
+  });
+
+  if (!shouldLinkTask) {
+    return;
+  }
+
+  const queuedAt = new Date().toISOString();
+  await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", task.id), {
+    codexCommandId: command.id || null,
+    codexStatus: "queued",
+    codexPrompt: prompt,
+    codexQueuedAt: queuedAt,
+    codexCompletedAt: null,
+    codexResultSummary: null,
+    updatedAt: serverTimestamp(),
+    updatedBy: state.profile.id,
+    updatedByName: getProfileDisplayName(),
+  });
+
+  await addCodexTaskComment(
+    task.id,
+    `Codex command ${formatCodexCommandId(command.id)} queued: ${instructionParts.join(" ").trim() || "Process this task and report what was done."}`
+  );
+  postLocalTaskMessage(`Task ${formatTaskId(task.id)} linked to Codex command ${formatCodexCommandId(command.id)}.`);
+}
+
+async function postCodexTaskList() {
+  const tasks = (await Promise.all((await loadRoomTasks())
+    .filter((task) => task.codexStatus || task.codexCommandId)
+    .sort(compareTasksByCreatedAt)
+    .slice(0, TASK_LIST_LIMIT)
+    .map(loadTaskCommentSummary)));
+
+  if (tasks.length === 0) {
+    postLocalTaskMessage("No tasks linked to Codex yet.");
+    setStatus("No Codex tasks found.", "success");
+    return;
+  }
+
+  postLocalTaskListMessage(
+    "Codex tasks",
+    tasks,
+    `Codex tasks:\n${tasks.map(formatCodexTaskLine).join("\n")}\nTotal: ${tasks.length}`,
+    { showTodayPlanActions: true }
+  );
+  setStatus(`${tasks.length} Codex task${tasks.length === 1 ? "" : "s"} listed.`, "success");
+}
+
+async function postCodexTaskStatus(taskIdInput) {
+  const task = await findTaskById(taskIdInput);
+
+  if (!task) {
+    postLocalTaskMessage(`Task ${taskIdInput} was not found.`);
+    return;
+  }
+
+  postLocalTaskMessage(formatCodexTaskStatus(task));
+  setStatus("Codex task status shown.", "success");
+}
+
+function formatCodexTaskLine(task) {
+  return `${formatTaskId(task.id)} - ${task.description || "Untitled task"} (${formatCodexStatus(task.codexStatus || "not linked")}${task.codexCommandId ? `, ${formatCodexCommandId(task.codexCommandId)}` : ""})`;
+}
+
+function formatCodexTaskStatus(task) {
+  const lines = [
+    `Task ${formatTaskId(task.id)} Codex status: ${formatCodexStatus(task.codexStatus || "not linked")}`,
+    `Description: ${task.description || "Untitled task"}`,
+  ];
+
+  if (task.codexCommandId) {
+    lines.push(`Command: ${formatCodexCommandId(task.codexCommandId)}`);
+  }
+
+  if (task.codexQueuedAt) {
+    lines.push(`Queued: ${formatTaskTimestamp(task.codexQueuedAt)}`);
+  }
+
+  if (task.codexCompletedAt) {
+    lines.push(`Completed: ${formatTaskTimestamp(task.codexCompletedAt)}`);
+  }
+
+  if (task.codexResultSummary) {
+    lines.push(`Result: ${task.codexResultSummary}`);
+  }
+
+  return lines.join("\n");
+}
+
+function normalizeCodexStatus(status) {
+  return String(status || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function formatCodexStatus(status) {
+  const normalized = String(status || "").trim();
+  return normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1) : "Unknown";
 }
 
 function buildTaskCodexPrompt(task, instruction) {
@@ -5668,7 +6067,7 @@ async function handlePluginCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     postLocalPluginMessage(
-      "Plugin commands:\n/plugin enable leads\n/plugin disable leads\n/plugin enable team\n/plugin disable team\n/plugin enable day\n/plugin disable day\n/plugin list"
+      "Plugin commands:\n/plugin enable leads\n/plugin disable leads\n/plugin enable team\n/plugin disable team\n/plugin enable day\n/plugin disable day\n/plugin enable timer\n/plugin disable timer\n/plugin enable codex-tasks\n/plugin disable codex-tasks\n/plugin list"
     );
     return;
   }
@@ -5685,7 +6084,7 @@ async function handlePluginCommand(text) {
   }
 
   if (!SUPPORTED_PLUGINS.has(normalizedPlugin)) {
-    postLocalPluginMessage("Supported plugins: leads, team, day.");
+    postLocalPluginMessage("Supported plugins: leads, team, day, timer, codex-tasks.");
     setStatus("Unknown plugin.", "error");
     return;
   }
@@ -7091,6 +7490,12 @@ async function createTask(description, options = {}) {
     activeTimerStartedBy: null,
     activeTimerStartedByName: null,
     subtasks: [],
+    codexCommandId: null,
+    codexStatus: null,
+    codexPrompt: null,
+    codexQueuedAt: null,
+    codexCompletedAt: null,
+    codexResultSummary: null,
   });
 
   const task = {
@@ -7103,6 +7508,12 @@ async function createTask(description, options = {}) {
     activeTimerStartedBy: null,
     activeTimerStartedByName: null,
     subtasks: [],
+    codexCommandId: null,
+    codexStatus: null,
+    codexPrompt: null,
+    codexQueuedAt: null,
+    codexCompletedAt: null,
+    codexResultSummary: null,
   };
 
   if (shouldAnnounce) {
@@ -7121,7 +7532,7 @@ async function createAndStartTask(description) {
   if (unavailableReason) {
     await postTaskMessage(unavailableReason);
     setStatus("Timer cannot start right now.", "error");
-    return;
+    return false;
   }
 
   const task = await createTask(description, { announce: false });
@@ -7158,7 +7569,8 @@ async function postTaskList(filterText = "") {
     const createdAt = formatTaskTimestamp(task.createdAt);
     const createdBy = task.createdByName || "Unknown";
     const metadata = maskIdentity ? `created ${createdAt}` : `${createdBy}, ${createdAt}`;
-    return `${formatTaskId(task.id)} - ${task.description}${formatTaskLabels(task.labels)}${formatTaskTimeSummary(task, { maskIdentity })} (${metadata})`;
+    const codexSummary = task.codexStatus ? ` [Codex ${formatCodexStatus(task.codexStatus)}]` : "";
+    return `${formatTaskId(task.id)} - ${task.description}${formatTaskLabels(task.labels)}${formatTaskTimeSummary(task, { maskIdentity })}${codexSummary} (${metadata})`;
   });
 
   const heading =
@@ -8564,7 +8976,7 @@ async function findCurrentActiveTimerForCurrentUser() {
   return activeTimers.sort(compareActiveTimerRecordsByStartedAt)[0] || null;
 }
 
-async function startGeneralTimer(description = "") {
+async function startGeneralTimer(description = "", options = {}) {
   const unavailableReason = await getTimerUnavailableReason();
 
   if (unavailableReason) {
@@ -8578,7 +8990,7 @@ async function startGeneralTimer(description = "") {
   if (activeTimer) {
     await postTaskMessage("A general timer is already running.");
     setStatus("General timer is already running.", "error");
-    return;
+    return false;
   }
 
   const startedAt = new Date();
@@ -8594,6 +9006,7 @@ async function startGeneralTimer(description = "") {
       activeTimerStartedBy: state.profile.id,
       activeTimerStartedByName: getProfileDisplayName(),
       activeTimerDescription: timerDescription || null,
+      activeTimerSource: options.timerSource || "general",
       updatedAt: serverTimestamp(),
     },
     { merge: true }
@@ -8605,20 +9018,24 @@ async function startGeneralTimer(description = "") {
     startedAt,
     isGeneralTimer: true,
     timerDescription,
+    timerSource: options.timerSource || "general",
   });
   clearDayIdleTaskReminder();
   scheduleDayScheduleChecks();
-  await postTaskMessage(`General timer started${timerDescription ? `: ${timerDescription}` : ""}.`);
-  setStatus("General timer started.", "success");
+  if (options.postMessage !== false) {
+    await postTaskMessage(`General timer started${timerDescription ? `: ${timerDescription}` : ""}.`);
+  }
+  setStatus(options.statusText || "General timer started.", "success");
+  return true;
 }
 
-async function stopGeneralTimer() {
+async function stopGeneralTimer(options = {}) {
   const activeTimer = await findActiveGeneralTimer();
 
   if (!activeTimer?.data?.activeTimerStartedAt) {
     await postTaskMessage("No general timer is running.");
     setStatus("General timer is not running.", "error");
-    return;
+    return false;
   }
 
   const elapsedMs = Math.max(0, Date.now() - getTimestampMillis(activeTimer.data.activeTimerStartedAt));
@@ -8631,6 +9048,7 @@ async function stopGeneralTimer() {
       activeTimerStartedBy: null,
       activeTimerStartedByName: null,
       activeTimerDescription: null,
+      activeTimerSource: null,
       userId: state.profile.id,
       userName: getProfileDisplayName(),
       updatedAt: serverTimestamp(),
@@ -8643,15 +9061,19 @@ async function stopGeneralTimer() {
     stoppedAt,
     elapsedMs,
     activeTimer.ref,
-    activeTimer.data.activeTimerDescription
+    activeTimer.data.activeTimerDescription,
+    activeTimer.data.activeTimerSource || "general"
   );
   clearGeneralTimerReminders();
   scheduleDayIdleTaskReminder();
   scheduleDayScheduleChecks();
-  await postTaskMessage(
-    `General timer stopped after ${formatDuration(elapsedMs)}${activeTimer.data.activeTimerDescription ? `: ${activeTimer.data.activeTimerDescription}` : ""}.`
-  );
-  setStatus("General timer stopped.", "success");
+  if (options.postMessage !== false) {
+    await postTaskMessage(
+      `General timer stopped after ${formatDuration(elapsedMs)}${activeTimer.data.activeTimerDescription ? `: ${activeTimer.data.activeTimerDescription}` : ""}.`
+    );
+  }
+  setStatus(options.statusText || "General timer stopped.", "success");
+  return true;
 }
 
 async function getTimerUnavailableReason() {
@@ -8716,6 +9138,7 @@ async function pauseActiveTimersForCurrentUser(reason = "pause") {
         activeTimerStartedBy: null,
         activeTimerStartedByName: null,
         activeTimerDescription: null,
+        activeTimerSource: null,
         userId: state.profile.id,
         userName: getProfileDisplayName(),
         updatedAt: serverTimestamp(),
@@ -8729,7 +9152,8 @@ async function pauseActiveTimersForCurrentUser(reason = "pause") {
         stoppedAt,
         elapsedMs,
         activeGeneralTimer.ref,
-        activeGeneralTimer.data.activeTimerDescription
+        activeGeneralTimer.data.activeTimerDescription,
+        activeGeneralTimer.data.activeTimerSource || "general"
       );
     }
 
@@ -8746,13 +9170,13 @@ async function pauseActiveTimersForCurrentUser(reason = "pause") {
   return pausedCount;
 }
 
-async function continueGeneralTimer() {
+async function continueGeneralTimer(options = {}) {
   const activeTimer = await findActiveGeneralTimer();
 
   if (!activeTimer?.data?.activeTimerStartedAt) {
     await postTaskMessage("No general timer is running.");
     setStatus("General timer is not running.", "error");
-    return;
+    return false;
   }
 
   scheduleTaskTimerReminder({
@@ -8762,12 +9186,134 @@ async function continueGeneralTimer() {
     isGeneralTimer: true,
     timerDescription: activeTimer.data.activeTimerDescription || "",
     activeTimerDescription: activeTimer.data.activeTimerDescription || "",
+    timerSource: activeTimer.data.activeTimerSource || "general",
     ref: activeTimer.ref,
   });
-  postLocalTaskMessage(
-    `Continuing general timer. I will remind you again in ${formatDuration(TASK_TIMER_REMINDER_MS)} if it is still running.`
-  );
-  setStatus("General timer continued.", "success");
+  if (options.postMessage !== false) {
+    postLocalTaskMessage(
+      `Continuing general timer. I will remind you again in ${formatDuration(TASK_TIMER_REMINDER_MS)} if it is still running.`
+    );
+  }
+  setStatus(options.statusText || "General timer continued.", "success");
+  return true;
+}
+
+async function startStandaloneTimer(description = "") {
+  const timerDescription = sanitizeTimerDescription(description);
+
+  if (!timerDescription) {
+    postLocalTimerMessage("Use /timer start <description>.");
+    setStatus("Timer description required.", "error");
+    return;
+  }
+
+  const started = await startGeneralTimer(timerDescription, {
+    timerSource: "timer",
+    postMessage: false,
+    statusText: "Timer started.",
+  });
+
+  if (!started) {
+    return;
+  }
+
+  postLocalTimerMessage(`Timer started: ${timerDescription}`);
+}
+
+async function stopStandaloneTimer() {
+  const activeTimer = await findActiveGeneralTimer();
+
+  if (!activeTimer?.data?.activeTimerStartedAt) {
+    postLocalTimerMessage("No timer is running.");
+    setStatus("No timer is running.", "error");
+    return;
+  }
+
+  if ((activeTimer.data.activeTimerSource || "general") !== "timer") {
+    postLocalTimerMessage("The active timer was not started with /timer.");
+    setStatus("Timer belongs to another workflow.", "error");
+    return;
+  }
+
+  const elapsedMs = Math.max(0, Date.now() - getTimestampMillis(activeTimer.data.activeTimerStartedAt));
+  const description = activeTimer.data.activeTimerDescription || "Timer";
+  const stopped = await stopGeneralTimer({
+    postMessage: false,
+    statusText: "Timer stopped.",
+  });
+
+  if (stopped) {
+    postLocalTimerMessage(`Timer stopped after ${formatDuration(elapsedMs)}: ${description}`);
+  }
+}
+
+async function continueStandaloneTimer() {
+  const activeTimer = await findActiveGeneralTimer();
+
+  if (!activeTimer?.data?.activeTimerStartedAt) {
+    postLocalTimerMessage("No timer is running.");
+    setStatus("No timer is running.", "error");
+    return;
+  }
+
+  if ((activeTimer.data.activeTimerSource || "general") !== "timer") {
+    postLocalTimerMessage("The active timer was not started with /timer.");
+    setStatus("Timer belongs to another workflow.", "error");
+    return;
+  }
+
+  const continued = await continueGeneralTimer({
+    postMessage: false,
+    statusText: "Timer continued.",
+  });
+
+  if (continued) {
+    postLocalTimerMessage(
+      `Continuing timer. I will remind you again in ${formatDuration(TASK_TIMER_REMINDER_MS)} if it is still running.`
+    );
+  }
+}
+
+async function postStandaloneTimerList() {
+  const activeTimer = await findActiveGeneralTimer();
+
+  if (!activeTimer?.data?.activeTimerStartedAt || (activeTimer.data.activeTimerSource || "general") !== "timer") {
+    postLocalTimerMessage("No active timers.");
+    setStatus("No active timers.", "success");
+    return;
+  }
+
+  const elapsedMs = Math.max(0, Date.now() - getTimestampMillis(activeTimer.data.activeTimerStartedAt));
+  const description = activeTimer.data.activeTimerDescription || "Timer";
+  postLocalTimerMessage(`Active timers:\n- ${description} (${formatDuration(elapsedMs)})`);
+  setStatus("Active timers listed.", "success");
+}
+
+async function postStandaloneTimerHistory(input = "") {
+  const dateKey = parseDateKey(input.trim() || "today");
+
+  if (!dateKey) {
+    postLocalTimerMessage("Use /timer history [today|YYYY-MM-DD].");
+    setStatus("Invalid timer history date.", "error");
+    return;
+  }
+
+  const entries = (await loadWorkDayTimeEntries(getWorkDayRef(dateKey)))
+    .filter((entry) => entry.timerSource === "timer")
+    .sort((left, right) => getTimestampMillis(left.startedAt) - getTimestampMillis(right.startedAt));
+
+  if (entries.length === 0) {
+    postLocalTimerMessage(`No timer history for ${formatTaskPlanDate(dateKey)}.`);
+    setStatus("No timer history.", "success");
+    return;
+  }
+
+  const lines = [`Timer history for ${formatTaskPlanDate(dateKey)}:`];
+  entries.forEach((entry) => {
+    lines.push(`- ${formatTimeEntryRange(entry)} (${formatDuration(getTimeEntryDurationMs(entry))}) - ${entry.description || "Timer"}`);
+  });
+  postLocalTimerMessage(lines.join("\n"));
+  setStatus("Timer history shown.", "success");
 }
 
 async function continueTaskTimer(taskIdInput) {
@@ -8839,14 +9385,15 @@ async function postActiveTimers() {
   const actions = [];
 
   if (activeGeneralTimers.length > 0) {
-    lines.push("General:");
+    lines.push("Non-task:");
     activeGeneralTimers.forEach((workDay) => {
       const ownerName = isPrivacyModeActive()
         ? "User"
         : workDay.activeTimerStartedByName || workDay.userName || "Someone";
       const elapsed = formatDuration(Date.now() - getTimestampMillis(workDay.activeTimerStartedAt));
       const description = getGeneralTimerDisplayDescription(workDay.activeTimerDescription);
-      lines.push(`- ${ownerName}: ${elapsed}${description !== "General work" ? ` - ${description}` : ""}`);
+      const timerKind = workDay.activeTimerSource === "timer" ? "Timer" : "General";
+      lines.push(`- ${timerKind} ${ownerName}: ${elapsed}${description !== "General work" ? ` - ${description}` : ""}`);
 
       if (isCurrentUserWorkDay(workDay)) {
         actions.push({
@@ -10121,6 +10668,12 @@ function serializeTaskForMessage(task) {
     jiraStatus: task.jiraStatus || "",
     jiraUpdatedAt: task.jiraUpdatedAt || null,
     source: task.source || "",
+    codexCommandId: task.codexCommandId || "",
+    codexStatus: task.codexStatus || "",
+    codexPrompt: task.codexPrompt || "",
+    codexQueuedAt: task.codexQueuedAt || null,
+    codexCompletedAt: task.codexCompletedAt || null,
+    codexResultSummary: task.codexResultSummary || "",
   };
 }
 
@@ -10892,13 +11445,15 @@ async function recordGeneralTimeEntry(
   stoppedAt,
   durationMs,
   workDayRef = getWorkDayRef(),
-  description = ""
+  description = "",
+  timerSource = "general"
 ) {
   const timerDescription = sanitizeTimerDescription(description);
 
   await addDoc(collection(workDayRef, "timeEntries"), {
     description: getGeneralTimerDisplayDescription(timerDescription),
     timerDescription: timerDescription || null,
+    timerSource,
     userId: state.profile.id,
     userName: getProfileDisplayName(),
     startedAt: normalizeTimestampDate(startedAt),
@@ -10910,6 +11465,10 @@ async function recordGeneralTimeEntry(
 
 function postLocalTaskMessage(text, actions = []) {
   postLocalMessage(text, "Tasks (only you)", "task", actions);
+}
+
+function postLocalTimerMessage(text, actions = []) {
+  postLocalMessage(text, "Timer (only you)", "timer", actions);
 }
 
 function postLocalChangeMessage(text) {
@@ -11900,6 +12459,7 @@ async function autoStopUnansweredGeneralTimer(timer, unattendedSince) {
       activeTimerStartedBy: null,
       activeTimerStartedByName: null,
       activeTimerDescription: null,
+      activeTimerSource: null,
       userId: state.profile.id,
       userName: getProfileDisplayName(),
       updatedAt: serverTimestamp(),
@@ -11913,7 +12473,8 @@ async function autoStopUnansweredGeneralTimer(timer, unattendedSince) {
       stoppedAt,
       elapsedMs,
       timer.ref || getWorkDayRef(),
-      timer.timerDescription || timer.activeTimerDescription
+      timer.timerDescription || timer.activeTimerDescription,
+      timer.timerSource || timer.activeTimerSource || "general"
     );
   }
 
@@ -11966,6 +12527,7 @@ async function getActiveGeneralTimerForLocalReminder(timer) {
       isGeneralTimer: true,
       timerDescription: activeTimer.data.activeTimerDescription || timer.timerDescription || "",
       activeTimerDescription: activeTimer.data.activeTimerDescription || timer.activeTimerDescription || "",
+      timerSource: activeTimer.data.activeTimerSource || timer.timerSource || "general",
       ref: activeTimer.ref,
     };
   } catch (error) {
@@ -14662,9 +15224,19 @@ function normalizeRoomPluginConfig(pluginName, pluginConfig = {}) {
 }
 
 function normalizePluginName(value) {
-  return String(value || "")
+  const normalized = String(value || "")
     .trim()
     .toLowerCase();
+
+  if (["codex", "codextasks", "codex_tasks", "codex-task", "codex-tasks"].includes(normalized)) {
+    return PLUGIN_CODEX_TASKS;
+  }
+
+  if (normalized === "timers") {
+    return PLUGIN_TIMER;
+  }
+
+  return normalized;
 }
 
 function formatPluginName(pluginName) {
@@ -14678,6 +15250,14 @@ function formatPluginName(pluginName) {
 
   if (pluginName === PLUGIN_DAY) {
     return "Day";
+  }
+
+  if (pluginName === PLUGIN_CODEX_TASKS) {
+    return "Codex Tasks";
+  }
+
+  if (pluginName === PLUGIN_TIMER) {
+    return "Timer";
   }
 
   return pluginName;
