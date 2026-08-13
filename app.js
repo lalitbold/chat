@@ -310,6 +310,11 @@ const BASE_SLASH_COMMANDS = [
     hint: "Completed chart",
   },
   {
+    label: "/task chart pending 30d",
+    insertText: "/task chart pending 30d",
+    hint: "Pending trend",
+  },
+  {
     label: "/task current",
     insertText: "/task current",
     hint: "Current task",
@@ -4749,6 +4754,11 @@ function getAvailableSlashCommands() {
         hint: "Link Jira",
       },
       {
+        label: "/team followup add unassigned after 1d <text>",
+        insertText: "/team followup add unassigned after 1d ",
+        hint: "Unassigned followup",
+      },
+      {
         label: "/team followup add <member-id> after 1d <text>",
         insertText: "/team followup add ",
         hint: "Member followup",
@@ -5496,7 +5506,7 @@ function getTaskHelpText() {
     "/task list #bug",
     "/task completed",
     "/task completed #bug",
-    "/task chart [created|completed] [7d|30d|90d] [#label]",
+    "/task chart [created|completed|pending] [7d|30d|90d] [#label]",
     "/task current",
     "/task today #abc123 #def456",
     "/task today list",
@@ -6413,7 +6423,7 @@ async function handleTeamFollowupCommand(input = "") {
     return;
   }
 
-  postLocalTeamMessage("Use /team followup add <member-id> after 1d <text>, /team followup task <task-id> after 1d <text>, /team followup list, or /team followup done <id>.");
+  postLocalTeamMessage("Use /team followup add unassigned after 1d <text>, /team followup add <member-id> after 1d <text>, /team followup task <task-id> after 1d <text>, /team followup list, or /team followup done <id>.");
 }
 
 async function createQuery(question, options = {}) {
@@ -7024,7 +7034,12 @@ async function addMemberFollowup(input) {
   const [memberIdInput = "", ...followupParts] = input.trim().split(/\s+/);
 
   if (!memberIdInput || followupParts.length === 0) {
-    postLocalTeamMessage("Use /team followup add <member-id> after 1d <text>.");
+    postLocalTeamMessage("Use /team followup add unassigned after 1d <text> or /team followup add <member-id> after 1d <text>.");
+    return;
+  }
+
+  if (isUnassignedTeamFollowupInput(memberIdInput)) {
+    await createTeamFollowup(followupParts.join(" "));
     return;
   }
 
@@ -7656,9 +7671,12 @@ async function createTask(description, options = {}) {
   };
 
   if (shouldAnnounce) {
-    await postTaskMessage(
-      `Task ${formatTaskId(taskRef.id)} created: ${trimmedDescription}${formatTaskLabels(labels)}`
-    );
+    const message = `Task ${formatTaskId(taskRef.id)} created: ${trimmedDescription}${formatTaskLabels(labels)}`;
+    if (isPrivacyModeActive()) {
+      postLocalTaskMessage(message);
+    } else {
+      await postTaskMessage(message);
+    }
     setStatus("Task created.", "success");
   }
 
@@ -7893,7 +7911,7 @@ async function postTaskChart(input = "") {
 
   postLocalMessage(fallbackText, "Tasks (only you)", "task-chart", [], chart);
   setStatus(
-    `${chart.total} ${chart.mode === "completed" ? "completed" : "created"} task${chart.total === 1 ? "" : "s"} charted.`,
+    `${chart.total} ${chart.mode === "completed" ? "completed" : chart.mode === "pending" ? "pending" : "created"} task${chart.total === 1 ? "" : "s"} charted.`,
     "success"
   );
 }
@@ -7913,7 +7931,7 @@ function parseTaskChartOptions(input = "") {
       continue;
     }
 
-    if (normalized === "created" || normalized === "completed") {
+    if (normalized === "created" || normalized === "completed" || normalized === "pending") {
       options.mode = normalized;
       continue;
     }
@@ -7926,7 +7944,7 @@ function parseTaskChartOptions(input = "") {
       if (!TASK_CHART_ALLOWED_DAYS.has(days)) {
         return {
           ...options,
-          error: "Use /task chart [created|completed] [7d|30d|90d] [#label].",
+          error: "Use /task chart [created|completed|pending] [7d|30d|90d] [#label].",
         };
       }
 
@@ -7936,7 +7954,7 @@ function parseTaskChartOptions(input = "") {
 
     return {
       ...options,
-      error: "Use /task chart [created|completed] [7d|30d|90d] [#label].",
+      error: "Use /task chart [created|completed|pending] [7d|30d|90d] [#label].",
     };
   }
 
@@ -7944,6 +7962,10 @@ function parseTaskChartOptions(input = "") {
 }
 
 function buildTaskChart(tasks, options) {
+  if (options.mode === "pending") {
+    return buildPendingTaskChart(tasks, options);
+  }
+
   const fieldName = options.mode === "completed" ? "completedAt" : "createdAt";
   const dateKeys = getRecentDateKeys(options.days);
   const countsByDate = new Map(dateKeys.map((dateKey) => [dateKey, 0]));
@@ -7985,6 +8007,45 @@ function buildTaskChart(tasks, options) {
   };
 }
 
+function buildPendingTaskChart(tasks, options) {
+  const dateKeys = getRecentDateKeys(options.days);
+  const filteredTasks = tasks.filter((task) => taskHasLabels(task, options.labels));
+  const points = dateKeys.map((dateKey) => ({
+    dateKey,
+    count: filteredTasks.filter((task) => isTaskPendingOnDate(task, dateKey)).length,
+  }));
+  const total = points[points.length - 1]?.count || 0;
+  const peak = points.reduce((max, point) => Math.max(max, point.count), 0);
+  const labelText = options.labels.length > 0 ? formatTaskLabels(options.labels).trim() : "";
+
+  return {
+    heading: "Pending tasks by day",
+    emptyText: `No pending tasks in the last ${options.days} days${labelText ? ` for ${labelText}` : ""}.`,
+    mode: options.mode,
+    days: options.days,
+    labels: options.labels,
+    labelText,
+    points,
+    total,
+    peak,
+  };
+}
+
+function isTaskPendingOnDate(task, dateKey) {
+  const createdKey = getDateKeyFromTimestamp(task.createdAt);
+
+  if (!createdKey || createdKey > dateKey) {
+    return false;
+  }
+
+  if (task.status !== "complete") {
+    return true;
+  }
+
+  const completedKey = getDateKeyFromTimestamp(task.completedAt);
+  return !completedKey || completedKey > dateKey;
+}
+
 function formatTaskChartText(chart) {
   if (!chart.total) {
     return chart.emptyText;
@@ -7992,7 +8053,7 @@ function formatTaskChartText(chart) {
 
   return [
     `${chart.heading}${chart.labelText ? ` ${chart.labelText}` : ""}`,
-    `Range: last ${chart.days} days. Total: ${chart.total}. Peak: ${chart.peak}.`,
+    `Range: last ${chart.days} days. ${chart.mode === "pending" ? "Current pending" : "Total"}: ${chart.total}. Peak: ${chart.peak}.`,
     ...chart.points.map((point) => `${point.dateKey}: ${point.count}`),
   ].join("\n");
 }
@@ -9089,7 +9150,7 @@ async function startTaskTimer(input) {
   const unavailableReason = await getTimerUnavailableReason();
 
   if (unavailableReason) {
-    await postTaskMessage(unavailableReason);
+    postLocalTaskMessage(unavailableReason);
     setStatus("Timer cannot start right now.", "error");
     return;
   }
@@ -9274,7 +9335,11 @@ async function startGeneralTimer(description = "", options = {}) {
   const unavailableReason = await getTimerUnavailableReason();
 
   if (unavailableReason) {
-    await postTaskMessage(unavailableReason);
+    if (options.timerSource === "timer") {
+      postLocalTimerMessage(unavailableReason);
+    } else {
+      postLocalTaskMessage(unavailableReason);
+    }
     setStatus("Timer cannot start right now.", "error");
     return;
   }
@@ -9790,9 +9855,13 @@ async function startWorkDay() {
     { merge: true }
   );
 
-  await postDayMessage(
-    `${getProfileDisplayName()} started the day.\nPlan can be shared with /day plan <plan>.`
-  );
+  const message = `${getProfileDisplayName()} started the day.
+Plan can be shared with /day plan <plan>.`;
+  if (isPrivacyModeActive()) {
+    postLocalDayMessage(message);
+  } else {
+    await postDayMessage(message);
+  }
   scheduleDayIdleTaskReminder();
   scheduleDayScheduleChecks();
   setStatus("Day started.", "success");
@@ -11978,7 +12047,7 @@ function postLocalMessage(text, senderName, type, actions = [], extra = {}) {
 
 function runLocalAction(actionButton, action, successText) {
   const messageId = actionButton.closest(".message")?.dataset.messageId || "";
-  const actionGroup = actionButton.closest(".message-actions");
+  const actionGroup = actionButton.closest(".message-actions, .task-list-actions, .task-view-share-actions");
   const actionButtons = actionGroup ? [...actionGroup.querySelectorAll("button")] : [actionButton];
   const originalText = actionButton.textContent;
 
@@ -13572,6 +13641,12 @@ function normalizeTeamMemberId(memberId) {
     .toLowerCase();
 }
 
+function isUnassignedTeamFollowupInput(value) {
+  return ["unassigned", "none", "no-member", "no-team-member"].includes(
+    String(value || "").trim().toLowerCase()
+  );
+}
+
 function normalizeTeamFollowupId(followupId) {
   return String(followupId || "")
     .trim()
@@ -13595,7 +13670,7 @@ function formatTeamFollowupTarget(followup) {
     return `Task ${formatTaskId(followup.taskId)}`;
   }
 
-  return "Team";
+  return "Unassigned";
 }
 
 function formatCodexCommandId(commandId) {

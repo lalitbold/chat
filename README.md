@@ -106,7 +106,7 @@ rooms/{roomId}/teamMembers/{memberId}
 rooms/{roomId}/followups/{followupId}
   text
   status
-  memberId
+  memberId (null for unassigned followups)
   memberName
   taskId
   taskDescription
@@ -238,6 +238,7 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 - `/task comment <id> <comment>` adds a comment to a task.
 - `/task comments <id>` shows task comments only to you.
 - Message bubbles include quick reaction buttons.
+- `/task chart pending 30d` shows the daily pending-task backlog trend only to you. Use `created` or `completed` for daily activity instead.
 - `/task today #abc123 #def456` adds existing pending tasks to today's plan.
 - `/task today list` shows today's planned tasks only to you.
 - `/task today review` shows unfinished planned tasks from yesterday with carry, complete, and skip actions.
@@ -277,6 +278,7 @@ Run commands:
 ```powershell
 npm run chat:command -- "/task list"
 npm run chat:command -- "/task create Fix terminal command support #feature" --yes
+npm run chat:command -- "/task comment #abc123 Leaving a note from terminal" --yes
 npm run chat:command -- "/query Is this ready to deploy?" --yes
 npm run chat:command -- "/codex review the latest diff" --yes
 ```
@@ -289,7 +291,7 @@ npm run chat:command -- "/task create Check safety #ops" --dry-run
 npm run chat:command -- "/task list" --json
 ```
 
-Read-only commands run immediately. Write and risky commands ask for confirmation unless `--yes` is passed. The CLI currently supports `/task help|create|list|completed|complete|reopen|codex-create|codex list|codex status`, `/change help|add|list|summary`, `/query help|create|list|respond|close`, `/codex`, `/plugin list|enable|disable`, `/lead list`, and `/team member|task|followup list`. Browser-local commands such as `/remind`, `/debug`, and detailed day timer workflows still need the browser.
+Read-only commands run immediately. Write and risky commands ask for confirmation unless `--yes` is passed. The CLI currently supports `/task help|create|list|completed|complete|reopen|comment|codex-create|codex list|codex status`, `/change help|add|list|summary`, `/query help|create|list|respond|close`, `/codex`, `/plugin list|enable|disable`, `/lead list`, and `/team member|task|followup list`. Browser-local commands such as `/remind`, `/debug`, and detailed day timer workflows still need the browser.
 
 ## Query commands
 
@@ -366,6 +368,7 @@ Team commands are available after `/plugin enable team`.
 - `/team task list` shows tasks with a team assignee or Jira reference only to you.
 - `/team task list <member-id>` shows team tasks for one member only to you.
 - `/team task jira <task-id> CMPL-123 https://jira.example.com/browse/CMPL-123` stores Jira metadata on an existing room task. Jira live fetching is not included in this browser-only version.
+- `/team followup add unassigned after 1d Confirm estimate` creates an unassigned followup with reminders.
 - `/team followup add <member-id> after 1d Confirm estimate` creates a member followup with reminders.
 - `/team followup task <task-id> after 2h Check blocker` creates a task-linked followup with reminders.
 - `/team followup list` shows pending team followups only to you. Followup IDs are shown like `!abc123`.

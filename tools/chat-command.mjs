@@ -344,6 +344,35 @@ async function dispatchTask(payload, context) {
     }
   }
 
+  if (normalizedAction === "comment") {
+    const [taskId = "", ...commentParts] = rest;
+    const commentText = commentParts.join(" ").trim();
+
+    if (!taskId) return textResult("Use /task comment <id> <comment>.");
+    if (!commentText) return textResult("Add a comment after the task id.");
+
+    const task = await findByShortId(context, "tasks", taskId);
+    if (!task) return textResult(`Task ${taskId} was not found.`);
+
+    await createDocument({
+      token: context.token,
+      path: `${context.parentPath}/tasks/${task.id}/comments`,
+      fields: {
+        taskId: task.id,
+        text: commentText,
+        createdAt: context.now,
+        createdBy: context.uid,
+        createdByName: context.userName,
+      },
+    });
+    await postMessage(
+      context,
+      `Comment added to Task ${formatShortId(task.id, "#")} (${task.description || "Untitled task"}): ${commentText}`,
+      "Tasks"
+    );
+    return textResult(`Comment added to ${formatShortId(task.id, "#")}: ${commentText}`);
+  }
+
   if (normalizedAction === "complete" || normalizedAction === "reopen") {
     const task = await findByShortId(context, "tasks", input);
     if (!task) return textResult(`Task ${input} was not found.`);
@@ -359,7 +388,7 @@ async function dispatchTask(payload, context) {
     return textResult(`Task ${formatShortId(task.id, "#")} ${complete ? "completed" : "reopened"}: ${task.description}`);
   }
 
-  return unsupported("/task", `Terminal /task supports help, create, list, completed, complete, reopen, codex-create, codex list, and codex status. Received: ${payload}`);
+  return unsupported("/task", `Terminal /task supports help, create, list, completed, complete, reopen, comment, codex-create, codex list, and codex status. Received: ${payload}`);
 }
 
 async function queueTaskCodexCommand(input, context) {
@@ -716,7 +745,7 @@ function parseTaskChartOptions(input = "") {
       continue;
     }
 
-    if (normalized === "created" || normalized === "completed") {
+    if (normalized === "created" || normalized === "completed" || normalized === "pending") {
       options.mode = normalized;
       continue;
     }
@@ -729,7 +758,7 @@ function parseTaskChartOptions(input = "") {
       if (!TASK_CHART_ALLOWED_DAYS.has(days)) {
         return {
           ...options,
-          error: "Use /task chart [created|completed] [7d|30d|90d] [#label].",
+          error: "Use /task chart [created|completed|pending] [7d|30d|90d] [#label].",
         };
       }
 
@@ -739,7 +768,7 @@ function parseTaskChartOptions(input = "") {
 
     return {
       ...options,
-      error: "Use /task chart [created|completed] [7d|30d|90d] [#label].",
+      error: "Use /task chart [created|completed|pending] [7d|30d|90d] [#label].",
     };
   }
 
@@ -747,6 +776,10 @@ function parseTaskChartOptions(input = "") {
 }
 
 function buildTaskChart(tasks, options) {
+  if (options.mode === "pending") {
+    return buildPendingTaskChart(tasks, options);
+  }
+
   const fieldName = options.mode === "completed" ? "completedAt" : "createdAt";
   const dateKeys = getRecentDateKeys(options.days);
   const countsByDate = new Map(dateKeys.map((dateKey) => [dateKey, 0]));
@@ -782,16 +815,55 @@ function buildTaskChart(tasks, options) {
   };
 }
 
+function buildPendingTaskChart(tasks, options) {
+  const dateKeys = getRecentDateKeys(options.days);
+  const filteredTasks = tasks.filter((task) => hasLabels(task, options.labels));
+  const points = dateKeys.map((dateKey) => ({
+    dateKey,
+    count: filteredTasks.filter((task) => isTaskPendingOnDate(task, dateKey)).length,
+  }));
+  const total = points[points.length - 1]?.count || 0;
+  const peak = points.reduce((max, point) => Math.max(max, point.count), 0);
+  const labelText = options.labels.length > 0 ? formatLabels(options.labels).trim() : "";
+
+  return {
+    mode: options.mode,
+    days: options.days,
+    labels: options.labels,
+    labelText,
+    points,
+    total,
+    peak,
+  };
+}
+
+function isTaskPendingOnDate(task, dateKey) {
+  const createdKey = getDateKeyFromTimestamp(task.createdAt);
+
+  if (!createdKey || createdKey > dateKey) {
+    return false;
+  }
+
+  if (task.status !== "complete") {
+    return true;
+  }
+
+  const completedKey = getDateKeyFromTimestamp(task.completedAt);
+  return !completedKey || completedKey > dateKey;
+}
+
 function formatTaskChart(chart) {
-  const modeLabel = chart.mode === "completed" ? "Completed" : "Created";
+  const modeLabel = chart.mode === "completed" ? "Completed" : chart.mode === "pending" ? "Pending" : "Created";
 
   if (!chart.total) {
-    return `No ${chart.mode === "completed" ? "completed" : "created"} task activity in the last ${chart.days} days${chart.labelText ? ` for ${chart.labelText}` : ""}.`;
+    return chart.mode === "pending"
+      ? `No pending tasks in the last ${chart.days} days${chart.labelText ? ` for ${chart.labelText}` : ""}.`
+      : `No ${chart.mode === "completed" ? "completed" : "created"} task activity in the last ${chart.days} days${chart.labelText ? ` for ${chart.labelText}` : ""}.`;
   }
 
   return [
     `${modeLabel} tasks by day${chart.labelText ? ` ${chart.labelText}` : ""}`,
-    `Range: last ${chart.days} days. Total: ${chart.total}. Peak: ${chart.peak}.`,
+    `Range: last ${chart.days} days. ${chart.mode === "pending" ? "Current pending" : "Total"}: ${chart.total}. Peak: ${chart.peak}.`,
     ...chart.points.map((point) => `${point.dateKey}: ${point.count}`),
   ].join("\n");
 }
@@ -990,9 +1062,10 @@ function taskHelp() {
     "/task create <description> #label",
     "/task list [#label]",
     "/task completed [#label]",
-    "/task chart [created|completed] [7d|30d|90d] [#label]",
+    "/task chart [created|completed|pending] [7d|30d|90d] [#label]",
     "/task complete <id>",
     "/task reopen <id>",
+    "/task comment <id> <comment>",
   ].join("\n");
 }
 
@@ -1012,7 +1085,7 @@ Options:
   -h, --help               Show this help.
 
 Implemented:
-  /task help|create|list|completed|chart|complete|reopen
+  /task help|create|list|completed|chart|complete|reopen|comment
   /change help|add|list|summary
   /query help|create|list|respond|close
   /codex help|<instruction>
