@@ -16,6 +16,8 @@ import {
 
 const PROFILE_PATH = join(process.cwd(), ".chat-command-profile.json");
 const DEFAULT_LIMIT = 50;
+const TASK_CHART_DEFAULT_DAYS = 30;
+const TASK_CHART_ALLOWED_DAYS = new Set([7, 30, 90]);
 const COMMANDS = new Set(["/task", "/change", "/query", "/codex", "/plugin", "/day", "/lead", "/team", "/remind", "/debug"]);
 
 main().catch((error) => {
@@ -204,7 +206,7 @@ function classifyRisk(command) {
   const [action = ""] = command.payload.split(/\s+/);
   const normalizedAction = action.toLowerCase();
 
-  if (command.name === "/task" && ["", "help", "list", "completed", "view", "comments", "summary", "timers", "current"].includes(normalizedAction)) {
+  if (command.name === "/task" && ["", "help", "list", "completed", "chart", "view", "comments", "summary", "timers", "current"].includes(normalizedAction)) {
     return "read";
   }
 
@@ -301,6 +303,17 @@ async function dispatchTask(payload, context) {
       .sort(compareTasks)
       .slice(0, context.limit);
     return textResult(formatTaskList(tasks, status, labels), { tasks });
+  }
+
+  if (normalizedAction === "chart") {
+    const options = parseTaskChartOptions(input);
+
+    if (options.error) {
+      return textResult(options.error);
+    }
+
+    const chart = buildTaskChart(await loadCollection(context, "tasks"), options);
+    return textResult(formatTaskChart(chart), { chart });
   }
 
   if (normalizedAction === "codex-create") {
@@ -688,6 +701,137 @@ function formatTaskList(tasks, status, labels) {
   ].join("\n");
 }
 
+function parseTaskChartOptions(input = "") {
+  const options = {
+    mode: "created",
+    days: TASK_CHART_DEFAULT_DAYS,
+    labels: parseLabels(input),
+  };
+  const tokens = String(input || "").split(/\s+/).map((token) => token.trim()).filter(Boolean);
+
+  for (const token of tokens) {
+    const normalized = token.toLowerCase();
+
+    if (normalized.startsWith("#")) {
+      continue;
+    }
+
+    if (normalized === "created" || normalized === "completed") {
+      options.mode = normalized;
+      continue;
+    }
+
+    const daysMatch = normalized.match(/^(\d+)d$/);
+
+    if (daysMatch) {
+      const days = Number.parseInt(daysMatch[1], 10);
+
+      if (!TASK_CHART_ALLOWED_DAYS.has(days)) {
+        return {
+          ...options,
+          error: "Use /task chart [created|completed] [7d|30d|90d] [#label].",
+        };
+      }
+
+      options.days = days;
+      continue;
+    }
+
+    return {
+      ...options,
+      error: "Use /task chart [created|completed] [7d|30d|90d] [#label].",
+    };
+  }
+
+  return options;
+}
+
+function buildTaskChart(tasks, options) {
+  const fieldName = options.mode === "completed" ? "completedAt" : "createdAt";
+  const dateKeys = getRecentDateKeys(options.days);
+  const countsByDate = new Map(dateKeys.map((dateKey) => [dateKey, 0]));
+  const startKey = dateKeys[0];
+  const endKey = dateKeys[dateKeys.length - 1];
+
+  tasks
+    .filter((task) => hasLabels(task, options.labels))
+    .forEach((task) => {
+      const dateKey = getDateKeyFromTimestamp(task[fieldName]);
+
+      if (dateKey && dateKey >= startKey && dateKey <= endKey) {
+        countsByDate.set(dateKey, (countsByDate.get(dateKey) || 0) + 1);
+      }
+    });
+
+  const points = dateKeys.map((dateKey) => ({
+    dateKey,
+    count: countsByDate.get(dateKey) || 0,
+  }));
+  const total = points.reduce((sum, point) => sum + point.count, 0);
+  const peak = points.reduce((max, point) => Math.max(max, point.count), 0);
+  const labelText = options.labels.length > 0 ? formatLabels(options.labels).trim() : "";
+
+  return {
+    mode: options.mode,
+    days: options.days,
+    labels: options.labels,
+    labelText,
+    points,
+    total,
+    peak,
+  };
+}
+
+function formatTaskChart(chart) {
+  const modeLabel = chart.mode === "completed" ? "Completed" : "Created";
+
+  if (!chart.total) {
+    return `No ${chart.mode === "completed" ? "completed" : "created"} task activity in the last ${chart.days} days${chart.labelText ? ` for ${chart.labelText}` : ""}.`;
+  }
+
+  return [
+    `${modeLabel} tasks by day${chart.labelText ? ` ${chart.labelText}` : ""}`,
+    `Range: last ${chart.days} days. Total: ${chart.total}. Peak: ${chart.peak}.`,
+    ...chart.points.map((point) => `${point.dateKey}: ${point.count}`),
+  ].join("\n");
+}
+
+function getRecentDateKeys(days) {
+  const end = new Date();
+  end.setHours(0, 0, 0, 0);
+  const start = new Date(end);
+  start.setDate(start.getDate() - days + 1);
+  const keys = [];
+
+  for (let date = new Date(start); date <= end; date.setDate(date.getDate() + 1)) {
+    keys.push(formatDateKey(date));
+  }
+
+  return keys;
+}
+
+function formatDateKey(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+}
+
+function getDateKeyFromTimestamp(timestamp) {
+  if (!timestamp) {
+    return "";
+  }
+
+  const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
+
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return formatDateKey(date);
+}
+
 function formatCodexTaskSummary(task) {
   return task.codexStatus ? ` [Codex ${formatCodexStatus(task.codexStatus)}]` : "";
 }
@@ -846,6 +990,7 @@ function taskHelp() {
     "/task create <description> #label",
     "/task list [#label]",
     "/task completed [#label]",
+    "/task chart [created|completed] [7d|30d|90d] [#label]",
     "/task complete <id>",
     "/task reopen <id>",
   ].join("\n");
@@ -867,7 +1012,7 @@ Options:
   -h, --help               Show this help.
 
 Implemented:
-  /task help|create|list|completed|complete|reopen
+  /task help|create|list|completed|chart|complete|reopen
   /change help|add|list|summary
   /query help|create|list|respond|close
   /codex help|<instruction>

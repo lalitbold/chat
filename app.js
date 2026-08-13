@@ -112,6 +112,8 @@ const TASK_LIST_LIMIT = 50;
 const TASK_IMPORTANT_AI_LIMIT = 30;
 const DAY_COACH_TASK_LIMIT = 15;
 const TASK_CONTEXT_COMMENT_LIMIT = 12;
+const TASK_CHART_DEFAULT_DAYS = 30;
+const TASK_CHART_ALLOWED_DAYS = new Set([7, 30, 90]);
 const CHANGELOG_LIST_LIMIT = 50;
 const LEAD_LIST_LIMIT = 25;
 const TEAM_MEMBER_LIST_LIMIT = 50;
@@ -296,6 +298,16 @@ const BASE_SLASH_COMMANDS = [
     label: "/task completed",
     insertText: "/task completed",
     hint: "Completed tasks",
+  },
+  {
+    label: "/task chart",
+    insertText: "/task chart",
+    hint: "Task count by day",
+  },
+  {
+    label: "/task chart completed 7d",
+    insertText: "/task chart completed 7d",
+    hint: "Completed chart",
   },
   {
     label: "/task current",
@@ -2170,6 +2182,8 @@ function renderMessage(message, context = {}) {
 
   if (message.type === "task-list" && Array.isArray(message.tasks)) {
     wrapper.append(renderTaskListMessage(message));
+  } else if (message.type === "task-chart" && Array.isArray(message.points)) {
+    wrapper.append(renderTaskChartMessage(message));
   } else if (message.type === "task-process" && message.task) {
     wrapper.append(renderTaskProcessMessage(message));
   } else if (message.type === "task-comments" && message.task && Array.isArray(message.comments)) {
@@ -2530,6 +2544,125 @@ function renderTaskListMessage(message) {
   container.append(footer);
 
   return container;
+}
+
+function renderTaskChartMessage(message) {
+  const container = document.createElement("div");
+  container.className = "task-chart-message";
+
+  const header = document.createElement("div");
+  header.className = "task-list-header";
+
+  const title = document.createElement("strong");
+  title.textContent = message.heading || "Task count by day";
+
+  const count = document.createElement("span");
+  count.className = "task-list-count";
+  count.textContent = `${message.total || 0} task${message.total === 1 ? "" : "s"}`;
+
+  header.append(title, count);
+  container.append(header);
+
+  if (!message.total) {
+    const empty = document.createElement("p");
+    empty.className = "task-chart-empty";
+    empty.textContent = message.emptyText || "No task activity in this range.";
+    container.append(empty);
+    return container;
+  }
+
+  container.append(renderTaskChartSvg(message.points));
+
+  const stats = document.createElement("div");
+  stats.className = "task-chart-stats";
+  stats.textContent = [
+    `${message.days || message.points.length} days`,
+    `Peak ${message.peak || 0}`,
+    message.labelText ? message.labelText : "",
+  ].filter(Boolean).join(" - ");
+  container.append(stats);
+
+  return container;
+}
+
+function renderTaskChartSvg(points) {
+  const width = 640;
+  const height = 220;
+  const padding = { top: 18, right: 22, bottom: 36, left: 36 };
+  const chartWidth = width - padding.left - padding.right;
+  const chartHeight = height - padding.top - padding.bottom;
+  const peak = Math.max(1, ...points.map((point) => point.count || 0));
+  const step = points.length > 1 ? chartWidth / (points.length - 1) : chartWidth;
+  const getX = (index) => padding.left + index * step;
+  const getY = (count) => padding.top + chartHeight - (count / peak) * chartHeight;
+  const path = points
+    .map((point, index) => `${index === 0 ? "M" : "L"} ${getX(index).toFixed(2)} ${getY(point.count || 0).toFixed(2)}`)
+    .join(" ");
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("class", "task-chart-svg");
+  svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "Task count by day line chart");
+
+  const axis = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  axis.setAttribute("class", "task-chart-axis");
+  axis.setAttribute("d", `M ${padding.left} ${padding.top} V ${padding.top + chartHeight} H ${padding.left + chartWidth}`);
+  svg.append(axis);
+
+  [0, Math.ceil(peak / 2), peak].forEach((tick) => {
+    const y = getY(tick);
+    const grid = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    grid.setAttribute("class", "task-chart-grid");
+    grid.setAttribute("x1", String(padding.left));
+    grid.setAttribute("x2", String(padding.left + chartWidth));
+    grid.setAttribute("y1", y.toFixed(2));
+    grid.setAttribute("y2", y.toFixed(2));
+    svg.append(grid);
+
+    const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+    label.setAttribute("class", "task-chart-label");
+    label.setAttribute("x", String(padding.left - 8));
+    label.setAttribute("y", String(y + 4));
+    label.setAttribute("text-anchor", "end");
+    label.textContent = String(tick);
+    svg.append(label);
+  });
+
+  const line = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  line.setAttribute("class", "task-chart-line");
+  line.setAttribute("d", path);
+  svg.append(line);
+
+  points.forEach((point, index) => {
+    const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    dot.setAttribute("class", "task-chart-dot");
+    dot.setAttribute("cx", getX(index).toFixed(2));
+    dot.setAttribute("cy", getY(point.count || 0).toFixed(2));
+    dot.setAttribute("r", point.count > 0 ? "4" : "2.5");
+
+    const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    title.textContent = `${point.dateKey}: ${point.count}`;
+    dot.append(title);
+    svg.append(dot);
+  });
+
+  const firstLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  firstLabel.setAttribute("class", "task-chart-label");
+  firstLabel.setAttribute("x", String(padding.left));
+  firstLabel.setAttribute("y", String(height - 10));
+  firstLabel.textContent = formatShortChartDate(points[0]?.dateKey);
+  svg.append(firstLabel);
+
+  const lastLabel = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  lastLabel.setAttribute("class", "task-chart-label");
+  lastLabel.setAttribute("x", String(padding.left + chartWidth));
+  lastLabel.setAttribute("y", String(height - 10));
+  lastLabel.setAttribute("text-anchor", "end");
+  lastLabel.textContent = formatShortChartDate(points[points.length - 1]?.dateKey);
+  svg.append(lastLabel);
+
+  return svg;
 }
 
 function renderTaskListItem(task, options = {}) {
@@ -5226,6 +5359,11 @@ async function handleTaskCommand(text) {
     return;
   }
 
+  if (normalizedAction === "chart") {
+    await postTaskChart(rest.join(" "));
+    return;
+  }
+
   if (normalizedAction === "current") {
     await postCurrentTask();
     return;
@@ -5358,6 +5496,7 @@ function getTaskHelpText() {
     "/task list #bug",
     "/task completed",
     "/task completed #bug",
+    "/task chart [created|completed] [7d|30d|90d] [#label]",
     "/task current",
     "/task today #abc123 #def456",
     "/task today list",
@@ -7737,6 +7876,161 @@ async function postCompletedTaskList(filterText = "") {
     { privateAliases }
   );
   setStatus(`${completedTasks.length} completed task${completedTasks.length === 1 ? "" : "s"} listed.`, "success");
+}
+
+async function postTaskChart(input = "") {
+  const options = parseTaskChartOptions(input);
+
+  if (options.error) {
+    postLocalTaskMessage(options.error);
+    setStatus("Task chart command needs a valid range.", "error");
+    return;
+  }
+
+  const tasks = await loadRoomTasks();
+  const chart = buildTaskChart(tasks, options);
+  const fallbackText = formatTaskChartText(chart);
+
+  postLocalMessage(fallbackText, "Tasks (only you)", "task-chart", [], chart);
+  setStatus(
+    `${chart.total} ${chart.mode === "completed" ? "completed" : "created"} task${chart.total === 1 ? "" : "s"} charted.`,
+    "success"
+  );
+}
+
+function parseTaskChartOptions(input = "") {
+  const options = {
+    mode: "created",
+    days: TASK_CHART_DEFAULT_DAYS,
+    labels: parseLabels(input),
+  };
+  const tokens = String(input || "").split(/\s+/).map((token) => token.trim()).filter(Boolean);
+
+  for (const token of tokens) {
+    const normalized = token.toLowerCase();
+
+    if (normalized.startsWith("#")) {
+      continue;
+    }
+
+    if (normalized === "created" || normalized === "completed") {
+      options.mode = normalized;
+      continue;
+    }
+
+    const daysMatch = normalized.match(/^(\d+)d$/);
+
+    if (daysMatch) {
+      const days = Number.parseInt(daysMatch[1], 10);
+
+      if (!TASK_CHART_ALLOWED_DAYS.has(days)) {
+        return {
+          ...options,
+          error: "Use /task chart [created|completed] [7d|30d|90d] [#label].",
+        };
+      }
+
+      options.days = days;
+      continue;
+    }
+
+    return {
+      ...options,
+      error: "Use /task chart [created|completed] [7d|30d|90d] [#label].",
+    };
+  }
+
+  return options;
+}
+
+function buildTaskChart(tasks, options) {
+  const fieldName = options.mode === "completed" ? "completedAt" : "createdAt";
+  const dateKeys = getRecentDateKeys(options.days);
+  const countsByDate = new Map(dateKeys.map((dateKey) => [dateKey, 0]));
+  const startKey = dateKeys[0];
+  const endKey = dateKeys[dateKeys.length - 1];
+  const filteredTasks = tasks.filter((task) => {
+    if (!taskHasLabels(task, options.labels)) {
+      return false;
+    }
+
+    const dateKey = getDateKeyFromTimestamp(task[fieldName]);
+    return Boolean(dateKey && dateKey >= startKey && dateKey <= endKey);
+  });
+
+  filteredTasks.forEach((task) => {
+    const dateKey = getDateKeyFromTimestamp(task[fieldName]);
+    countsByDate.set(dateKey, (countsByDate.get(dateKey) || 0) + 1);
+  });
+
+  const points = dateKeys.map((dateKey) => ({
+    dateKey,
+    count: countsByDate.get(dateKey) || 0,
+  }));
+  const total = points.reduce((sum, point) => sum + point.count, 0);
+  const peak = points.reduce((max, point) => Math.max(max, point.count), 0);
+  const labelText = options.labels.length > 0 ? formatTaskLabels(options.labels).trim() : "";
+  const modeLabel = options.mode === "completed" ? "Completed" : "Created";
+
+  return {
+    heading: `${modeLabel} tasks by day`,
+    emptyText: `No ${options.mode === "completed" ? "completed" : "created"} task activity in the last ${options.days} days${labelText ? ` for ${labelText}` : ""}.`,
+    mode: options.mode,
+    days: options.days,
+    labels: options.labels,
+    labelText,
+    points,
+    total,
+    peak,
+  };
+}
+
+function formatTaskChartText(chart) {
+  if (!chart.total) {
+    return chart.emptyText;
+  }
+
+  return [
+    `${chart.heading}${chart.labelText ? ` ${chart.labelText}` : ""}`,
+    `Range: last ${chart.days} days. Total: ${chart.total}. Peak: ${chart.peak}.`,
+    ...chart.points.map((point) => `${point.dateKey}: ${point.count}`),
+  ].join("\n");
+}
+
+function getRecentDateKeys(days) {
+  const end = new Date();
+  end.setHours(0, 0, 0, 0);
+  const start = new Date(end);
+  start.setDate(start.getDate() - days + 1);
+  const keys = [];
+
+  for (let date = new Date(start); date <= end; date.setDate(date.getDate() + 1)) {
+    keys.push(formatDateKey(date));
+  }
+
+  return keys;
+}
+
+function getDateKeyFromTimestamp(timestamp) {
+  const millis = getTimestampMillis(timestamp);
+
+  if (!millis) {
+    return "";
+  }
+
+  return formatDateKey(new Date(millis));
+}
+
+function formatShortChartDate(dateKey) {
+  if (!dateKey) {
+    return "";
+  }
+
+  const date = new Date(`${dateKey}T00:00:00`);
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+  }).format(date);
 }
 
 async function handleTaskTodayCommand(input = "") {
