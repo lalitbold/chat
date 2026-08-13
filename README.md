@@ -230,6 +230,7 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 - `/task create-start fix that issue #bug` creates a task and starts its timer immediately.
 - `/task list` shows the pending task list only to you. Completed tasks are hidden by default.
 - `/task list #bug` shows pending tasks with that label only to you.
+- `/task search <query>` searches tasks by visible task fields and comments, and shows results only to you.
 - `/task current` shows your current active task with quick action buttons.
 - `/task view <id>` shows a task only to you. Clicking a task ID in task lists uses this private view.
 - `/task share <id>` posts a task view to the group. Private task views also include a Share to group button.
@@ -256,6 +257,7 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
 - `/task stop <id>` stops your running timer and adds the elapsed time to the task.
 - `/task continue` keeps the general timer active and resets the next reminder to 25 minutes.
 - `/task continue <id>` keeps the running timer active and resets the next reminder to 25 minutes.
+- `/task timers` shows all active task and non-task timers. `/timer list` shows the same list.
 - `/task summary` shows your work summary for today only to you.
 - `/task summary share` posts your work summary for today to the group.
 - `/task complete <id>` marks a task complete. The `<id>` can be the short ID shown in the task list, like `#abc123`, or the full Firestore document ID.
@@ -277,6 +279,7 @@ Run commands:
 
 ```powershell
 npm run chat:command -- "/task list"
+npm run chat:command -- "/task search deployment"
 npm run chat:command -- "/task create Fix terminal command support #feature" --yes
 npm run chat:command -- "/task comment #abc123 Leaving a note from terminal" --yes
 npm run chat:command -- "/query Is this ready to deploy?" --yes
@@ -291,7 +294,7 @@ npm run chat:command -- "/task create Check safety #ops" --dry-run
 npm run chat:command -- "/task list" --json
 ```
 
-Read-only commands run immediately. Write and risky commands ask for confirmation unless `--yes` is passed. The CLI currently supports `/task help|create|list|completed|complete|reopen|comment|codex-create|codex list|codex status`, `/change help|add|list|summary`, `/query help|create|list|respond|close`, `/codex`, `/plugin list|enable|disable`, `/lead list`, and `/team member|task|followup list`. Browser-local commands such as `/remind`, `/debug`, and detailed day timer workflows still need the browser.
+Read-only commands run immediately. Write and risky commands ask for confirmation unless `--yes` is passed. The CLI currently supports `/task help|create|list|search|completed|chart|timers|complete|reopen|comment|codex-create|codex list|codex status`, `/timer help|list`, `/change help|add|list|summary`, `/query help|create|list|respond|close`, `/codex`, `/plugin list|enable|disable`, `/lead list`, and `/team list|task list|followup list`. Browser-local commands such as `/remind`, `/debug`, and detailed day timer workflows still need the browser.
 
 ## Query commands
 
@@ -361,15 +364,16 @@ Lead commands are available after `/plugin enable leads`.
 Team commands are available after `/plugin enable team`.
 
 - `/team member add name:Rahul role:Developer designation:SDE email:rahul@example.com handle:@rahul notes:Backend owner` adds a team member and posts a member card to the group.
-- `/team member list` shows team members only to you. Member IDs are shown like `%abc123`.
-- `/team member view <id>` posts a team member card to the group.
-- `/team member update <id> role:Lead designation:Senior status:active notes:Owns API work` updates a member and posts the updated card to the group.
-- `/team task assign <task-id> <member-id>` assigns an existing room task to a team member.
+- `/team list` shows team members only to you. Old `/team member list` and `/team members list` commands still work.
+- Team member references are readable mentions like `@rahul`, generated from `handle` first and then `name`. If two members produce the same mention, the app shows `@rahul-abc123` with the member short ID suffix. Old `%abc123` references still resolve.
+- `/team member view @rahul` posts a team member card to the group.
+- `/team member update @rahul role:Lead designation:Senior status:active notes:Owns API work` updates a member and posts the updated card to the group.
+- `/team task assign <task-id> @rahul` assigns an existing room task to a team member.
 - `/team task list` shows tasks with a team assignee or Jira reference only to you.
-- `/team task list <member-id>` shows team tasks for one member only to you.
+- `/team task list @rahul` shows team tasks for one member only to you.
 - `/team task jira <task-id> CMPL-123 https://jira.example.com/browse/CMPL-123` stores Jira metadata on an existing room task. Jira live fetching is not included in this browser-only version.
 - `/team followup add unassigned after 1d Confirm estimate` creates an unassigned followup with reminders.
-- `/team followup add <member-id> after 1d Confirm estimate` creates a member followup with reminders.
+- `/team followup add @rahul after 1d Confirm estimate` creates a member followup with reminders.
 - `/team followup task <task-id> after 2h Check blocker` creates a task-linked followup with reminders.
 - `/team followup list` shows pending team followups only to you. Followup IDs are shown like `!abc123`.
 - `/team followup done <id>` marks a followup complete and stops reminders.
@@ -442,7 +446,7 @@ The script signs in anonymously with the Firebase web app config and reads pendi
 - `/timer start daily standup` starts a standalone non-task timer for meetings or regular work.
 - `/timer stop` stops the standalone timer and saves it to today's time entries with `timerSource: "timer"`.
 - `/timer continue` keeps the standalone timer active and resets the next reminder.
-- `/timer list` shows the active standalone timer only.
+- `/timer list` shows the same active task and non-task timer list as `/task timers`.
 - `/timer history today` shows stopped standalone timer entries for today.
 
 ## Day commands

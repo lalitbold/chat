@@ -18,7 +18,7 @@ const PROFILE_PATH = join(process.cwd(), ".chat-command-profile.json");
 const DEFAULT_LIMIT = 50;
 const TASK_CHART_DEFAULT_DAYS = 30;
 const TASK_CHART_ALLOWED_DAYS = new Set([7, 30, 90]);
-const COMMANDS = new Set(["/task", "/change", "/query", "/codex", "/plugin", "/day", "/lead", "/team", "/remind", "/debug"]);
+const COMMANDS = new Set(["/task", "/timer", "/change", "/query", "/codex", "/plugin", "/day", "/lead", "/team", "/remind", "/debug"]);
 
 main().catch((error) => {
   console.error(`Error: ${error.message}`);
@@ -206,7 +206,11 @@ function classifyRisk(command) {
   const [action = ""] = command.payload.split(/\s+/);
   const normalizedAction = action.toLowerCase();
 
-  if (command.name === "/task" && ["", "help", "list", "completed", "chart", "view", "comments", "summary", "timers", "current"].includes(normalizedAction)) {
+  if (command.name === "/task" && ["", "help", "list", "search", "find", "completed", "chart", "view", "comments", "summary", "timers", "active", "current"].includes(normalizedAction)) {
+    return "read";
+  }
+
+  if (command.name === "/timer" && ["", "help", "list", "active"].includes(normalizedAction)) {
     return "read";
   }
 
@@ -229,7 +233,7 @@ function classifyRisk(command) {
     return "read";
   }
 
-  if (command.name === "/team" && (normalizedAction === "" || normalizedAction === "help" || command.payload.includes(" list"))) {
+  if (command.name === "/team" && (normalizedAction === "" || normalizedAction === "help" || normalizedAction === "list" || command.payload.includes(" list"))) {
     return "read";
   }
 
@@ -244,6 +248,7 @@ function classifyRisk(command) {
 
 async function dispatchCommand(command, context) {
   if (command.name === "/task") return dispatchTask(command.payload, context);
+  if (command.name === "/timer") return dispatchTimer(command.payload, context);
   if (command.name === "/change") return dispatchChange(command.payload, context);
   if (command.name === "/query") return dispatchQuery(command.payload, context);
   if (command.name === "/codex") return dispatchCodex(command.payload, context);
@@ -305,6 +310,18 @@ async function dispatchTask(payload, context) {
     return textResult(formatTaskList(tasks, status, labels), { tasks });
   }
 
+  if (normalizedAction === "search" || normalizedAction === "find") {
+    if (!input) {
+      return textResult("Use /task search <query>.");
+    }
+
+    const tasks = (await loadCollection(context, "tasks"))
+      .filter((task) => taskMatchesSearchQuery(task, input))
+      .sort(compareTaskSearchResults)
+      .slice(0, context.limit);
+    return textResult(formatTaskSearchList(tasks, input), { tasks });
+  }
+
   if (normalizedAction === "chart") {
     const options = parseTaskChartOptions(input);
 
@@ -314,6 +331,10 @@ async function dispatchTask(payload, context) {
 
     const chart = buildTaskChart(await loadCollection(context, "tasks"), options);
     return textResult(formatTaskChart(chart), { chart });
+  }
+
+  if (normalizedAction === "timers" || normalizedAction === "active") {
+    return activeTimersResult(context);
   }
 
   if (normalizedAction === "codex-create") {
@@ -388,7 +409,40 @@ async function dispatchTask(payload, context) {
     return textResult(`Task ${formatShortId(task.id, "#")} ${complete ? "completed" : "reopened"}: ${task.description}`);
   }
 
-  return unsupported("/task", `Terminal /task supports help, create, list, completed, complete, reopen, comment, codex-create, codex list, and codex status. Received: ${payload}`);
+  return unsupported("/task", `Terminal /task supports help, create, list, search, completed, chart, timers, complete, reopen, comment, codex-create, codex list, and codex status. Received: ${payload}`);
+}
+
+async function dispatchTimer(payload, context) {
+  const [action = ""] = payload.split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+
+  if (!payload || normalizedAction === "help") {
+    return textResult(timerHelp());
+  }
+
+  if (normalizedAction === "list" || normalizedAction === "active") {
+    return activeTimersResult(context);
+  }
+
+  return unsupported("/timer", "Terminal /timer currently supports help and list. Start, stop, continue, and history still need the browser.");
+}
+
+async function activeTimersResult(context) {
+  const [tasks, workDays] = await Promise.all([
+    loadCollection(context, "tasks"),
+    loadCollection(context, "workDays"),
+  ]);
+  const activeTaskTimers = tasks
+    .filter((task) => task.activeTimerStartedAt)
+    .sort(compareActiveTimersByStartedAt);
+  const activeGeneralTimers = workDays
+    .filter((workDay) => workDay.activeTimerStartedAt)
+    .sort(compareActiveTimersByStartedAt);
+
+  return textResult(formatActiveTimers(activeTaskTimers, activeGeneralTimers, context.now), {
+    taskTimers: activeTaskTimers,
+    nonTaskTimers: activeGeneralTimers,
+  });
 }
 
 async function queueTaskCodexCommand(input, context) {
@@ -630,10 +684,10 @@ async function dispatchTeam(payload, context) {
   const parts = payload.split(/\s+/).map((part) => part.toLowerCase());
 
   if (!payload || parts[0] === "help") {
-    return textResult("Team commands:\n/team member list\n/team task list\n/team followup list");
+    return textResult("Team commands:\n/team list\n/team task list\n/team followup list");
   }
 
-  if (parts[0] === "member" && parts[1] === "list") {
+  if (parts[0] === "list" || (parts[0] === "member" && parts[1] === "list") || (parts[0] === "members" && parts[1] === "list")) {
     const members = (await loadCollection(context, "teamMembers")).sort(compareCreatedAsc).slice(0, context.limit);
     return textResult(formatTeamMemberList(members), { members });
   }
@@ -648,7 +702,7 @@ async function dispatchTeam(payload, context) {
     return textResult(formatTaskList(tasks, "team", []), { tasks });
   }
 
-  return unsupported("/team", "Terminal /team currently supports member list, task list, and followup list.");
+  return unsupported("/team", "Terminal /team currently supports list, task list, and followup list.");
 }
 
 async function loadTasks(context, status) {
@@ -728,6 +782,79 @@ function formatTaskList(tasks, status, labels) {
     ...tasks.map((task) => `${formatShortId(task.id, "#")} - ${task.description || "(no description)"}${formatLabels(task.labels)}${formatCodexTaskSummary(task)} (${task.createdByName || "Unknown"})`),
     `Total: ${tasks.length}`,
   ].join("\n");
+}
+
+function formatTaskSearchList(tasks, queryText) {
+  if (tasks.length === 0) return `No tasks matching "${queryText}".`;
+  return [
+    `Task search "${queryText}":`,
+    ...tasks.map((task) => `${formatShortId(task.id, "#")} - ${task.description || "(no description)"}${formatLabels(task.labels)}${formatCodexTaskSummary(task)} (${formatTaskSearchMetadata(task)})`),
+    `Total: ${tasks.length}`,
+  ].join("\n");
+}
+
+function formatTaskSearchMetadata(task) {
+  const parts = [
+    task.status || "pending",
+    task.status === "complete" && task.completedByName ? `completed by ${task.completedByName}` : "",
+    task.status !== "complete" && task.createdByName ? `created by ${task.createdByName}` : "",
+    task.jiraKey ? `Jira ${task.jiraKey}` : "",
+    task.assigneeName ? `assigned to ${task.assigneeName}` : "",
+  ].filter(Boolean);
+
+  return parts.join(", ");
+}
+
+function taskMatchesSearchQuery(task, queryText) {
+  const searchText = normalizeTaskSearchText(queryText);
+
+  if (!searchText) {
+    return false;
+  }
+
+  return getTaskSearchHaystack(task).includes(searchText);
+}
+
+function getTaskSearchHaystack(task) {
+  const fields = [
+    task.id,
+    formatShortId(task.id, "#"),
+    task.description,
+    task.title,
+    task.status,
+    task.createdByName,
+    task.completedByName,
+    task.activeTimerStartedByName,
+    task.activeTimerDescription,
+    task.assigneeName,
+    task.assigneeMemberId,
+    task.jiraKey,
+    task.jiraStatus,
+    task.jiraUrl,
+    task.source,
+    task.codexStatus,
+    task.codexResultSummary,
+    ...(Array.isArray(task.labels) ? task.labels.map((label) => `#${label} ${label}`) : []),
+    ...(Array.isArray(task.subtasks) ? task.subtasks.map((subtask) => subtask?.text || subtask?.description || "") : []),
+  ];
+
+  return normalizeTaskSearchText(fields.filter(Boolean).join(" "));
+}
+
+function normalizeTaskSearchText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/#/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function compareTaskSearchResults(left, right) {
+  if (left.status !== right.status) {
+    return left.status === "pending" ? -1 : 1;
+  }
+
+  return compareTasks(left, right);
 }
 
 function parseTaskChartOptions(input = "") {
@@ -868,6 +995,36 @@ function formatTaskChart(chart) {
   ].join("\n");
 }
 
+function formatActiveTimers(activeTaskTimers, activeGeneralTimers, now = new Date()) {
+  if (activeTaskTimers.length === 0 && activeGeneralTimers.length === 0) {
+    return "No active timers.";
+  }
+
+  const lines = ["Active timers:"];
+
+  if (activeGeneralTimers.length > 0) {
+    lines.push("Non-task:");
+    activeGeneralTimers.forEach((workDay) => {
+      const ownerName = workDay.activeTimerStartedByName || workDay.userName || "Someone";
+      const elapsed = formatDuration(now.getTime() - getTimestampMillis(workDay.activeTimerStartedAt));
+      const description = getGeneralTimerDisplayDescription(workDay.activeTimerDescription);
+      const timerKind = workDay.activeTimerSource === "timer" ? "Timer" : "General";
+      lines.push(`- ${timerKind} ${ownerName}: ${elapsed}${description !== "General work" ? ` - ${description}` : ""}`);
+    });
+  }
+
+  if (activeTaskTimers.length > 0) {
+    lines.push("Tasks:");
+    activeTaskTimers.forEach((task) => {
+      const ownerName = task.activeTimerStartedByName || task.createdByName || "Someone";
+      const elapsed = formatDuration(now.getTime() - getTimestampMillis(task.activeTimerStartedAt));
+      lines.push(`- ${formatShortId(task.id, "#")} ${getTaskTimerDisplayDescription(task)} (${ownerName}, ${elapsed})`);
+    });
+  }
+
+  return lines.join("\n");
+}
+
 function getRecentDateKeys(days) {
   const end = new Date();
   end.setHours(0, 0, 0, 0);
@@ -902,6 +1059,44 @@ function getDateKeyFromTimestamp(timestamp) {
   }
 
   return formatDateKey(date);
+}
+
+function getTimestampMillis(value) {
+  if (!value) return 0;
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "number") return value;
+  if (typeof value === "string") return Date.parse(value) || 0;
+  if (typeof value.toDate === "function") return value.toDate().getTime();
+  if (Number.isFinite(value.seconds)) return value.seconds * 1000 + Math.floor((value.nanoseconds || 0) / 1000000);
+  return Date.parse(String(value)) || 0;
+}
+
+function formatDuration(ms) {
+  const totalMinutes = Math.max(0, Math.floor(ms / 60000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+
+  if (hours <= 0) return `${minutes}m`;
+  if (minutes === 0) return `${hours}h`;
+  return `${hours}h ${minutes}m`;
+}
+
+function getTaskTimerDisplayDescription(task) {
+  const description = sanitizeTimerDescription(task?.activeTimerDescription || "");
+  return description || task?.description || "Task work";
+}
+
+function getGeneralTimerDisplayDescription(timerDescription = "") {
+  const description = sanitizeTimerDescription(timerDescription);
+  return description || "General work";
+}
+
+function sanitizeTimerDescription(value = "") {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function compareActiveTimersByStartedAt(left, right) {
+  return getTimestampMillis(left.activeTimerStartedAt) - getTimestampMillis(right.activeTimerStartedAt) || left.id.localeCompare(right.id);
 }
 
 function formatCodexTaskSummary(task) {
@@ -966,7 +1161,23 @@ function formatLeadList(leads) {
 
 function formatTeamMemberList(members) {
   if (members.length === 0) return "No team members found.";
-  return ["Team members:", ...members.map((member) => `%${member.id.slice(0, 6)} ${member.name || "Unnamed"} ${member.role || ""} ${member.status || "active"}`.trim())].join("\n");
+  return ["Team members:", ...members.map((member) => `${formatTeamMemberMention(member, members)} ${member.name || "Unnamed"} ${member.role || ""} ${member.status || "active"}`.trim())].join("\n");
+}
+
+function formatTeamMemberMention(member, members = []) {
+  const slug = getTeamMemberMentionSlug(member) || String(member.id || "").slice(0, 6).toLowerCase() || "member";
+  const duplicateCount = members.filter((candidate) => getTeamMemberMentionSlug(candidate) === slug).length;
+  return duplicateCount > 1 ? `@${slug}-${String(member.id || "").slice(0, 6)}` : `@${slug}`;
+}
+
+function getTeamMemberMentionSlug(member) {
+  const handle = String(member?.handle || "").trim().replace(/^@/, "");
+  const source = handle || member?.name || "";
+  return String(source)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 function formatFollowupList(followups) {
@@ -1061,11 +1272,23 @@ function taskHelp() {
     "Task commands:",
     "/task create <description> #label",
     "/task list [#label]",
+    "/task search <query>",
     "/task completed [#label]",
     "/task chart [created|completed|pending] [7d|30d|90d] [#label]",
+    "/task timers",
     "/task complete <id>",
     "/task reopen <id>",
     "/task comment <id> <comment>",
+  ].join("\n");
+}
+
+function timerHelp() {
+  return [
+    "Timer commands:",
+    "/timer list",
+    "",
+    "/timer list shows the same active timers as /task timers.",
+    "Start, stop, continue, and history still need the browser.",
   ].join("\n");
 }
 
@@ -1085,13 +1308,14 @@ Options:
   -h, --help               Show this help.
 
 Implemented:
-  /task help|create|list|completed|chart|complete|reopen|comment
+  /task help|create|list|search|completed|chart|timers|complete|reopen|comment
+  /timer help|list
   /change help|add|list|summary
   /query help|create|list|respond|close
   /codex help|<instruction>
   /plugin list|enable|disable
   /lead list
-  /team member list
+  /team list
   /team task list
   /team followup list
 `);

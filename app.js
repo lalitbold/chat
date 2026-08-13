@@ -265,6 +265,11 @@ const BASE_SLASH_COMMANDS = [
     hint: "Pending tasks",
   },
   {
+    label: "/task search <query>",
+    insertText: "/task search ",
+    hint: "Search tasks",
+  },
+  {
     label: "/task view <id>",
     insertText: "/task view ",
     hint: "View task",
@@ -2700,80 +2705,39 @@ function renderTaskListItem(task, options = {}) {
   main.append(summary);
 
   if (!options.hideActions) {
-    const editButton = document.createElement("button");
-    editButton.type = "button";
-    editButton.className = "task-list-edit";
-    editButton.textContent = "Edit";
-    editButton.dataset.action = "task-edit-draft";
-    editButton.dataset.taskId = task.id;
-    editButton.dataset.taskDescription = task.description || "";
-
-    const commentsButton = document.createElement("button");
-    commentsButton.type = "button";
-    commentsButton.className = "task-list-edit";
-    commentsButton.textContent = commentCount > 0 ? `Comments (${commentCount})` : "Comments";
-    commentsButton.dataset.action = "task-comments-list";
-    commentsButton.dataset.taskId = task.id;
-
-    const queryButton = document.createElement("button");
-    queryButton.type = "button";
-    queryButton.className = "task-list-edit";
-    queryButton.textContent = "Query";
-    queryButton.dataset.action = "task-query-draft";
-    queryButton.dataset.taskId = task.id;
-
     const actions = document.createElement("div");
     actions.className = "task-list-actions";
+    const visibleActionDefinitions = [];
 
     if (task.status === "complete") {
-      const reopenButton = document.createElement("button");
-      reopenButton.type = "button";
-      reopenButton.className = "task-list-edit";
-      reopenButton.textContent = "Reopen";
-      reopenButton.dataset.action = "task-reopen";
-      reopenButton.dataset.taskId = task.id;
-      actions.append(reopenButton);
+      visibleActionDefinitions.push({ label: "Reopen", action: "task-reopen" });
     }
 
     if (options.rolloverReview) {
-      const carryButton = document.createElement("button");
-      carryButton.type = "button";
-      carryButton.className = "task-list-edit";
-      carryButton.textContent = "Carry to today";
-      carryButton.dataset.action = "task-day-carry";
-      carryButton.dataset.taskId = task.id;
-      carryButton.dataset.sourceDateKey = options.rolloverDateKey || "";
-
-      const completeButton = document.createElement("button");
-      completeButton.type = "button";
-      completeButton.className = "task-list-edit";
-      completeButton.textContent = "Complete";
-      completeButton.dataset.action = "task-day-complete";
-      completeButton.dataset.taskId = task.id;
-      completeButton.dataset.sourceDateKey = options.rolloverDateKey || "";
-
-      const skipButton = document.createElement("button");
-      skipButton.type = "button";
-      skipButton.className = "task-list-edit";
-      skipButton.textContent = "Skip";
-      skipButton.dataset.action = "task-day-skip";
-      skipButton.dataset.taskId = task.id;
-      skipButton.dataset.sourceDateKey = options.rolloverDateKey || "";
-
-      actions.append(carryButton, completeButton, skipButton);
+      visibleActionDefinitions.push(
+        { label: "Carry to today", action: "task-day-carry", sourceDateKey: options.rolloverDateKey || "" },
+        { label: "Complete", action: "task-day-complete", sourceDateKey: options.rolloverDateKey || "" },
+        { label: "Skip", action: "task-day-skip", sourceDateKey: options.rolloverDateKey || "" }
+      );
     }
 
     if (options.showTodayPlanActions && task.status !== "complete") {
-      const todayPlanButton = document.createElement("button");
-      todayPlanButton.type = "button";
-      todayPlanButton.className = "task-list-edit";
-      todayPlanButton.textContent = task.plannedToday ? "Remove today" : "Today";
-      todayPlanButton.dataset.action = task.plannedToday ? "task-day-remove-today" : "task-day-add-today";
-      todayPlanButton.dataset.taskId = task.id;
-      actions.append(todayPlanButton);
+      visibleActionDefinitions.push({
+        label: task.plannedToday ? "Remove today" : "Today",
+        action: task.plannedToday ? "task-day-remove-today" : "task-day-add-today",
+      });
     }
 
-    actions.append(editButton, commentsButton, queryButton);
+    visibleActionDefinitions.push(
+      { label: "Edit", action: "task-edit-draft", description: task.description || "" },
+      { label: commentCount > 0 ? `Comments (${commentCount})` : "Comments", action: "task-comments-list" },
+      { label: "Query", action: "task-query-draft" }
+    );
+
+    visibleActionDefinitions.forEach((definition) => {
+      actions.append(createTaskActionButton(task, definition));
+    });
+    actions.append(renderTaskActionsOverflow(task, getTaskActionDefinitions(task, options)));
     main.append(actions);
   }
 
@@ -2903,40 +2867,132 @@ function renderTaskActionButtons(task) {
   const actions = document.createElement("div");
   actions.className = "task-list-actions";
 
-  const buttonDefinitions = [];
+  const buttonDefinitions = getVisibleTaskActionDefinitions(task);
+
+  buttonDefinitions.forEach((definition) => {
+    actions.append(createTaskActionButton(task, definition));
+  });
+  actions.append(renderTaskActionsOverflow(task, getTaskActionDefinitions(task)));
+
+  return actions;
+}
+
+function getVisibleTaskActionDefinitions(task) {
+  const definitions = [];
 
   if (task.status === "complete") {
-    buttonDefinitions.push({ label: "Reopen", action: "task-reopen" });
+    definitions.push({ label: "Reopen", action: "task-reopen" });
   } else {
-    buttonDefinitions.push({ label: "Complete", action: "task-complete" });
+    definitions.push({ label: "Complete", action: "task-complete" });
 
     if (task.activeTimerStartedAt && isCurrentUserTaskTimerOwner(task)) {
-      buttonDefinitions.push(
-        { label: "Continue", action: "task-continue" },
-        { label: "Stop timer", action: "task-stop" }
-      );
+      definitions.push({ label: "Continue", action: "task-continue" }, { label: "Stop timer", action: "task-stop" });
     } else if (!task.activeTimerStartedAt) {
-      buttonDefinitions.push({ label: "Start timer", action: "task-start" });
+      definitions.push({ label: "Start timer", action: "task-start" });
     }
   }
 
-  buttonDefinitions.push(
+  definitions.push(
     { label: "Comment", action: "task-comment-draft" },
     { label: "Subtask", action: "task-subtask-draft" },
     { label: "Query", action: "task-query-draft" }
   );
 
-  buttonDefinitions.forEach((definition) => {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "task-list-edit";
-    button.textContent = definition.label;
-    button.dataset.action = definition.action;
-    button.dataset.taskId = task.id;
-    actions.append(button);
+  return definitions;
+}
+
+function getTaskActionDefinitions(task, options = {}) {
+  const commentCount = Number.isFinite(task.commentCount) ? task.commentCount : 0;
+  const definitions = [{ label: "View task", action: "task-view" }];
+
+  if (task.status === "complete") {
+    definitions.push({ label: "Reopen", action: "task-reopen" });
+  } else {
+    definitions.push({ label: "Complete", action: "task-complete" });
+
+    if (task.activeTimerStartedAt && isCurrentUserTaskTimerOwner(task)) {
+      definitions.push({ label: "Continue timer", action: "task-continue" }, { label: "Stop timer", action: "task-stop" });
+    } else if (!task.activeTimerStartedAt) {
+      definitions.push({ label: "Start timer", action: "task-start" });
+    }
+  }
+
+  if (options.rolloverReview) {
+    definitions.push(
+      { label: "Carry to today", action: "task-day-carry", sourceDateKey: options.rolloverDateKey || "" },
+      { label: "Complete review item", action: "task-day-complete", sourceDateKey: options.rolloverDateKey || "" },
+      { label: "Skip review item", action: "task-day-skip", sourceDateKey: options.rolloverDateKey || "" }
+    );
+  }
+
+  if (options.showTodayPlanActions && task.status !== "complete") {
+    definitions.push({
+      label: task.plannedToday ? "Remove from today" : "Add to today",
+      action: task.plannedToday ? "task-day-remove-today" : "task-day-add-today",
+    });
+  }
+
+  definitions.push(
+    { label: "Edit", action: "task-edit-draft", description: task.description || "" },
+    { label: "Add comment", action: "task-comment-draft" },
+    { label: commentCount > 0 ? `Comments (${commentCount})` : "Comments", action: "task-comments-list" },
+    { label: "Add subtask", action: "task-subtask-draft" },
+    { label: "Query", action: "task-query-draft" }
+  );
+
+  return dedupeTaskActionDefinitions(definitions);
+}
+
+function dedupeTaskActionDefinitions(definitions) {
+  const seen = new Set();
+  return definitions.filter((definition) => {
+    const key = [definition.action, definition.sourceDateKey || "", definition.label].join(":");
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function createTaskActionButton(task, definition, options = {}) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = options.menuItem ? "task-action-menu-item" : "task-list-edit";
+  button.textContent = definition.label;
+  button.dataset.action = definition.action;
+  button.dataset.taskId = task.id;
+
+  if (definition.description !== undefined) {
+    button.dataset.taskDescription = definition.description;
+  }
+
+  if (definition.sourceDateKey !== undefined) {
+    button.dataset.sourceDateKey = definition.sourceDateKey;
+  }
+
+  return button;
+}
+
+function renderTaskActionsOverflow(task, definitions) {
+  const menu = document.createElement("details");
+  menu.className = "task-action-menu";
+
+  const trigger = document.createElement("summary");
+  trigger.className = "task-action-menu-trigger";
+  trigger.setAttribute("aria-label", `More actions for ${formatTaskId(task.id)}`);
+  trigger.title = "More actions";
+  trigger.textContent = "...";
+
+  const panel = document.createElement("div");
+  panel.className = "task-action-menu-panel";
+
+  definitions.forEach((definition) => {
+    panel.append(createTaskActionButton(task, definition, { menuItem: true }));
   });
 
-  return actions;
+  menu.append(trigger, panel);
+  return menu;
 }
 
 function renderTaskViewMessage(message) {
@@ -3291,7 +3347,7 @@ function renderTeamMemberViewMessage(message) {
 
   const id = document.createElement("span");
   id.className = "task-list-count";
-  id.textContent = formatTeamMemberId(member.id);
+  id.textContent = formatTeamMemberMention(member);
 
   header.append(title, id);
   container.append(header);
@@ -3322,7 +3378,7 @@ function renderTeamMemberListMessage(message) {
 
   message.members.forEach((member) => {
     const item = document.createElement("li");
-    item.append(renderTeamMemberPreviewCard(member, { localActions: true }));
+    item.append(renderTeamMemberPreviewCard(member, { localActions: true, allMembers: message.members }));
     list.append(item);
   });
 
@@ -3339,7 +3395,7 @@ function renderTeamMemberPreviewCard(member, options = {}) {
 
   const id = document.createElement("span");
   id.className = "task-list-id";
-  id.textContent = formatTeamMemberId(member.id);
+  id.textContent = formatTeamMemberMention(member, options.allMembers || []);
   id.title = member.id || "";
 
   const status = document.createElement("span");
@@ -3393,6 +3449,7 @@ function renderTeamMemberPreviewCard(member, options = {}) {
     updateButton.textContent = "Update";
     updateButton.dataset.action = "team-member-update-draft";
     updateButton.dataset.memberId = member.id || "";
+    updateButton.dataset.memberMention = formatTeamMemberMention(member, options.allMembers || []);
 
     const followupButton = document.createElement("button");
     followupButton.type = "button";
@@ -3400,6 +3457,7 @@ function renderTeamMemberPreviewCard(member, options = {}) {
     followupButton.textContent = "Follow up";
     followupButton.dataset.action = "team-followup-member-draft";
     followupButton.dataset.memberId = member.id || "";
+    followupButton.dataset.memberMention = formatTeamMemberMention(member, options.allMembers || []);
 
     actions.append(updateButton, followupButton);
 
@@ -3410,6 +3468,7 @@ function renderTeamMemberPreviewCard(member, options = {}) {
       viewButton.textContent = "View";
       viewButton.dataset.action = "team-member-view";
       viewButton.dataset.memberId = member.id || "";
+      viewButton.dataset.memberMention = formatTeamMemberMention(member, options.allMembers || []);
       actions.prepend(viewButton);
     }
 
@@ -3983,11 +4042,11 @@ function handleMessageActionClick(event) {
   }
 
   if (actionButton.dataset.action === "team-member-update-draft") {
-    draftTeamMemberUpdate(actionButton.dataset.memberId || "");
+    draftTeamMemberUpdate(actionButton.dataset.memberMention || actionButton.dataset.memberId || "");
   }
 
   if (actionButton.dataset.action === "team-followup-member-draft") {
-    draftTeamMemberFollowup(actionButton.dataset.memberId || "");
+    draftTeamMemberFollowup(actionButton.dataset.memberMention || actionButton.dataset.memberId || "");
   }
 
   if (actionButton.dataset.action === "team-member-view") {
@@ -4558,6 +4617,12 @@ async function getComposerAutocompleteMatches(value, cursorIndex = value.length)
     return commandMatches;
   }
 
+  const memberMatches = await getTeamMemberAutocompleteMatches(value, cursorIndex);
+
+  if (memberMatches.length > 0) {
+    return memberMatches;
+  }
+
   return getHashAutocompleteMatches(value, cursorIndex);
 }
 
@@ -4605,6 +4670,34 @@ async function getHashAutocompleteMatches(value, cursorIndex = value.length) {
   return [...taskSuggestions, ...labelSuggestions].slice(0, COMMAND_AUTOCOMPLETE_LIMIT);
 }
 
+async function getTeamMemberAutocompleteMatches(value, cursorIndex = value.length) {
+  const context = getTeamMemberAutocompleteContext(value, cursorIndex);
+
+  if (!context || !state.db || !state.roomId || !isRoomPluginEnabled(PLUGIN_TEAM)) {
+    return [];
+  }
+
+  const queryText = context.query.toLowerCase();
+  const members = (await loadRoomTeamMembers()).sort(compareTeamMembersByName);
+
+  return members
+    .map((member) => ({
+      member,
+      mention: formatTeamMemberMention(member, members),
+    }))
+    .filter(({ mention }) => mention.slice(1).toLowerCase().startsWith(queryText))
+    .map(({ member, mention }) => ({
+      label: mention,
+      insertText: mention,
+      hint: member.name || "Team member",
+      replaceStart: context.start,
+      replaceEnd: context.end,
+      type: "team-member",
+      memberId: member.id,
+    }))
+    .slice(0, COMMAND_AUTOCOMPLETE_LIMIT);
+}
+
 function getHashAutocompleteContext(value, cursorIndex = value.length) {
   const beforeCursor = value.slice(0, cursorIndex);
   const match = beforeCursor.match(/(^|\s)#([a-z0-9_-]*)$/i);
@@ -4614,6 +4707,22 @@ function getHashAutocompleteContext(value, cursorIndex = value.length) {
   }
 
   const token = `#${match[2]}`;
+  return {
+    query: match[2] || "",
+    start: cursorIndex - token.length,
+    end: cursorIndex,
+  };
+}
+
+function getTeamMemberAutocompleteContext(value, cursorIndex = value.length) {
+  const beforeCursor = value.slice(0, cursorIndex);
+  const match = beforeCursor.match(/(^|\s)@([a-z0-9_-]*)$/i);
+
+  if (!match) {
+    return null;
+  }
+
+  const token = `@${match[2]}`;
   return {
     query: match[2] || "",
     start: cursorIndex - token.length,
@@ -4734,17 +4843,17 @@ function getAvailableSlashCommands() {
         hint: "Add member",
       },
       {
-        label: "/team member list",
-        insertText: "/team member list",
+        label: "/team list",
+        insertText: "/team list",
         hint: "Team members",
       },
       {
-        label: "/team task assign <task-id> <member-id>",
+        label: "/team task assign <task-id> @member",
         insertText: "/team task assign ",
         hint: "Assign task",
       },
       {
-        label: "/team task list [member-id]",
+        label: "/team task list [@member]",
         insertText: "/team task list ",
         hint: "Team tasks",
       },
@@ -4759,7 +4868,7 @@ function getAvailableSlashCommands() {
         hint: "Unassigned followup",
       },
       {
-        label: "/team followup add <member-id> after 1d <text>",
+        label: "/team followup add @member after 1d <text>",
         insertText: "/team followup add ",
         hint: "Member followup",
       },
@@ -5285,12 +5394,6 @@ function isTeamCommand(text) {
 }
 
 async function handleTimerCommand(text) {
-  if (!isRoomPluginEnabled(PLUGIN_TIMER)) {
-    postLocalTimerMessage("Timer is not enabled in this group. Enable it with /plugin enable timer.");
-    setStatus("Timer plugin is disabled.", "error");
-    return;
-  }
-
   const rawCommand = text.trim();
   const payload = rawCommand.slice(TIMER_COMMAND.length).trim();
   const [action = "", ...rest] = payload.split(/\s+/);
@@ -5298,8 +5401,19 @@ async function handleTimerCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     postLocalTimerMessage(
-      "Timer commands:\n/timer start <description>\n/timer stop\n/timer continue\n/timer list\n/timer history [today|YYYY-MM-DD]"
+      "Timer commands:\n/timer start <description>\n/timer stop\n/timer continue\n/timer list\n/timer history [today|YYYY-MM-DD]\n\n/timer list shows the same active timers as /task timers."
     );
+    return;
+  }
+
+  if (normalizedAction === "list" || normalizedAction === "active") {
+    await postActiveTimers();
+    return;
+  }
+
+  if (!isRoomPluginEnabled(PLUGIN_TIMER)) {
+    postLocalTimerMessage("Timer is not enabled in this group. Enable it with /plugin enable timer.");
+    setStatus("Timer plugin is disabled.", "error");
     return;
   }
 
@@ -5315,11 +5429,6 @@ async function handleTimerCommand(text) {
 
   if (normalizedAction === "continue") {
     await continueStandaloneTimer();
-    return;
-  }
-
-  if (normalizedAction === "list" || normalizedAction === "active") {
-    await postStandaloneTimerList();
     return;
   }
 
@@ -5361,6 +5470,11 @@ async function handleTaskCommand(text) {
 
   if (normalizedAction === "list") {
     await postTaskList(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "search" || normalizedAction === "find") {
+    await postTaskSearch(rest.join(" "));
     return;
   }
 
@@ -5504,6 +5618,7 @@ function getTaskHelpText() {
     "/task create-start fix that issue #bug",
     "/task list",
     "/task list #bug",
+    "/task search <query>",
     "/task completed",
     "/task completed #bug",
     "/task chart [created|completed|pending] [7d|30d|90d] [#label]",
@@ -6326,8 +6441,13 @@ async function handleTeamCommand(text) {
 
   if (!payload || normalizedSection === "help") {
     postLocalTeamMessage(
-      "Team commands:\n/team member add name:<name> role:<role> designation:<designation> email:<email> handle:<handle> notes:<notes>\n/team member list\n/team member view <id>\n/team member update <id> role:<role> designation:<designation> status:<active|inactive> notes:<notes>\n/team task assign <task-id> <member-id>\n/team task list [member-id]\n/team task jira <task-id> <JIRA-KEY> [url]\n/team followup add <member-id> after 1d <text>\n/team followup task <task-id> after 1d <text>\n/team followup list\n/team followup done <id>"
+      "Team commands:\n/team list\n/team member add name:<name> role:<role> designation:<designation> email:<email> handle:@handle notes:<notes>\n/team member view @member\n/team member update @member role:<role> designation:<designation> status:<active|inactive> notes:<notes>\n/team task assign <task-id> @member\n/team task list [@member]\n/team task jira <task-id> <JIRA-KEY> [url]\n/team followup add unassigned after 1d <text>\n/team followup add @member after 1d <text>\n/team followup task <task-id> after 1d <text>\n/team followup list\n/team followup done <id>"
     );
+    return;
+  }
+
+  if (normalizedSection === "list") {
+    await postTeamMemberList();
     return;
   }
 
@@ -6374,7 +6494,7 @@ async function handleTeamMemberCommand(input = "") {
     return;
   }
 
-  postLocalTeamMessage("Use /team member add, /team member list, /team member view <id>, or /team member update <id>.");
+  postLocalTeamMessage("Use /team member add, /team list, /team member view @member, or /team member update @member.");
 }
 
 async function handleTeamTaskCommand(input = "") {
@@ -6396,7 +6516,7 @@ async function handleTeamTaskCommand(input = "") {
     return;
   }
 
-  postLocalTeamMessage("Use /team task assign <task-id> <member-id>, /team task list [member-id], or /team task jira <task-id> <JIRA-KEY> [url].");
+  postLocalTeamMessage("Use /team task assign <task-id> @member, /team task list [@member], or /team task jira <task-id> <JIRA-KEY> [url].");
 }
 
 async function handleTeamFollowupCommand(input = "") {
@@ -6423,7 +6543,7 @@ async function handleTeamFollowupCommand(input = "") {
     return;
   }
 
-  postLocalTeamMessage("Use /team followup add unassigned after 1d <text>, /team followup add <member-id> after 1d <text>, /team followup task <task-id> after 1d <text>, /team followup list, or /team followup done <id>.");
+  postLocalTeamMessage("Use /team followup add unassigned after 1d <text>, /team followup add @member after 1d <text>, /team followup task <task-id> after 1d <text>, /team followup list, or /team followup done <id>.");
 }
 
 async function createQuery(question, options = {}) {
@@ -6956,7 +7076,7 @@ async function assignTeamTask(input) {
     updatedByName: getProfileDisplayName(),
   });
 
-  await postTaskMessage(`Task ${formatTaskId(task.id)} assigned to ${member.name}: ${task.description || "Untitled task"}`);
+  await postTaskMessage(`Task ${formatTaskId(task.id)} assigned to ${formatTeamMemberMention(member)}: ${task.description || "Untitled task"}`);
   setStatus("Task assigned.", "success");
 }
 
@@ -7742,6 +7862,62 @@ async function postTaskList(filterText = "") {
     { showTodayPlanActions: true, todayPlanResetHint }
   );
   setStatus(`${pendingTasksWithPlanState.length} pending task${pendingTasksWithPlanState.length === 1 ? "" : "s"} listed.`, "success");
+}
+
+async function postTaskSearch(input = "") {
+  const queryText = input.trim();
+
+  if (!queryText) {
+    postLocalTaskMessage("Use /task search <query>.");
+    setStatus("Task search needs a query.", "error");
+    return;
+  }
+
+  const tasksWithComments = await Promise.all((await loadRoomTasks())
+    .sort(compareTaskSearchResults)
+    .map(async (task) => {
+      const comments = await loadTaskComments(task.id);
+      return {
+        ...task,
+        commentCount: comments.length,
+        searchComments: comments,
+      };
+    }));
+  const matchingTasks = tasksWithComments
+    .filter((task) => taskMatchesSearchQuery(task, queryText))
+    .slice(0, TASK_LIST_LIMIT);
+  const matchingTasksWithPlanState = await attachTodayPlanState(matchingTasks);
+
+  if (matchingTasksWithPlanState.length === 0) {
+    postLocalTaskMessage(`No tasks matching "${queryText}".`);
+    setStatus("No matching tasks.", "success");
+    return;
+  }
+
+  const maskIdentity = isPrivacyModeActive();
+  const privateAliases = createTaskPrivacyAliases(matchingTasksWithPlanState);
+  const taskLines = matchingTasksWithPlanState.map((task) => {
+    const timestamp = task.status === "complete"
+      ? `completed ${formatTaskTimestamp(task.completedAt)}`
+      : `created ${formatTaskTimestamp(task.createdAt)}`;
+    const ownerName = task.status === "complete"
+      ? formatTaskPersonName(task.completedBy, task.completedByName || "Unknown", privateAliases, { maskIdentity })
+      : formatTaskPersonName(task.createdBy, task.createdByName || "Unknown", privateAliases, { maskIdentity });
+    const metadata = maskIdentity ? timestamp : `${ownerName}, ${timestamp}`;
+    const commentMatchText = getTaskCommentSearchMatchText(task.searchComments, queryText);
+    const commentSummary = commentMatchText ? ` [comment: ${commentMatchText}]` : "";
+    return `${formatTaskId(task.id)} - ${task.description || "Untitled task"}${formatTaskLabels(task.labels)}${formatTaskTimeSummary(task, { maskIdentity })}${commentSummary} (${metadata})`;
+  });
+  const heading = `Task search "${queryText}":`;
+  const totalLine = `Total: ${matchingTasksWithPlanState.length} task${matchingTasksWithPlanState.length === 1 ? "" : "s"}`;
+
+  postLocalTaskListMessage(
+    heading.replace(/:$/, ""),
+    matchingTasksWithPlanState,
+    `${heading}\n${taskLines.join("\n")}\n${totalLine}`,
+    { privateAliases, showTodayPlanActions: true }
+  );
+  setStatus(`${matchingTasksWithPlanState.length} matching task${matchingTasksWithPlanState.length === 1 ? "" : "s"} listed.`, "success");
 }
 
 async function queueImportantTasksForCodex(filterText = "") {
@@ -9633,21 +9809,6 @@ async function continueStandaloneTimer() {
   }
 }
 
-async function postStandaloneTimerList() {
-  const activeTimer = await findActiveGeneralTimer();
-
-  if (!activeTimer?.data?.activeTimerStartedAt || (activeTimer.data.activeTimerSource || "general") !== "timer") {
-    postLocalTimerMessage("No active timers.");
-    setStatus("No active timers.", "success");
-    return;
-  }
-
-  const elapsedMs = Math.max(0, Date.now() - getTimestampMillis(activeTimer.data.activeTimerStartedAt));
-  const description = activeTimer.data.activeTimerDescription || "Timer";
-  postLocalTimerMessage(`Active timers:\n- ${description} (${formatDuration(elapsedMs)})`);
-  setStatus("Active timers listed.", "success");
-}
-
 async function postStandaloneTimerHistory(input = "") {
   const dateKey = parseDateKey(input.trim() || "today");
 
@@ -11313,7 +11474,8 @@ async function findLeadById(leadIdInput) {
 }
 
 async function findTeamMemberById(memberIdInput) {
-  const normalizedId = normalizeTeamMemberId(memberIdInput);
+  const rawInput = String(memberIdInput || "").trim();
+  const normalizedId = normalizeTeamMemberId(rawInput);
 
   if (!normalizedId) {
     return null;
@@ -11329,13 +11491,38 @@ async function findTeamMemberById(memberIdInput) {
   }
 
   const members = await loadRoomTeamMembers();
+  const mentionMatch = findTeamMemberByMention(members, rawInput);
+
+  if (mentionMatch) {
+    return mentionMatch;
+  }
+
   const matches = members.filter((member) => {
     const memberId = member.id.toLowerCase();
-    const handle = normalizeTeamHandle(member.handle).replace(/^@/, "");
-    return memberId.startsWith(normalizedId) || (handle && handle === normalizedId);
+    const mentionSlug = getTeamMemberMentionSlug(member);
+    const handle = normalizeTeamHandle(member.handle).replace(/^@/, "").toLowerCase();
+    return memberId.startsWith(normalizedId) || (handle && handle === normalizedId) || (mentionSlug && mentionSlug === normalizedId);
   });
 
   return matches.length === 1 ? matches[0] : null;
+}
+
+function findTeamMemberByMention(members, input) {
+  const normalized = normalizeTeamMemberId(input);
+
+  if (!normalized) {
+    return null;
+  }
+
+  const exactMentionMatches = members.filter((member) => formatTeamMemberMention(member, members).slice(1).toLowerCase() === normalized);
+
+  if (exactMentionMatches.length === 1) {
+    return exactMentionMatches[0];
+  }
+
+  const slugMatches = members.filter((member) => getTeamMemberMentionSlug(member) === normalized);
+
+  return slugMatches.length === 1 ? slugMatches[0] : null;
 }
 
 async function findTeamFollowupById(followupIdInput) {
@@ -13356,6 +13543,18 @@ function compareTasksByCompletedAt(left, right) {
   return left.id.localeCompare(right.id);
 }
 
+function compareTaskSearchResults(left, right) {
+  if (left.status !== right.status) {
+    return left.status === "pending" ? -1 : 1;
+  }
+
+  if (left.status === "complete" && right.status === "complete") {
+    return compareTasksByCompletedAt(left, right);
+  }
+
+  return compareTasksByCreatedAt(left, right);
+}
+
 function compareQueriesByCreatedAt(left, right) {
   const leftTime = getTimestampMillis(left.createdAt);
   const rightTime = getTimestampMillis(right.createdAt);
@@ -13574,12 +13773,12 @@ function draftLeadUpdate(leadId) {
   setStatus("Update the lead fields and send when ready.", "success");
 }
 
-function draftTeamMemberUpdate(memberId) {
-  if (!memberId) {
+function draftTeamMemberUpdate(memberRef) {
+  if (!memberRef) {
     return;
   }
 
-  messageInput.value = `/team member update ${formatTeamMemberId(memberId)} role: designation: status:active notes:`;
+  messageInput.value = `/team member update ${memberRef} role: designation: status:active notes:`;
   messageInput.focus();
   messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
   syncMessageMaskOverlay();
@@ -13587,12 +13786,12 @@ function draftTeamMemberUpdate(memberId) {
   setStatus("Update the team member fields and send when ready.", "success");
 }
 
-function draftTeamMemberFollowup(memberId) {
-  if (!memberId) {
+function draftTeamMemberFollowup(memberRef) {
+  if (!memberRef) {
     return;
   }
 
-  messageInput.value = `/team followup add ${formatTeamMemberId(memberId)} after 1d `;
+  messageInput.value = `/team followup add ${memberRef} after 1d `;
   messageInput.focus();
   messageInput.setSelectionRange(messageInput.value.length, messageInput.value.length);
   syncMessageMaskOverlay();
@@ -13614,6 +13813,35 @@ function formatLeadId(leadId) {
 
 function formatTeamMemberId(memberId) {
   return `%${String(memberId || "").slice(0, 6)}`;
+}
+
+function formatTeamMemberMention(member, members = []) {
+  if (!member) {
+    return "@member";
+  }
+
+  const slug = getTeamMemberMentionSlug(member) || String(member.id || "").slice(0, 6).toLowerCase() || "member";
+
+  if (!Array.isArray(members) || members.length === 0) {
+    return `@${slug}`;
+  }
+
+  const duplicateCount = members.filter((candidate) => getTeamMemberMentionSlug(candidate) === slug).length;
+  return duplicateCount > 1 ? `@${slug}-${String(member.id || "").slice(0, 6)}` : `@${slug}`;
+}
+
+function getTeamMemberMentionSlug(member) {
+  const handle = normalizeTeamHandle(member?.handle).replace(/^@/, "");
+  const source = handle || member?.name || "";
+  return slugifyTeamMemberMention(source);
+}
+
+function slugifyTeamMemberMention(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 function formatTeamFollowupId(followupId) {
@@ -14336,6 +14564,71 @@ function taskHasLabels(task, requestedLabels) {
 
   const taskLabels = new Set(Array.isArray(task.labels) ? task.labels : []);
   return requestedLabels.every((label) => taskLabels.has(label));
+}
+
+function taskMatchesSearchQuery(task, queryText) {
+  const searchText = normalizeTaskSearchText(queryText);
+
+  if (!searchText) {
+    return false;
+  }
+
+  return getTaskSearchHaystack(task).includes(searchText);
+}
+
+function getTaskSearchHaystack(task) {
+  const fields = [
+    task.id,
+    formatTaskId(task.id),
+    task.description,
+    task.title,
+    task.status,
+    task.createdByName,
+    task.completedByName,
+    task.activeTimerStartedByName,
+    task.activeTimerDescription,
+    task.assigneeName,
+    task.assigneeMemberId,
+    task.jiraKey,
+    task.jiraStatus,
+    task.jiraUrl,
+    task.source,
+    task.codexStatus,
+    task.codexResultSummary,
+    ...(Array.isArray(task.labels) ? task.labels.map((label) => `#${label} ${label}`) : []),
+    ...(Array.isArray(task.subtasks) ? task.subtasks.map((subtask) => subtask?.text || subtask?.description || "") : []),
+    ...(Array.isArray(task.searchComments)
+      ? task.searchComments.flatMap((comment) => [comment.text, comment.createdByName])
+      : []),
+  ];
+
+  return normalizeTaskSearchText(fields.filter(Boolean).join(" "));
+}
+
+function getTaskCommentSearchMatchText(comments = [], queryText = "") {
+  const searchText = normalizeTaskSearchText(queryText);
+
+  if (!searchText) {
+    return "";
+  }
+
+  const matchingComment = comments.find((comment) =>
+    normalizeTaskSearchText(`${comment.text || ""} ${comment.createdByName || ""}`).includes(searchText)
+  );
+
+  if (!matchingComment?.text) {
+    return "";
+  }
+
+  return String(matchingComment.text).replace(/\s+/g, " ").trim().slice(0, 90);
+}
+
+function normalizeTaskSearchText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/#/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function formatTaskLabels(labels) {
