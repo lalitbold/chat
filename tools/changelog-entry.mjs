@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { promisify } from "node:util";
+import {
+  CHANGELOG_FILE,
+  appendRepoChangelogEntry,
+  createDeployHandle,
+  findRepoChangelogEntry,
+} from "./repo-changelog.mjs";
 
 const execFileAsync = promisify(execFile);
-const CHANGELOG_FILE = "CHANGELOG.md";
 
 main().catch((error) => {
   console.error(`Error: ${error.message}`);
@@ -22,6 +25,16 @@ async function main() {
   }
 
   const cwd = options.cwd || process.cwd();
+
+  if (options.show) {
+    const entry = findRepoChangelogEntry(cwd, options.show);
+    if (!entry) {
+      throw new Error(`Changelog handle not found: ${options.show}`);
+    }
+    console.log(entry.trim());
+    return;
+  }
+
   const changedFiles = await getChangedFiles(cwd);
   const codeFiles = changedFiles.filter((file) => file !== CHANGELOG_FILE);
 
@@ -29,15 +42,17 @@ async function main() {
     return;
   }
 
-  const entry = formatEntry({
+  const handle = options.handle || createDeployHandle();
+  const entry = {
+    handle,
     summary: options.summary || options.prompt || "Project changes",
     prompt: options.prompt,
     result: options.result,
     files: codeFiles,
-  });
+  };
 
-  appendChangelog(cwd, entry);
-  console.log(`Updated ${CHANGELOG_FILE}`);
+  appendRepoChangelogEntry(cwd, entry);
+  console.log(`Updated ${CHANGELOG_FILE}: ${handle}`);
 }
 
 function parseArgs(args) {
@@ -61,6 +76,18 @@ function parseArgs(args) {
 
     if (arg === "--cwd") {
       options.cwd = readValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--handle") {
+      options.handle = readValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--show") {
+      options.show = readValue(args, index, arg);
       index += 1;
       continue;
     }
@@ -105,6 +132,8 @@ function printHelp() {
 
 Options:
       --summary <text>        Changelog entry summary.
+      --handle <handle>       Stable handle. Defaults to #deploy-YYYYMMDD-HHMM.
+      --show <handle>         Print one changelog entry by handle.
       --prompt <text>         Source prompt/request.
       --result <text>         Result text to include.
       --cwd <path>            Project directory. Defaults to cwd.
@@ -127,47 +156,4 @@ async function getChangedFiles(cwd) {
   } catch {
     return [];
   }
-}
-
-function formatEntry({ summary, prompt, result, files }) {
-  const lines = [
-    `## ${formatDateKey(new Date())}`,
-    "",
-    `- ${normalizeSingleLine(summary)}`,
-  ];
-
-  if (prompt && prompt !== summary) {
-    lines.push(`  - Request: ${normalizeSingleLine(prompt)}`);
-  }
-
-  if (result) {
-    lines.push(`  - Result: ${normalizeSingleLine(result)}`);
-  }
-
-  if (files.length > 0) {
-    lines.push(`  - Files: ${files.join(", ")}`);
-  }
-
-  lines.push("");
-  return lines.join("\n");
-}
-
-function appendChangelog(cwd, entry) {
-  const changelogPath = join(cwd, CHANGELOG_FILE);
-  const existing = existsSync(changelogPath) ? readFileSync(changelogPath, "utf8").trimEnd() : "# Changelog";
-  writeFileSync(changelogPath, `${existing}\n\n${entry}`, "utf8");
-}
-
-function normalizeSingleLine(value) {
-  return String(value || "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 300);
-}
-
-function formatDateKey(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
 }

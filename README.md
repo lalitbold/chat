@@ -294,7 +294,7 @@ npm run chat:command -- "/task create Check safety #ops" --dry-run
 npm run chat:command -- "/task list" --json
 ```
 
-Read-only commands run immediately. Write and risky commands ask for confirmation unless `--yes` is passed. The CLI currently supports `/task help|create|list|search|completed|chart|timers|complete|reopen|comment|codex-create|codex list|codex status`, `/timer help|list`, `/change help|add|list|summary`, `/query help|create|list|respond|close`, `/codex`, `/plugin list|enable|disable`, `/lead list`, and `/team list|task list|followup list`. Browser-local commands such as `/remind`, `/debug`, and detailed day timer workflows still need the browser.
+Read-only commands run immediately. Write and risky commands ask for confirmation unless `--yes` is passed. The CLI currently supports `/task help|create|list|search|completed|chart|timers|complete|reopen|comment|codex-create|codex list|codex status`, `/timer help|list`, `/change help|add|list|summary`, `/changelog <handle>`, `/query help|create|list|respond|close`, `/codex`, `/plugin list|enable|disable`, `/lead list`, and `/team list|task list|followup list`. Browser-local commands such as `/remind`, `/debug`, and detailed day timer workflows still need the browser.
 
 ## Query commands
 
@@ -329,9 +329,44 @@ Project code changes are tracked in `CHANGELOG.md`.
 
 ```powershell
 npm run changelog:add -- --summary "Built changelog summary handler"
+npm run changelog:add -- --show "#deploy-20260817-1030"
+npm run chat:command -- "/changelog #deploy-20260817-1030"
+npm run chat:command -- "/change summary #deploy-20260817-1030"
 ```
 
 When `npm run codex:bridge` runs with a write-enabled sandbox, it appends a changelog entry automatically after successful Codex commands that changed project files.
+
+Repo changelog entries use stable handles such as `#deploy-YYYYMMDD-HHMM` so a release can be referenced later from the terminal. Browser `/change` commands remain room changelog commands stored in Firestore; repo handle lookup is terminal-local because the browser cannot read repo files.
+
+## Safe release workflow
+
+Use `release:chat` to collect completed Codex worktree fixes into the main chat checkout, verify them, write a handled changelog entry, and only then commit, push, and deploy.
+
+Dry-run checks only:
+
+```powershell
+npm run release:chat -- --source-worktree C:\Users\lalit.jhandai\.codex\worktrees\abcd\chat --target C:\work\poc\chat
+```
+
+Apply reviewed fixes and write a changelog handle, without commit/push/deploy:
+
+```powershell
+npm run release:chat -- --source-worktree C:\Users\lalit.jhandai\.codex\worktrees\abcd\chat --target C:\work\poc\chat --apply --summary "Fix chat timers"
+```
+
+After reviewing the target diff and changelog entry, run the real release:
+
+```powershell
+npm run release:chat -- --target C:\work\poc\chat --commit --push --deploy --yes --handle "#deploy-20260817-1030" --summary "Fix chat timers"
+```
+
+Safety gates:
+
+- The target checkout must be on `master` by default; use `--branch <name>` only when releasing another branch intentionally, or `--branch any` for dry-run/testing a detached Codex worktree.
+- The target checkout must be clean before applying a source patch unless `--allow-dirty-target` is passed after manual review.
+- `--push` and `--deploy` require `--commit`.
+- `--commit`, `--push`, and `--deploy` require `--yes`.
+- Checks run before any commit, push, or Firebase deploy: patch applicability, JS syntax checks, `firebase.json` presence, and Firebase CLI command discovery. Missing Firebase CLI is reported during dry-runs and blocks `--deploy`.
 
 ## Plugin commands
 

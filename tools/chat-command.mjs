@@ -13,12 +13,13 @@ import {
   runCollectionQuery,
   signInAnonymously,
 } from "./chat-firestore.mjs";
+import { findRepoChangelogEntry } from "./repo-changelog.mjs";
 
 const PROFILE_PATH = join(process.cwd(), ".chat-command-profile.json");
 const DEFAULT_LIMIT = 50;
 const TASK_CHART_DEFAULT_DAYS = 30;
 const TASK_CHART_ALLOWED_DAYS = new Set([7, 30, 90]);
-const COMMANDS = new Set(["/task", "/timer", "/change", "/query", "/codex", "/plugin", "/day", "/lead", "/team", "/remind", "/debug"]);
+const COMMANDS = new Set(["/task", "/timer", "/change", "/changelog", "/query", "/codex", "/plugin", "/day", "/lead", "/team", "/remind", "/debug"]);
 
 main().catch((error) => {
   console.error(`Error: ${error.message}`);
@@ -47,6 +48,13 @@ async function main() {
     throw new Error("Missing command text. Example: npm run chat:command -- /task list");
   }
 
+  const command = parseCommand(commandText);
+
+  if (isLocalRepoChangelogCommand(command)) {
+    printResult(dispatchRepoChangelog(command.payload), options);
+    return;
+  }
+
   if (!roomId) {
     throw new Error("Missing room. Run profile setup or pass --room <roomId>.");
   }
@@ -55,7 +63,6 @@ async function main() {
     throw new Error("Missing user name. Run profile setup or pass --user <name>.");
   }
 
-  const command = parseCommand(commandText);
   const risk = classifyRisk(command);
 
   if (options.dryRun) {
@@ -214,6 +221,10 @@ function classifyRisk(command) {
     return "read";
   }
 
+  if (command.name === "/changelog") {
+    return "read";
+  }
+
   if (command.name === "/task" && normalizedAction === "codex") {
     const [, subAction = ""] = command.payload.split(/\s+/);
     if (["list", "status"].includes(subAction.toLowerCase())) {
@@ -250,12 +261,33 @@ async function dispatchCommand(command, context) {
   if (command.name === "/task") return dispatchTask(command.payload, context);
   if (command.name === "/timer") return dispatchTimer(command.payload, context);
   if (command.name === "/change") return dispatchChange(command.payload, context);
+  if (command.name === "/changelog") return dispatchRepoChangelog(command.payload);
   if (command.name === "/query") return dispatchQuery(command.payload, context);
   if (command.name === "/codex") return dispatchCodex(command.payload, context);
   if (command.name === "/plugin") return dispatchPlugin(command.payload, context);
   if (command.name === "/lead") return dispatchLead(command.payload, context);
   if (command.name === "/team") return dispatchTeam(command.payload, context);
   return unsupported(command.name, "This command depends on browser-local state and is not available in the terminal yet.");
+}
+
+function isLocalRepoChangelogCommand(command) {
+  if (command.name === "/changelog") return true;
+
+  const [action = "", handle = ""] = String(command.payload || "").trim().split(/\s+/);
+  return command.name === "/change" && action.toLowerCase() === "summary" && handle.toLowerCase().startsWith("#deploy-");
+}
+
+function dispatchRepoChangelog(payload) {
+  const [actionOrHandle = "", ...rest] = String(payload || "").trim().split(/\s+/);
+  const normalizedAction = actionOrHandle.toLowerCase();
+
+  if (!payload || normalizedAction === "help") {
+    return textResult("Repo changelog commands:\n/changelog <handle>\n/changelog show <handle>");
+  }
+
+  const handle = normalizedAction === "show" || normalizedAction === "summary" ? rest.join(" ").trim() : actionOrHandle;
+  const entry = findRepoChangelogEntry(process.cwd(), handle);
+  return textResult(entry ? entry.trim() : `Changelog handle not found: ${handle}`);
 }
 
 async function dispatchTask(payload, context) {
@@ -1311,6 +1343,7 @@ Implemented:
   /task help|create|list|search|completed|chart|timers|complete|reopen|comment
   /timer help|list
   /change help|add|list|summary
+  /changelog <handle>
   /query help|create|list|respond|close
   /codex help|<instruction>
   /plugin list|enable|disable

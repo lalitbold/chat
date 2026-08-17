@@ -8,6 +8,7 @@
     "codex:local": "node tools/codex-bridge.mjs --local-server",
     "chat:command": "node tools/chat-command.mjs",
     "changelog:add": "node tools/changelog-entry.mjs",
+    "release:chat": "node tools/release-workflow.mjs",
     "export:messages": "node tools/export-messages.mjs",
     "tasks:pending": "node tools/pending-tasks.mjs"
   }
