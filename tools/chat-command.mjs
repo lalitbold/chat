@@ -456,7 +456,7 @@ async function dispatchTimer(payload, context) {
     return activeTimersResult(context);
   }
 
-  return unsupported("/timer", "Terminal /timer currently supports help and list. Start, stop, continue, and history still need the browser.");
+  return unsupported("/timer", "Terminal /timer currently supports help and list. Start, stop, continue, log, and history still need the browser.");
 }
 
 async function activeTimersResult(context) {
@@ -1320,7 +1320,7 @@ function timerHelp() {
     "/timer list",
     "",
     "/timer list shows the same active timers as /task timers.",
-    "Start, stop, continue, and history still need the browser.",
+    "Browser also supports /timer start, stop, continue, log, and history.",
   ].join("\n");
 }
 

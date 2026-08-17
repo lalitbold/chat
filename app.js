@@ -4794,6 +4794,11 @@ function getAvailableSlashCommands() {
         hint: "Continue timer",
       },
       {
+        label: "/timer log <start> <end> <description>",
+        insertText: "/timer log ",
+        hint: "Log past time",
+      },
+      {
         label: "/timer list",
         insertText: "/timer list",
         hint: "Active timers",
@@ -5402,7 +5407,7 @@ async function handleTimerCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     postLocalTimerMessage(
-      "Timer commands:\n/timer start <description>\n/timer stop\n/timer continue\n/timer list\n/timer history [today|YYYY-MM-DD]\n\n/timer list shows the same active timers as /task timers."
+      "Timer commands:\n/timer start <description>\n/timer stop\n/timer continue\n/timer log <start> <end> <description>\n/timer list\n/timer history [today|YYYY-MM-DD]\n\n/timer log records manual past time for today only. Use HH:mm times, or today's YYYY-MM-DD HH:mm.\n/timer list shows the same active timers as /task timers."
     );
     return;
   }
@@ -5430,6 +5435,11 @@ async function handleTimerCommand(text) {
 
   if (normalizedAction === "continue") {
     await continueStandaloneTimer();
+    return;
+  }
+
+  if (normalizedAction === "log") {
+    await logStandaloneTimer(rest.join(" "));
     return;
   }
 
@@ -9852,6 +9862,36 @@ async function continueStandaloneTimer() {
   }
 }
 
+async function logStandaloneTimer(input = "") {
+  const request = parseManualTimerLogInput(input);
+
+  if (!request.ok) {
+    postLocalTimerMessage(request.error);
+    setStatus("Manual timer log rejected.", "error");
+    return;
+  }
+
+  await recordGeneralTimeEntry(
+    request.startedAt,
+    request.stoppedAt,
+    request.durationMs,
+    getWorkDayRef(getTodayKey()),
+    request.description,
+    "timer",
+    {
+      manual: true,
+      manualLoggedById: state.profile.id,
+      manualLoggedByName: getProfileDisplayName(),
+      manualLoggedAt: serverTimestamp(),
+    }
+  );
+
+  postLocalTimerMessage(
+    `Manual timer logged for today: ${formatTimeRange(request.startedAt, request.stoppedAt)} (${formatDuration(request.durationMs)}) - ${request.description}`
+  );
+  setStatus("Manual timer logged.", "success");
+}
+
 async function postStandaloneTimerHistory(input = "") {
   const dateKey = parseDateKey(input.trim() || "today");
 
@@ -9873,7 +9913,9 @@ async function postStandaloneTimerHistory(input = "") {
 
   const lines = [`Timer history for ${formatTaskPlanDate(dateKey)}:`];
   entries.forEach((entry) => {
-    lines.push(`- ${formatTimeEntryRange(entry)} (${formatDuration(getTimeEntryDurationMs(entry))}) - ${entry.description || "Timer"}`);
+    lines.push(
+      `- ${formatTimeEntryRange(entry)} (${formatDuration(getTimeEntryDurationMs(entry))})${formatManualTimeEntrySuffix(entry)} - ${entry.description || "Timer"}`
+    );
   });
   postLocalTimerMessage(lines.join("\n"));
   setStatus("Timer history shown.", "success");
@@ -10551,7 +10593,7 @@ async function buildTimesheet({ dateKey, handle }) {
     lines.push("General entries:");
     generalEntries.forEach((entry) => {
       lines.push(
-        `- ${formatTimeEntryRange(entry)} (${formatDuration(getTimeEntryDurationMs(entry))})${entry.timerDescription ? ` - ${entry.timerDescription}` : ""}`
+        `- ${formatTimeEntryRange(entry)} (${formatDuration(getTimeEntryDurationMs(entry))})${formatManualTimeEntrySuffix(entry)}${entry.timerDescription ? ` - ${entry.timerDescription}` : ""}`
       );
     });
   }
@@ -12039,7 +12081,8 @@ async function recordGeneralTimeEntry(
   durationMs,
   workDayRef = getWorkDayRef(),
   description = "",
-  timerSource = "general"
+  timerSource = "general",
+  metadata = {}
 ) {
   const timerDescription = sanitizeTimerDescription(description);
 
@@ -12053,6 +12096,7 @@ async function recordGeneralTimeEntry(
     stoppedAt,
     durationMs,
     createdAt: serverTimestamp(),
+    ...metadata,
   });
 }
 
@@ -14305,6 +14349,10 @@ function formatTimeEntryRange(entry) {
   return formatTimeRange(entry?.startedAt, entry?.stoppedAt);
 }
 
+function formatManualTimeEntrySuffix(entry) {
+  return entry?.manual ? " [manual]" : "";
+}
+
 function formatTimeRange(startedAtValue, stoppedAtValue) {
   const startedAt = normalizeTimestampDate(startedAtValue);
   const stoppedAt = normalizeTimestampDate(stoppedAtValue);
@@ -14550,6 +14598,114 @@ function parseDateKey(value) {
   }
 
   return null;
+}
+
+function parseManualTimerLogInput(input = "") {
+  const parts = input.trim().split(/\s+/).filter(Boolean);
+
+  if (parts.length < 3) {
+    return {
+      ok: false,
+      error: "Use /timer log <start> <end> <description>. Example: /timer log 09:30 10:15 Daily standup.",
+    };
+  }
+
+  const todayKey = getTodayKey();
+  let dateKey = todayKey;
+  let cursor = 0;
+
+  const firstDateKey = parseDateKey(parts[0]);
+  if (firstDateKey) {
+    dateKey = firstDateKey;
+    cursor = 1;
+  }
+
+  if (dateKey !== todayKey) {
+    return {
+      ok: false,
+      error: "Manual timer logs are allowed for the current day only.",
+    };
+  }
+
+  const startedAt = parseManualTimerLogDateTime(dateKey, parts, cursor);
+  if (!startedAt) {
+    return {
+      ok: false,
+      error: "Use a valid start time, such as 09:30 or today's YYYY-MM-DD 09:30.",
+    };
+  }
+
+  cursor = startedAt.nextIndex;
+  const stoppedAt = parseManualTimerLogDateTime(dateKey, parts, cursor);
+  if (!stoppedAt) {
+    return {
+      ok: false,
+      error: "Use a valid end time, such as 10:15 or today's YYYY-MM-DD 10:15.",
+    };
+  }
+
+  cursor = stoppedAt.nextIndex;
+  const description = sanitizeTimerDescription(parts.slice(cursor).join(" "));
+
+  if (!description) {
+    return {
+      ok: false,
+      error: "Manual timer logs need a description.",
+    };
+  }
+
+  if (formatDateKey(startedAt.date) !== todayKey || formatDateKey(stoppedAt.date) !== todayKey) {
+    return {
+      ok: false,
+      error: "Manual timer logs cannot be added for previous or future days.",
+    };
+  }
+
+  if (stoppedAt.date <= startedAt.date) {
+    return {
+      ok: false,
+      error: "Manual timer log end time must be after the start time.",
+    };
+  }
+
+  if (stoppedAt.date > new Date()) {
+    return {
+      ok: false,
+      error: "Manual timer logs must be for past time only.",
+    };
+  }
+
+  return {
+    ok: true,
+    startedAt: startedAt.date,
+    stoppedAt: stoppedAt.date,
+    durationMs: stoppedAt.date.getTime() - startedAt.date.getTime(),
+    description,
+  };
+}
+
+function parseManualTimerLogDateTime(defaultDateKey, parts, index) {
+  const dateKey = parseDateKey(parts[index]);
+  if (dateKey) {
+    const time = parts[index + 1];
+    const date = parseManualTimerLogTime(dateKey, time);
+    return date ? { date, nextIndex: index + 2 } : null;
+  }
+
+  const date = parseManualTimerLogTime(defaultDateKey, parts[index]);
+  return date ? { date, nextIndex: index + 1 } : null;
+}
+
+function parseManualTimerLogTime(dateKey, value) {
+  const match = String(value || "").match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+
+  if (!match) {
+    return null;
+  }
+
+  const date = new Date(`${dateKey}T00:00:00`);
+  date.setHours(Number(match[1]), Number(match[2]), 0, 0);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function formatDateKey(date) {

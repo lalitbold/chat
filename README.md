@@ -482,8 +482,9 @@ The script signs in anonymously with the Firebase web app config and reads pendi
 - `/timer start daily standup` starts a standalone non-task timer for meetings or regular work.
 - `/timer stop` stops the standalone timer and saves it to today's time entries with `timerSource: "timer"`.
 - `/timer continue` keeps the standalone timer active and resets the next reminder.
+- `/timer log 09:30 10:15 Daily standup` manually logs past standalone timer time for the current day only. Previous-day, future-day, future-time, and end-before-start entries are rejected. Manual entries are saved with `manual: true`, `manualLoggedById`, `manualLoggedByName`, and `manualLoggedAt` audit metadata.
 - `/timer list` shows the same active task and non-task timer list as `/task timers`.
-- `/timer history today` shows stopped standalone timer entries for today.
+- `/timer history today` shows stopped standalone timer entries for today and marks manual entries with `[manual]`.
 
 ## Day commands
 
