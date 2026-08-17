@@ -376,6 +376,7 @@ Team commands are available after `/plugin enable team`.
 - `/team followup add @rahul after 1d Confirm estimate` creates a member followup with reminders.
 - `/team followup task <task-id> after 2h Check blocker` creates a task-linked followup with reminders.
 - `/team followup list` shows pending team followups only to you. Followup IDs are shown like `!abc123`.
+- `/team followup continue <id>` keeps a followup pending and resets its next reminder.
 - `/team followup done <id>` marks a followup complete and stops reminders.
 
 Jira integration is prepared through task fields (`jiraKey`, `jiraUrl`, `jiraStatus`, `jiraUpdatedAt`, `source`). A future Firebase Cloud Function or small backend service should fetch Jira issues server-side and write them into Firestore so Jira API tokens are never exposed in the browser.
@@ -454,9 +455,9 @@ The script signs in anonymously with the Firebase web app config and reads pendi
 Day commands are available after `/plugin enable day`. The Day plugin is disabled by default.
 
 - `/day start` starts your day and posts attendance to the group.
-- When your day is started and no task timer is running, the app reminds you locally every 5 minutes and counts those reminders in the day summary.
+- There is no manual `/day idle` status today. After `/day start`, the app treats you as idle when no timer is running, reminds you locally every 5 minutes, and counts those reminders in `/day status` and the day summary.
 - `/day plan Ship feature X` saves and posts your plan to the group.
-- `/day free tired` marks your current status as free with an optional reason and posts it to the group.
+- `/day free tired` marks your current availability as free with an optional reason and posts it to the group.
 - `/day status` shows your current day status only to you.
 - `/day schedule` shows your effective schedule using your override when present, otherwise the group schedule.
 - `/day schedule set mon-fri 09:30 18:30` sets the group default schedule.

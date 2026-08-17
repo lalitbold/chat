@@ -119,7 +119,7 @@ const LEAD_LIST_LIMIT = 25;
 const TEAM_MEMBER_LIST_LIMIT = 50;
 const TEAM_FOLLOWUP_LIST_LIMIT = 50;
 const TASK_PREVIEW_LIMIT = 3;
-const MESSAGE_REACTION_OPTIONS = ["👍", "✅", "👀", "🙌"];
+const MESSAGE_REACTION_OPTIONS = ["Ã°Å¸â€˜Â", "Ã¢Å“â€¦", "Ã°Å¸â€˜â‚¬", "Ã°Å¸â„¢Å’"];
 const TASK_TIMER_REMINDER_MS = 25 * 60 * 1000;
 const TASK_TIMER_REPEAT_REMINDER_MS = 5 * 60 * 1000;
 const TASK_TIMER_MAX_UNANSWERED_REMINDERS = 2;
@@ -524,7 +524,7 @@ const DAY_SLASH_COMMANDS = [
   {
     label: "/day status",
     insertText: "/day status",
-    hint: "Day status",
+    hint: "Day status + idle count",
   },
   {
     label: "/day summary",
@@ -706,6 +706,7 @@ const state = {
   commandHistoryIndex: null,
   commandHistoryDraft: "",
   taskTimerReminderTimeouts: new Map(),
+  taskTimerReminderTokens: new Map(),
   taskTimerReminderSyncIntervalId: null,
   queryReminderTimeouts: new Map(),
   queryReminderSyncIntervalId: null,
@@ -2456,7 +2457,7 @@ function truncateText(text, maxLength) {
     return value;
   }
 
-  return `${value.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`;
+  return `${value.slice(0, Math.max(0, maxLength - 1)).trimEnd()}Ã¢â‚¬Â¦`;
 }
 
 function renderMessageReactionSummary(reactions) {
@@ -5694,7 +5695,7 @@ async function handleDayCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     postLocalDayMessage(
-      "Day commands:\n/day start\n/day plan <plan>\n/day free <reason>\n/day status\n/day summary\n/day schedule\n/day schedule set mon-fri 09:30 18:30\n/day schedule off sat sun\n/day schedule user set mon-fri 10:00 19:00\n/day schedule user clear\n/day coach\n/day timesheet [today|yesterday|YYYY-MM-DD] [@handle]\n/day break start\n/day break stop\n/day break list\n/day end\n/day leave <date-or-range> <reason>\n/day leave weekly sat sun <reason>\n/day leave list\n/day leave cancel <id>"
+      "Day commands:\n/day start\n/day plan <plan>\n/day free <reason>\n/day status\n/day summary\n/day schedule\n/day schedule set mon-fri 09:30 18:30\n/day schedule off sat sun\n/day schedule user set mon-fri 10:00 19:00\n/day schedule user clear\n/day coach\n/day timesheet [today|yesterday|YYYY-MM-DD] [@handle]\n/day break start\n/day break stop\n/day break list\n/day end\n/day leave <date-or-range> <reason>\n/day leave weekly sat sun <reason>\n/day leave list\n/day leave cancel <id>\n\nIdle: after /day start, the app reminds you locally every 5 minutes when no timer is running. Use /day status to see the idle reminder count. Use /day free <reason> when you want to mark yourself free."
     );
     return;
   }
@@ -6441,7 +6442,7 @@ async function handleTeamCommand(text) {
 
   if (!payload || normalizedSection === "help") {
     postLocalTeamMessage(
-      "Team commands:\n/team list\n/team member add name:<name> role:<role> designation:<designation> email:<email> handle:@handle notes:<notes>\n/team member view @member\n/team member update @member role:<role> designation:<designation> status:<active|inactive> notes:<notes>\n/team task assign <task-id> @member\n/team task list [@member]\n/team task jira <task-id> <JIRA-KEY> [url]\n/team followup add unassigned after 1d <text>\n/team followup add @member after 1d <text>\n/team followup task <task-id> after 1d <text>\n/team followup list\n/team followup done <id>"
+      "Team commands:\n/team list\n/team member add name:<name> role:<role> designation:<designation> email:<email> handle:@handle notes:<notes>\n/team member view @member\n/team member update @member role:<role> designation:<designation> status:<active|inactive> notes:<notes>\n/team task assign <task-id> @member\n/team task list [@member]\n/team task jira <task-id> <JIRA-KEY> [url]\n/team followup add unassigned after 1d <text>\n/team followup add @member after 1d <text>\n/team followup task <task-id> after 1d <text>\n/team followup list\n/team followup continue <id>\n/team followup done <id>"
     );
     return;
   }
@@ -6543,7 +6544,7 @@ async function handleTeamFollowupCommand(input = "") {
     return;
   }
 
-  postLocalTeamMessage("Use /team followup add unassigned after 1d <text>, /team followup add @member after 1d <text>, /team followup task <task-id> after 1d <text>, /team followup list, or /team followup done <id>.");
+  postLocalTeamMessage("Use /team followup add unassigned after 1d <text>, /team followup add @member after 1d <text>, /team followup task <task-id> after 1d <text>, /team followup list, /team followup continue <id>, or /team followup done <id>.");
 }
 
 async function createQuery(question, options = {}) {
@@ -7300,6 +7301,48 @@ async function completeTeamFollowup(followupIdInput) {
   clearTeamFollowupReminder(followup.id);
   postLocalTeamMessage(`Followup ${formatTeamFollowupId(followup.id)} completed: ${followup.text}`);
   setStatus("Followup completed.", "success");
+}
+
+async function continueTeamFollowup(followupIdInput) {
+  const followupId = String(followupIdInput || "").trim();
+
+  if (!followupId) {
+    postLocalTeamMessage("Use /team followup continue <id>.");
+    setStatus("Followup ID required.", "error");
+    return;
+  }
+
+  const followup = await findTeamFollowupById(followupId);
+
+  if (!followup) {
+    postLocalTeamMessage(`Followup ${followupId} was not found.`);
+    setStatus("Followup not found.", "error");
+    return;
+  }
+
+  if (followup.status === "complete") {
+    postLocalTeamMessage(`Followup ${formatTeamFollowupId(followup.id)} is already complete.`);
+    setStatus("Followup already complete.", "success");
+    return;
+  }
+
+  const continuedAt = new Date();
+
+  await updateDoc(doc(state.db, "rooms", state.roomId, "followups", followup.id), {
+    lastReminderAt: serverTimestamp(),
+    reminderCount: 0,
+    updatedAt: serverTimestamp(),
+  });
+
+  scheduleTeamFollowupReminder({
+    ...followup,
+    lastReminderAt: continuedAt,
+    reminderCount: 0,
+  });
+  postLocalTeamMessage(
+    `Followup ${formatTeamFollowupId(followup.id)} continued for ${formatTeamFollowupTarget(followup)}. Next reminder in ${formatDuration(getTeamFollowupIntervalMs(followup))}: ${followup.text}`
+  );
+  setStatus("Followup continued.", "success");
 }
 
 function formatQueryMessageText(queryData) {
@@ -12705,7 +12748,7 @@ async function handleTeamFollowupReminder(followupId) {
   });
 
   postLocalTeamMessage(
-    `Team followup reminder\n${formatTeamFollowupId(followup.id)} for ${formatTeamFollowupTarget(followup)}: ${followup.text}\nMark done with /team followup done ${formatTeamFollowupId(followup.id)}.`,
+    `Team followup reminder\n${formatTeamFollowupId(followup.id)} for ${formatTeamFollowupTarget(followup)}: ${followup.text}\nContinue with /team followup continue ${formatTeamFollowupId(followup.id)} or mark done with /team followup done ${formatTeamFollowupId(followup.id)}.`,
     [],
     {
       type: "team-followup-list",
@@ -12767,6 +12810,7 @@ function getTeamFollowupNextReminderTime(followup) {
 function scheduleTaskTimerReminder(task) {
   clearTaskTimerReminder(task.id);
 
+  const reminderToken = createTaskTimerReminderToken(task.id);
   const elapsedMs = Date.now() - getTimestampMillis(task.startedAt);
   const delayMs = Math.max(0, TASK_TIMER_REMINDER_MS - elapsedMs);
   const timeoutId = window.setTimeout(() => {
@@ -12774,6 +12818,7 @@ function scheduleTaskTimerReminder(task) {
       ...task,
       reminderCount: 0,
       unattendedSince: null,
+      reminderToken,
     });
   }, delayMs);
 
@@ -12856,17 +12901,30 @@ async function syncActiveTaskTimerReminders() {
 }
 
 function scheduleTaskTimerFollowUpReminder(task) {
+  if (!isCurrentTaskTimerReminder(task.id, task.reminderToken)) {
+    return;
+  }
+
   clearTaskTimerReminder(task.id);
 
+  const reminderToken = createTaskTimerReminderToken(task.id);
   const timeoutId = window.setTimeout(() => {
-    void handleTaskTimerReminder(task, true);
+    void handleTaskTimerReminder(
+      {
+        ...task,
+        reminderToken,
+      },
+      true
+    );
   }, TASK_TIMER_REPEAT_REMINDER_MS);
 
   state.taskTimerReminderTimeouts.set(task.id, { timeoutId });
 }
 
 async function handleTaskTimerReminder(task, isFollowUp = false) {
-  state.taskTimerReminderTimeouts.delete(task.id);
+  if (!isCurrentTaskTimerReminder(task.id, task.reminderToken)) {
+    return;
+  }
 
   if (task.isGeneralTimer) {
     await handleGeneralTimerReminder(task, isFollowUp);
@@ -12876,6 +12934,7 @@ async function handleTaskTimerReminder(task, isFollowUp = false) {
   const latestTask = await getActiveTaskForLocalReminder(task);
 
   if (!latestTask) {
+    clearTaskTimerReminderToken(task.id);
     return;
   }
 
@@ -12918,10 +12977,16 @@ async function handleTaskTimerReminder(task, isFollowUp = false) {
       },
     ]
   );
+
+  if (!isCurrentTaskTimerReminder(task.id, task.reminderToken)) {
+    return;
+  }
+
   scheduleTaskTimerFollowUpReminder({
     ...latestTask,
     reminderCount: reminderCount + 1,
     unattendedSince,
+    reminderToken: task.reminderToken,
   });
   setStatus(isFollowUp ? "Task timer reminder repeated." : "Task timer reminder.", "success");
 }
@@ -12930,6 +12995,7 @@ async function handleGeneralTimerReminder(timer, isFollowUp = false) {
   const latestTimer = await getActiveGeneralTimerForLocalReminder(timer);
 
   if (!latestTimer) {
+    clearTaskTimerReminderToken(timer.id);
     return;
   }
 
@@ -12964,10 +13030,16 @@ async function handleGeneralTimerReminder(timer, isFollowUp = false) {
       },
     ]
   );
+
+  if (!isCurrentTaskTimerReminder(timer.id, timer.reminderToken)) {
+    return;
+  }
+
   scheduleTaskTimerFollowUpReminder({
     ...latestTimer,
     reminderCount: reminderCount + 1,
     unattendedSince,
+    reminderToken: timer.reminderToken,
   });
   setStatus(isFollowUp ? "General timer reminder repeated." : "General timer reminder.", "success");
 }
@@ -13089,12 +13161,12 @@ async function getActiveGeneralTimerForLocalReminder(timer) {
 function clearTaskTimerReminder(taskId) {
   const reminder = state.taskTimerReminderTimeouts.get(taskId);
 
-  if (!reminder?.timeoutId) {
-    return;
+  if (reminder?.timeoutId) {
+    window.clearTimeout(reminder.timeoutId);
+    state.taskTimerReminderTimeouts.delete(taskId);
   }
 
-  window.clearTimeout(reminder.timeoutId);
-  state.taskTimerReminderTimeouts.delete(taskId);
+  clearTaskTimerReminderToken(taskId);
 }
 
 function clearTaskTimerReminders() {
@@ -13104,6 +13176,21 @@ function clearTaskTimerReminders() {
     }
   });
   state.taskTimerReminderTimeouts.clear();
+  state.taskTimerReminderTokens.clear();
+}
+
+function createTaskTimerReminderToken(taskId) {
+  const reminderToken = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  state.taskTimerReminderTokens.set(taskId, reminderToken);
+  return reminderToken;
+}
+
+function isCurrentTaskTimerReminder(taskId, reminderToken) {
+  return Boolean(reminderToken) && state.taskTimerReminderTokens.get(taskId) === reminderToken;
+}
+
+function clearTaskTimerReminderToken(taskId) {
+  state.taskTimerReminderTokens.delete(taskId);
 }
 
 function clearTaskTimerReminderSync() {
@@ -13180,7 +13267,7 @@ async function shouldRemindForIdleWorkDay(workDay = null) {
       return false;
     }
 
-    if (await findActiveGeneralTimer()) {
+    if (hasActiveGeneralTimerForIdleWorkDay(currentWorkDay)) {
       return false;
     }
 
@@ -13190,6 +13277,10 @@ async function shouldRemindForIdleWorkDay(workDay = null) {
     console.error("Idle task reminder check failed:", error);
     return false;
   }
+}
+
+function hasActiveGeneralTimerForIdleWorkDay(workDay) {
+  return Boolean(workDay?.activeTimerStartedAt);
 }
 
 async function recordDayIdleTaskReminder(workDay) {
