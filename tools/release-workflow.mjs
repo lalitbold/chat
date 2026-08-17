@@ -96,6 +96,7 @@ async function main() {
       checks,
       release: {
         deployCommand: "firebase deploy",
+        deployRequested: options.deploy,
       },
     });
     console.log(`Changelog handle: ${handle}`);

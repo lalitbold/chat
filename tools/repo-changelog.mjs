@@ -57,6 +57,8 @@ export function formatRepoChangelogEntry({ handle, summary, prompt, result, file
 
   if (release.deployed) {
     lines.push("- Firebase deploy: yes");
+  } else if (release.deployRequested) {
+    lines.push(`- Firebase deploy: requested (${release.deployCommand || "firebase deploy"})`);
   } else if (release.deployCommand) {
     lines.push(`- Firebase deploy: not run (${release.deployCommand})`);
   }

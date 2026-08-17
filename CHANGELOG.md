@@ -20,4 +20,4 @@
 - Result: Applied latest chat worktree, committed, pushed, and deployed.
 - Files: CHANGELOG.md, README.md, package.json, tools/changelog-entry.mjs, tools/chat-command.mjs, tools/release-workflow.mjs, tools/repo-changelog.mjs
 - Checks: node --check app.js, node --check firebase-config.js, node --check firebase-config.example.js, node --check sw.js, node --check tools/changelog-entry.mjs, node --check tools/chat-command.mjs, node --check tools/chat-firestore.mjs, node --check tools/codex-bridge.mjs, node --check tools/export-messages.mjs, node --check tools/pending-tasks.mjs, node --check tools/release-workflow.mjs, node --check tools/repo-changelog.mjs, firebase deploy command discovered
-- Firebase deploy: not run (firebase deploy)
+- Firebase deploy: yes
