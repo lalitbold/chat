@@ -105,8 +105,11 @@ const LEAD_COMMAND = "/lead";
 const TEAM_COMMAND = "/team";
 const TIMER_COMMAND = "/timer";
 const DEFAULT_CODEX_LOCAL_BRIDGE_URL = "http://127.0.0.1:17345";
+const DEFAULT_IDLE_HELPER_URL = "http://127.0.0.1:17347";
 const LOCAL_CODEX_PENDING_KEY = "firestore-chat-local-codex-pending";
+const IDLE_HELPER_SEEN_KEY_PREFIX = "firestore-chat-idle-helper-seen";
 const LOCAL_CODEX_RESULT_SYNC_MS = 5000;
+const IDLE_HELPER_SYNC_MS = 15000;
 const COMMAND_AUTOCOMPLETE_LIMIT = 8;
 const TASK_LIST_LIMIT = 50;
 const TASK_IMPORTANT_AI_LIMIT = 30;
@@ -524,7 +527,7 @@ const DAY_SLASH_COMMANDS = [
   {
     label: "/day status",
     insertText: "/day status",
-    hint: "Day status + idle count",
+    hint: "Day status + idle",
   },
   {
     label: "/day summary",
@@ -735,6 +738,8 @@ const state = {
   localCodexPendingCommandIds: loadLocalCodexPendingCommandIds(),
   localCodexSeenResultKeys: new Set(),
   localCodexResultSyncIntervalId: null,
+  idleHelperSyncIntervalId: null,
+  idleHelperSeenSessionIds: new Set(),
 };
 
 boot();
@@ -882,6 +887,7 @@ async function boot() {
   renderEmptyState("Join a room to start chatting.");
   wireEvents();
   startLocalCodexResultSync();
+  startIdleHelperSync();
   const handledInvite = await hydrateFromSharedLink();
   if (handledInvite) {
     return;
@@ -1729,6 +1735,7 @@ async function connectToRoom(roomId, roomPasscode = "", roomData = null) {
   state.localMessages = [];
   clearPendingReply();
   state.commandHistory = loadCommandHistory();
+  state.idleHelperSeenSessionIds = loadIdleHelperSeenSessionIds();
   resetCommandHistoryNavigation();
   state.taskProcessSession = null;
   state.queryReminderTimeouts = new Map();
@@ -4023,6 +4030,22 @@ function handleMessageActionClick(event) {
     runLocalAction(actionButton, () => stopGeneralTimer(), "General timer stopped.");
   }
 
+  if (actionButton.dataset.action === "idle-session-keep") {
+    runLocalAction(
+      actionButton,
+      () => decideIdleSession(actionButton.dataset.sessionId || "", "kept"),
+      "Idle session kept. Timer time was not changed."
+    );
+  }
+
+  if (actionButton.dataset.action === "idle-session-discard") {
+    runLocalAction(
+      actionButton,
+      () => decideIdleSession(actionButton.dataset.sessionId || "", "discarded"),
+      "Idle session marked discarded. Timer time was not changed."
+    );
+  }
+
   if (actionButton.dataset.action === "query-respond-draft") {
     draftQueryResponse(actionButton.dataset.queryId || "");
   }
@@ -5705,7 +5728,7 @@ async function handleDayCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     postLocalDayMessage(
-      "Day commands:\n/day start\n/day plan <plan>\n/day free <reason>\n/day status\n/day summary\n/day schedule\n/day schedule set mon-fri 09:30 18:30\n/day schedule off sat sun\n/day schedule user set mon-fri 10:00 19:00\n/day schedule user clear\n/day coach\n/day timesheet [today|yesterday|YYYY-MM-DD] [@handle]\n/day break start\n/day break stop\n/day break list\n/day end\n/day leave <date-or-range> <reason>\n/day leave weekly sat sun <reason>\n/day leave list\n/day leave cancel <id>\n\nIdle: after /day start, the app reminds you locally every 5 minutes when no timer is running. Use /day status to see the idle reminder count. Use /day free <reason> when you want to mark yourself free."
+      "Day commands:\n/day start\n/day plan <plan>\n/day free <reason>\n/day status\n/day summary\n/day schedule\n/day schedule set mon-fri 09:30 18:30\n/day schedule off sat sun\n/day schedule user set mon-fri 10:00 19:00\n/day schedule user clear\n/day coach\n/day timesheet [today|yesterday|YYYY-MM-DD] [@handle]\n/day break start\n/day break stop\n/day break list\n/day end\n/day leave <date-or-range> <reason>\n/day leave weekly sat sun <reason>\n/day leave list\n/day leave cancel <id>\n\nIdle: after /day start, the app reminds you locally every 5 minutes when no timer is running. The optional Windows helper records OS idle sessions; /day status, /day summary, and /day timesheet show those totals. Use /day free <reason> when you want to mark yourself free."
     );
     return;
   }
@@ -5993,6 +6016,178 @@ function loadLocalCodexPendingCommandIds() {
 
 function saveLocalCodexPendingCommandIds() {
   localStorage.setItem(LOCAL_CODEX_PENDING_KEY, JSON.stringify([...state.localCodexPendingCommandIds]));
+}
+
+function startIdleHelperSync() {
+  clearIdleHelperSync();
+  void syncIdleHelperContext();
+  state.idleHelperSyncIntervalId = window.setInterval(() => {
+    void syncIdleHelperContext();
+  }, IDLE_HELPER_SYNC_MS);
+}
+
+function clearIdleHelperSync() {
+  if (!state.idleHelperSyncIntervalId) {
+    return;
+  }
+
+  window.clearInterval(state.idleHelperSyncIntervalId);
+  state.idleHelperSyncIntervalId = null;
+}
+
+async function syncIdleHelperContext() {
+  if (!state.db || !state.roomId || !state.profile || !state.auth?.currentUser) {
+    return;
+  }
+
+  try {
+    const helperUrl = getIdleHelperUrl();
+    const healthResponse = await fetch(`${helperUrl}/health`);
+
+    if (!healthResponse.ok) {
+      return;
+    }
+
+    const token = await state.auth.currentUser.getIdToken();
+    const response = await fetch(`${helperUrl}/context`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        roomId: state.roomId,
+        userId: state.profile.id,
+        userName: getProfileDisplayName(),
+        token,
+        activeTimer: await getIdleHelperActiveTimerContext(),
+      }),
+    });
+
+    if (!response.ok) {
+      return;
+    }
+
+    await handleIdleHelperStatus(await response.json());
+  } catch {
+    // The desktop helper is optional and may not be running.
+  }
+}
+
+function getIdleHelperUrl() {
+  return localStorage.getItem("chat-idle-helper-url") || DEFAULT_IDLE_HELPER_URL;
+}
+
+async function getIdleHelperActiveTimerContext() {
+  try {
+    const [activeTasks, activeGeneralTimer] = await Promise.all([
+      loadCurrentUserActiveTaskTimers(),
+      findActiveGeneralTimer(),
+    ]);
+    const activeTask = activeTasks.sort(compareActiveTimersByStartedAt)[0];
+
+    if (activeTask) {
+      return {
+        type: "task",
+        taskId: activeTask.id,
+        taskDescription: getTaskTimerDisplayDescription(activeTask),
+        startedAt: normalizeTimestampDate(activeTask.activeTimerStartedAt).toISOString(),
+      };
+    }
+
+    if (activeGeneralTimer?.data?.activeTimerStartedAt) {
+      return {
+        type: activeGeneralTimer.data.activeTimerSource === "timer" ? "timer" : "general",
+        description: getGeneralTimerDisplayDescription(activeGeneralTimer.data.activeTimerDescription),
+        startedAt: normalizeTimestampDate(activeGeneralTimer.data.activeTimerStartedAt).toISOString(),
+      };
+    }
+  } catch (error) {
+    console.error("Idle helper timer context failed:", error);
+  }
+
+  return null;
+}
+
+async function handleIdleHelperStatus(status) {
+  const session = status?.latestEndedSession;
+
+  if (!session?.id || session.decision !== "pending" || !session.endedAt) {
+    return;
+  }
+
+  if (state.idleHelperSeenSessionIds.has(session.id)) {
+    return;
+  }
+
+  state.idleHelperSeenSessionIds.add(session.id);
+  saveIdleHelperSeenSessionIds();
+  postIdleSessionPrompt(session);
+}
+
+function postIdleSessionPrompt(session) {
+  const timerText = formatIdleSessionTimerText(session.affectedTimer);
+  postLocalDayMessage(
+    [
+      `You were idle for ${formatDuration(session.durationMs || 0)}.`,
+      timerText,
+      "Choose what to record for this idle session. Timer time is not changed automatically.",
+    ].filter(Boolean).join("\n"),
+    [
+      {
+        label: "Keep",
+        action: "idle-session-keep",
+        sessionId: session.id,
+      },
+      {
+        label: "Discard",
+        action: "idle-session-discard",
+        sessionId: session.id,
+      },
+    ]
+  );
+}
+
+function formatIdleSessionTimerText(timer) {
+  if (!timer) {
+    return "No active timer was reported by the browser.";
+  }
+
+  if (timer.type === "task") {
+    return `Active timer: Task ${formatTaskId(timer.taskId || "")} ${timer.taskDescription || ""}`.trim();
+  }
+
+  return `Active timer: ${timer.description || timer.type || "general work"}`;
+}
+
+async function decideIdleSession(sessionId, decision) {
+  if (!sessionId || !["kept", "discarded"].includes(decision)) {
+    return false;
+  }
+
+  await updateDoc(doc(state.db, "rooms", state.roomId, "idleSessions", sessionId), {
+    decision,
+    decidedAt: serverTimestamp(),
+    decidedBy: state.profile.id,
+    decidedByName: getProfileDisplayName(),
+    updatedAt: serverTimestamp(),
+  });
+  setStatus(`Idle session ${decision}.`, "success");
+  return true;
+}
+
+function loadIdleHelperSeenSessionIds() {
+  try {
+    const ids = JSON.parse(localStorage.getItem(getIdleHelperSeenStorageKey()) || "[]");
+    return new Set(Array.isArray(ids) ? ids.filter(Boolean) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveIdleHelperSeenSessionIds() {
+  localStorage.setItem(getIdleHelperSeenStorageKey(), JSON.stringify([...state.idleHelperSeenSessionIds]));
+}
+
+function getIdleHelperSeenStorageKey() {
+  return `${IDLE_HELPER_SEEN_KEY_PREFIX}:${state.roomId || "no-room"}:${state.profile?.id || "no-user"}`;
 }
 
 async function updateLinkedTaskFromCodexResult(result, resultText) {
@@ -10187,6 +10382,9 @@ async function setFreeDayStatus(reasonInput = "") {
 async function postDayStatus() {
   const workDay = await getWorkDay();
   const activeGeneralTimer = await findActiveGeneralTimer();
+  const { start, end } = getDateBounds(getTodayKey());
+  const idleSessions = (await loadRoomIdleSessions()).filter((session) => idleSessionMatches(session, start, end));
+  const idleSessionMs = getIdleSessionTotalMs(idleSessions);
   const activeTaskTimers = (await loadRoomTasks())
     .filter((task) => task.activeTimerStartedAt && isCurrentUserTaskTimerOwner(task))
     .sort(compareActiveTimersByStartedAt);
@@ -10227,6 +10425,9 @@ async function postDayStatus() {
   }
 
   lines.push(`Idle reminders today: ${getDayIdleReminderCount(workDay)}`);
+  if (idleSessions.length > 0) {
+    lines.push(`System idle today: ${formatDuration(idleSessionMs)} (${idleSessions.length} session${idleSessions.length === 1 ? "" : "s"})`);
+  }
 
   postLocalDayMessage(lines.join("\n"));
   setStatus("Day status ready.", "success");
@@ -10551,6 +10752,7 @@ async function buildTimesheet({ dateKey, handle }) {
     ? (await loadWorkDayTimeEntries(workDay.ref)).filter((entry) => timesheetEntryMatches(entry, start, end, handle))
     : [];
   const breakEntries = workDay ? getTimesheetBreakEntries(workDay, start, end, handle) : [];
+  const idleSessions = (await loadRoomIdleSessions()).filter((session) => idleSessionMatches(session, start, end, handle));
   const shouldShowRunningState = dateKey === getTodayKey();
   const activeTaskTimers = shouldShowRunningState
     ? tasks
@@ -10562,6 +10764,7 @@ async function buildTimesheet({ dateKey, handle }) {
     .reduce((total, entry) => total + getTimeEntryDurationMs(entry), 0);
   const generalTrackedMs = generalEntries.reduce((total, entry) => total + getTimeEntryDurationMs(entry), 0);
   const breakMs = breakEntries.reduce((total, breakEntry) => total + getBreakDurationMs(breakEntry), 0);
+  const idleMs = getIdleSessionTotalMs(idleSessions);
   const personLabel = getTimesheetPersonLabel({ handle, workDay, taskEntriesByTask, generalEntries, breakEntries });
   const lines = [`Timesheet for ${personLabel} on ${dateKey}`];
 
@@ -10569,6 +10772,7 @@ async function buildTimesheet({ dateKey, handle }) {
   lines.push(`Task time: ${formatDuration(taskTrackedMs)}`);
   lines.push(`General time: ${formatDuration(generalTrackedMs)}`);
   lines.push(`Break time: ${formatDuration(breakMs)}`);
+  lines.push(`System idle: ${formatDuration(idleMs)}`);
   lines.push(`Total work time: ${formatDuration(taskTrackedMs + generalTrackedMs)}`);
 
   if (workDay?.availabilityStatus === "free") {
@@ -10605,6 +10809,15 @@ async function buildTimesheet({ dateKey, handle }) {
     });
   }
 
+  if (idleSessions.length > 0) {
+    lines.push("Idle sessions:");
+    idleSessions.forEach((session) => {
+      lines.push(
+        `- ${formatTimeRange(session.startedAt, session.endedAt)} (${formatDuration(getIdleSessionDurationMs(session))}) ${session.decision || "pending"}`
+      );
+    });
+  }
+
   if (shouldShowRunningState && workDay?.activeTimerStartedAt) {
     const generalTimerDescription = getGeneralTimerDisplayDescription(workDay.activeTimerDescription);
     lines.push(
@@ -10629,6 +10842,7 @@ async function buildTimesheet({ dateKey, handle }) {
     taskTrackedMs === 0 &&
     generalTrackedMs === 0 &&
     breakMs === 0 &&
+    idleMs === 0 &&
     (!shouldShowRunningState || !workDay?.activeTimerStartedAt) &&
     (!shouldShowRunningState || !workDay?.activeBreakStartedAt) &&
     activeTaskTimers.length === 0
@@ -11074,6 +11288,7 @@ async function buildDailyTaskSummary(options = {}) {
       entry.userId === state.profile.id &&
       isTimestampWithin(entry.stoppedAt, start, end)
   );
+  const idleSessions = (await loadRoomIdleSessions()).filter((session) => idleSessionMatches(session, start, end));
   const timeEntriesByTaskId = new Map();
 
   await Promise.all(
@@ -11105,6 +11320,7 @@ async function buildDailyTaskSummary(options = {}) {
     0
   );
   const breakMs = getTotalBreakMs(workDay);
+  const idleMs = getIdleSessionTotalMs(idleSessions);
   const trackedMs = taskTrackedMs + generalTrackedMs;
   const plannedTaskIds = normalizeIdList(workDay?.plannedTaskIds);
   const plannedTasks = tasks.filter((task) => plannedTaskIds.includes(task.id));
@@ -11130,6 +11346,9 @@ async function buildDailyTaskSummary(options = {}) {
   }
   if (breakMs > 0) {
     lines.push(`Break time: ${formatDuration(breakMs)}`);
+  }
+  if (idleMs > 0) {
+    lines.push(`System idle: ${formatDuration(idleMs)}`);
   }
   lines.push(`Idle reminders: ${getDayIdleReminderCount(workDay)}`);
   if (plannedTasks.length > 0) {
@@ -11178,6 +11397,7 @@ async function buildDailyTaskSummary(options = {}) {
     activeTimers.length === 0 &&
     !activeGeneralTimer?.data?.activeTimerStartedAt &&
     breakMs === 0 &&
+    idleMs === 0 &&
     !workDay?.activeBreakStartedAt &&
     plannedTasks.length === 0
   ) {
@@ -11734,6 +11954,15 @@ async function loadRoomWorkDays() {
     id: workDayDoc.id,
     ref: workDayDoc.ref,
     ...workDayDoc.data(),
+  }));
+}
+
+async function loadRoomIdleSessions() {
+  const idleSnapshot = await trackedGetDocs("idleSessions.all", collection(state.db, "rooms", state.roomId, "idleSessions"));
+
+  return idleSnapshot.docs.map((idleDoc) => ({
+    id: idleDoc.id,
+    ...idleDoc.data(),
   }));
 }
 
@@ -14305,6 +14534,63 @@ function formatDuration(durationMs) {
   }
 
   return `${minutes}m`;
+}
+
+function getIdleSessionDurationMs(session) {
+  if (Number.isFinite(session?.durationMs)) {
+    return session.durationMs;
+  }
+
+  const startedAt = getTimestampMillis(session?.startedAt);
+  const endedAt = getTimestampMillis(session?.endedAt);
+  return startedAt && endedAt ? Math.max(0, endedAt - startedAt) : 0;
+}
+
+function idleSessionMatches(session, start, end, handle = "") {
+  if (session.userId !== state.profile?.id && handleMatchesCurrentUser(handle)) {
+    return false;
+  }
+
+  if (handle && !idleSessionMatchesHandle(session, handle)) {
+    return false;
+  }
+
+  return isTimestampWithin(session.startedAt, start, end) || isTimestampWithin(session.endedAt, start, end);
+}
+
+function idleSessionMatchesHandle(session, handle = "") {
+  const normalizedHandle = normalizeTimesheetHandle(handle);
+
+  if (!normalizedHandle) {
+    return session.userId === state.profile?.id;
+  }
+
+  const names = [
+    session.userName,
+    session.userId,
+  ].map(normalizeTimesheetHandle).filter(Boolean);
+
+  return names.some((name) => name.includes(normalizedHandle) || normalizedHandle.includes(name));
+}
+
+function handleMatchesCurrentUser(handle = "") {
+  const normalizedHandle = normalizeTimesheetHandle(handle);
+
+  if (!normalizedHandle) {
+    return true;
+  }
+
+  const profileNames = [
+    state.profile?.id,
+    state.profile?.name,
+    getProfileDisplayName(),
+  ].map(normalizeTimesheetHandle).filter(Boolean);
+
+  return profileNames.some((name) => name.includes(normalizedHandle) || normalizedHandle.includes(name));
+}
+
+function getIdleSessionTotalMs(sessions) {
+  return sessions.reduce((total, session) => total + getIdleSessionDurationMs(session), 0);
 }
 
 function getTimeEntryDurationMs(entry) {

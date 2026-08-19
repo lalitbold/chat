@@ -8,6 +8,10 @@
     "codex:local": "node tools/codex-bridge.mjs --local-server",
     "chat:command": "node tools/chat-command.mjs",
     "changelog:add": "node tools/changelog-entry.mjs",
+    "idle:helper": "node tools/idle-helper.mjs",
+    "idle:install-startup": "node tools/idle-helper.mjs --install-startup",
+    "idle:uninstall-startup": "node tools/idle-helper.mjs --uninstall-startup",
+    "idle:status": "node tools/idle-helper.mjs --status",
     "release:chat": "node tools/release-workflow.mjs",
     "export:messages": "node tools/export-messages.mjs",
     "tasks:pending": "node tools/pending-tasks.mjs"

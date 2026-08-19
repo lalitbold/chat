@@ -135,6 +135,26 @@ rooms/{roomId}/readReceipts/{userId}
   lastReadCreatedAt
   updatedAt
 
+rooms/{roomId}/presence/{userId}
+  userId
+  userName
+  status
+  idleMs
+  lastActiveAt
+  lastIdleStartedAt
+  helperUpdatedAt
+  source
+
+rooms/{roomId}/idleSessions/{sessionId}
+  userId
+  userName
+  startedAt
+  endedAt
+  durationMs
+  decision
+  source
+  affectedTimer
+
 rooms/{roomId}/tasks/{taskId}
   description
   labels
@@ -486,12 +506,32 @@ The script signs in anonymously with the Firebase web app config and reads pendi
 - `/timer list` shows the same active task and non-task timer list as `/task timers`.
 - `/timer history today` shows stopped standalone timer entries for today and marks manual entries with `[manual]`.
 
+## Windows idle helper
+
+The browser can only see activity while the app is open. For OS-wide Windows idle tracking, run the local desktop helper:
+
+```powershell
+npm run idle:helper
+```
+
+Useful helper commands:
+
+```powershell
+npm run idle:status
+npm run idle:install-startup
+npm run idle:uninstall-startup
+```
+
+The helper listens on `http://127.0.0.1:17347`, samples Win32 `GetLastInputInfo` about every 15 seconds, and starts an idle session after 5 minutes by default. The browser sends the current room/user context to the helper while you are signed in. The helper writes your `presence/{userId}` document and `idleSessions` records, but it does not mutate timers.
+
+When you return from idle, the browser shows a local prompt to keep or discard the idle session. In v1 this records `decision: "kept"` or `decision: "discarded"` only; timer elapsed time is not automatically adjusted. `/day status`, `/day summary`, and `/day timesheet` include recorded system idle totals.
+
 ## Day commands
 
 Day commands are available after `/plugin enable day`. The Day plugin is disabled by default.
 
 - `/day start` starts your day and posts attendance to the group.
-- There is no manual `/day idle` status today. After `/day start`, the app treats you as idle when no timer is running, reminds you locally every 5 minutes, and counts those reminders in `/day status` and the day summary.
+- There is no manual `/day idle` status today. After `/day start`, the app treats you as idle when no timer is running, reminds you locally every 5 minutes, and counts those reminders in `/day status` and the day summary. The optional Windows idle helper records OS-wide idle sessions separately.
 - `/day plan Ship feature X` saves and posts your plan to the group.
 - `/day free tired` marks your current availability as free with an optional reason and posts it to the group.
 - `/day status` shows your current day status only to you.
