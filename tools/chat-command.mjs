@@ -192,7 +192,8 @@ async function loadProfile() {
 }
 
 function parseCommand(commandText) {
-  const [name = "", ...rest] = commandText.trim().split(/\s+/);
+  const normalizedCommandText = normalizeGitBashSlashCommand(commandText);
+  const [name = "", ...rest] = normalizedCommandText.trim().split(/\s+/);
   const commandName = name.toLowerCase();
 
   if (!COMMANDS.has(commandName)) {
@@ -202,8 +203,15 @@ function parseCommand(commandText) {
   return {
     name: commandName,
     payload: rest.join(" ").trim(),
-    raw: commandText.trim(),
+    raw: normalizedCommandText.trim(),
   };
+}
+
+function normalizeGitBashSlashCommand(commandText) {
+  return String(commandText || "").replace(
+    /^([A-Za-z]:\/Program Files\/Git)\/(task|timer|change|changelog|query|codex|plugin|day|lead|team|remind|debug)(?=\s|$)/i,
+    "/$2"
+  );
 }
 
 function classifyRisk(command) {
@@ -248,7 +256,7 @@ function classifyRisk(command) {
     return "read";
   }
 
-  if (command.name === "/day" && ["", "help", "status", "summary", "timesheet", "sheet"].includes(normalizedAction)) {
+  if (command.name === "/day" && ["", "help", "status", "summary", "timesheet", "sheet", "idle"].includes(normalizedAction)) {
     return "read";
   }
 
@@ -265,6 +273,7 @@ async function dispatchCommand(command, context) {
   if (command.name === "/query") return dispatchQuery(command.payload, context);
   if (command.name === "/codex") return dispatchCodex(command.payload, context);
   if (command.name === "/plugin") return dispatchPlugin(command.payload, context);
+  if (command.name === "/day") return dispatchDay(command.payload, context);
   if (command.name === "/lead") return dispatchLead(command.payload, context);
   if (command.name === "/team") return dispatchTeam(command.payload, context);
   return unsupported(command.name, "This command depends on browser-local state and is not available in the terminal yet.");
@@ -457,6 +466,31 @@ async function dispatchTimer(payload, context) {
   }
 
   return unsupported("/timer", "Terminal /timer currently supports help and list. Start, stop, continue, log, and history still need the browser.");
+}
+
+async function dispatchDay(payload, context) {
+  const [action = "", ...rest] = String(payload || "").trim().split(/\s+/);
+  const normalizedAction = action.toLowerCase();
+
+  if (!payload || normalizedAction === "help") {
+    return textResult(dayHelp());
+  }
+
+  if (normalizedAction === "idle") {
+    const request = parseDayIdleRequest(rest.join(" "));
+
+    if (!request) {
+      return textResult("Use /day idle [today|yesterday|YYYY-MM-DD] [@handle].");
+    }
+
+    const idleSessions = (await loadCollection(context, "idleSessions"))
+      .filter((session) => idleSessionMatches(session, request, context))
+      .sort((left, right) => getTimestampMillis(left.startedAt) - getTimestampMillis(right.startedAt))
+      .slice(0, context.limit);
+    return textResult(formatIdleHistory(idleSessions, request, context), { idleSessions });
+  }
+
+  return unsupported("/day", "Terminal /day currently supports help and idle.");
 }
 
 async function activeTimersResult(context) {
@@ -1113,6 +1147,134 @@ function formatDuration(ms) {
   return `${hours}h ${minutes}m`;
 }
 
+function parseDayIdleRequest(input = "") {
+  const parts = String(input || "").trim().split(/\s+/).filter(Boolean);
+  let dateKey = formatDateKey(new Date());
+  const handleParts = [];
+
+  for (const part of parts) {
+    const parsedDateKey = parseDateKey(part);
+
+    if (parsedDateKey) {
+      dateKey = parsedDateKey;
+      continue;
+    }
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(part)) {
+      return null;
+    }
+
+    handleParts.push(part);
+  }
+
+  const { start, end } = getDateBounds(dateKey);
+  return {
+    dateKey,
+    start,
+    end,
+    handle: normalizeHandle(handleParts.join(" ")),
+  };
+}
+
+function parseDateKey(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+
+  if (!normalized || normalized === "today") {
+    return formatDateKey(new Date());
+  }
+
+  if (normalized === "yesterday") {
+    const date = new Date();
+    date.setDate(date.getDate() - 1);
+    return formatDateKey(date);
+  }
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    const date = new Date(`${normalized}T00:00:00`);
+    return Number.isNaN(date.getTime()) ? null : normalized;
+  }
+
+  return null;
+}
+
+function getDateBounds(dateKey) {
+  const start = new Date(`${dateKey}T00:00:00`);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  return { start, end };
+}
+
+function normalizeHandle(value) {
+  return String(value || "").trim().toLowerCase().replace(/^@/, "");
+}
+
+function idleSessionMatches(session, request, context) {
+  if (!isTimestampWithin(session.startedAt, request.start, request.end) && !isTimestampWithin(session.endedAt, request.start, request.end)) {
+    return false;
+  }
+
+  if (!request.handle) {
+    return session.userName === context.userName || session.userId === context.uid;
+  }
+
+  const names = [session.userName, session.userId].map(normalizeHandle).filter(Boolean);
+  return names.some((name) => name.includes(request.handle) || request.handle.includes(name));
+}
+
+function isTimestampWithin(timestamp, start, end) {
+  const millis = getTimestampMillis(timestamp);
+  return millis >= start.getTime() && millis < end.getTime();
+}
+
+function getIdleSessionDurationMs(session) {
+  if (Number.isFinite(session?.durationMs)) {
+    return session.durationMs;
+  }
+
+  const startedAt = getTimestampMillis(session?.startedAt);
+  const endedAt = getTimestampMillis(session?.endedAt);
+  return startedAt && endedAt ? Math.max(0, endedAt - startedAt) : 0;
+}
+
+function formatIdleHistory(idleSessions, request, context) {
+  const totalMs = idleSessions.reduce((total, session) => total + getIdleSessionDurationMs(session), 0);
+  const personLabel = request.handle ? `@${request.handle}` : context.userName;
+  const lines = [
+    `Idle history for ${personLabel} on ${request.dateKey}`,
+    `System idle: ${formatDuration(totalMs)} (${idleSessions.length} session${idleSessions.length === 1 ? "" : "s"})`,
+  ];
+
+  if (idleSessions.length === 0) {
+    lines.push("No idle sessions found.");
+    return lines.join("\n");
+  }
+
+  idleSessions.forEach((session) => {
+    lines.push(
+      `- ${formatTimeRange(session.startedAt, session.endedAt)} (${formatDuration(getIdleSessionDurationMs(session))}) ${session.decision || "pending"}`
+    );
+  });
+
+  return lines.join("\n");
+}
+
+function formatTimeRange(startedAt, endedAt) {
+  return `${formatTime(startedAt)}-${endedAt ? formatTime(endedAt) : "running"}`;
+}
+
+function formatTime(timestamp) {
+  const millis = getTimestampMillis(timestamp);
+
+  if (!millis) {
+    return "--:--";
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(millis));
+}
+
 function getTaskTimerDisplayDescription(task) {
   const description = sanitizeTimerDescription(task?.activeTimerDescription || "");
   return description || task?.description || "Task work";
@@ -1324,6 +1486,13 @@ function timerHelp() {
   ].join("\n");
 }
 
+function dayHelp() {
+  return [
+    "Day commands:",
+    "/day idle [today|yesterday|YYYY-MM-DD] [@handle]",
+  ].join("\n");
+}
+
 function printHelp() {
   console.log(`Usage:
   npm run chat:command -- profile --room <roomId> --user <name>
@@ -1347,6 +1516,7 @@ Implemented:
   /query help|create|list|respond|close
   /codex help|<instruction>
   /plugin list|enable|disable
+  /day help|idle
   /lead list
   /team list
   /team task list

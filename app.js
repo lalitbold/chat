@@ -565,6 +565,11 @@ const DAY_SLASH_COMMANDS = [
     hint: "Timesheet",
   },
   {
+    label: "/day idle [date] [@handle]",
+    insertText: "/day idle ",
+    hint: "Idle history",
+  },
+  {
     label: "/day end",
     insertText: "/day end",
     hint: "End day",
@@ -5728,7 +5733,7 @@ async function handleDayCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     postLocalDayMessage(
-      "Day commands:\n/day start\n/day plan <plan>\n/day free <reason>\n/day status\n/day summary\n/day schedule\n/day schedule set mon-fri 09:30 18:30\n/day schedule off sat sun\n/day schedule user set mon-fri 10:00 19:00\n/day schedule user clear\n/day coach\n/day timesheet [today|yesterday|YYYY-MM-DD] [@handle]\n/day break start\n/day break stop\n/day break list\n/day end\n/day leave <date-or-range> <reason>\n/day leave weekly sat sun <reason>\n/day leave list\n/day leave cancel <id>\n\nIdle: after /day start, the app reminds you locally every 5 minutes when no timer is running. The optional Windows helper records OS idle sessions; /day status, /day summary, and /day timesheet show those totals. Use /day free <reason> when you want to mark yourself free."
+      "Day commands:\n/day start\n/day plan <plan>\n/day free <reason>\n/day status\n/day summary\n/day schedule\n/day schedule set mon-fri 09:30 18:30\n/day schedule off sat sun\n/day schedule user set mon-fri 10:00 19:00\n/day schedule user clear\n/day coach\n/day timesheet [today|yesterday|YYYY-MM-DD] [@handle]\n/day idle [today|yesterday|YYYY-MM-DD] [@handle]\n/day break start\n/day break stop\n/day break list\n/day end\n/day leave <date-or-range> <reason>\n/day leave weekly sat sun <reason>\n/day leave list\n/day leave cancel <id>\n\nIdle: after /day start, the app reminds you locally every 5 minutes when no timer is running. The optional Windows helper records OS idle sessions; /day status, /day summary, /day timesheet, and /day idle show those totals. Use /day free <reason> when you want to mark yourself free."
     );
     return;
   }
@@ -5775,6 +5780,11 @@ async function handleDayCommand(text) {
 
   if (normalizedAction === "timesheet" || normalizedAction === "sheet") {
     await postTimesheet(rest.join(" "));
+    return;
+  }
+
+  if (normalizedAction === "idle") {
+    await postIdleHistory(rest.join(" "));
     return;
   }
 
@@ -10739,6 +10749,39 @@ async function postTimesheet(input = "") {
   setStatus("Timesheet ready.", "success");
 }
 
+async function postIdleHistory(input = "") {
+  const request = parseTimesheetRequest(input);
+
+  if (!request) {
+    postLocalDayMessage("Use /day idle [today|yesterday|YYYY-MM-DD] [@handle].");
+    setStatus("Idle history request needs a valid date.", "error");
+    return;
+  }
+
+  const { start, end } = getDateBounds(request.dateKey);
+  const idleSessions = (await loadRoomIdleSessions())
+    .filter((session) => idleSessionMatches(session, start, end, request.handle))
+    .sort((left, right) => getTimestampMillis(left.startedAt) - getTimestampMillis(right.startedAt));
+  const idleMs = getIdleSessionTotalMs(idleSessions);
+  const personLabel = request.handle || getProfileDisplayName();
+  const lines = [`Idle history for ${personLabel} on ${request.dateKey}`];
+
+  lines.push(`System idle: ${formatDuration(idleMs)} (${idleSessions.length} session${idleSessions.length === 1 ? "" : "s"})`);
+
+  if (idleSessions.length === 0) {
+    lines.push("No idle sessions found.");
+  } else {
+    idleSessions.forEach((session) => {
+      lines.push(
+        `- ${formatTimeRange(session.startedAt, session.endedAt)} (${formatDuration(getIdleSessionDurationMs(session))}) ${session.decision || "pending"}`
+      );
+    });
+  }
+
+  postLocalDayMessage(lines.join("\n"));
+  setStatus("Idle history ready.", "success");
+}
+
 async function buildTimesheet({ dateKey, handle }) {
   const { start, end } = getDateBounds(dateKey);
   const tasks = await loadRoomTasks();
@@ -13087,10 +13130,11 @@ function scheduleTaskTimerReminder(task) {
   const elapsedMs = Date.now() - getTimestampMillis(task.startedAt);
   const delayMs = Math.max(0, TASK_TIMER_REMINDER_MS - elapsedMs);
   const timeoutId = window.setTimeout(() => {
+    const reminderCount = getElapsedTaskTimerReminderCount(task.startedAt);
     void handleTaskTimerReminder({
       ...task,
-      reminderCount: 0,
-      unattendedSince: null,
+      reminderCount,
+      unattendedSince: reminderCount > 0 ? getTaskTimerUnattendedSince(task.startedAt) : null,
       reminderToken,
     });
   }, delayMs);
@@ -13194,6 +13238,32 @@ function scheduleTaskTimerFollowUpReminder(task) {
   state.taskTimerReminderTimeouts.set(task.id, { timeoutId });
 }
 
+function getElapsedTaskTimerReminderCount(startedAt) {
+  const startedTime = getTimestampMillis(startedAt);
+
+  if (!startedTime) {
+    return 0;
+  }
+
+  const elapsedMs = Date.now() - startedTime;
+
+  if (elapsedMs < TASK_TIMER_REMINDER_MS) {
+    return 0;
+  }
+
+  return Math.floor((elapsedMs - TASK_TIMER_REMINDER_MS) / TASK_TIMER_REPEAT_REMINDER_MS);
+}
+
+function getTaskTimerUnattendedSince(startedAt) {
+  const startedTime = getTimestampMillis(startedAt);
+
+  if (!startedTime) {
+    return new Date();
+  }
+
+  return new Date(startedTime + TASK_TIMER_REMINDER_MS);
+}
+
 async function handleTaskTimerReminder(task, isFollowUp = false) {
   if (!isCurrentTaskTimerReminder(task.id, task.reminderToken)) {
     return;
@@ -13211,8 +13281,15 @@ async function handleTaskTimerReminder(task, isFollowUp = false) {
     return;
   }
 
-  const reminderCount = Number.isFinite(task.reminderCount) ? task.reminderCount : 0;
-  const unattendedSince = task.unattendedSince || new Date();
+  const reminderCount = Math.max(
+    Number.isFinite(task.reminderCount) ? task.reminderCount : 0,
+    getElapsedTaskTimerReminderCount(latestTask.activeTimerStartedAt || latestTask.startedAt)
+  );
+  const unattendedSince =
+    task.unattendedSince ||
+    (reminderCount > 0
+      ? getTaskTimerUnattendedSince(latestTask.activeTimerStartedAt || latestTask.startedAt)
+      : new Date());
 
   if (reminderCount >= TASK_TIMER_MAX_UNANSWERED_REMINDERS) {
     await autoStopUnansweredTaskTimer(latestTask, unattendedSince);
@@ -13272,8 +13349,15 @@ async function handleGeneralTimerReminder(timer, isFollowUp = false) {
     return;
   }
 
-  const reminderCount = Number.isFinite(timer.reminderCount) ? timer.reminderCount : 0;
-  const unattendedSince = timer.unattendedSince || new Date();
+  const reminderCount = Math.max(
+    Number.isFinite(timer.reminderCount) ? timer.reminderCount : 0,
+    getElapsedTaskTimerReminderCount(latestTimer.activeTimerStartedAt || latestTimer.startedAt)
+  );
+  const unattendedSince =
+    timer.unattendedSince ||
+    (reminderCount > 0
+      ? getTaskTimerUnattendedSince(latestTimer.activeTimerStartedAt || latestTimer.startedAt)
+      : new Date());
 
   if (reminderCount >= TASK_TIMER_MAX_UNANSWERED_REMINDERS) {
     await autoStopUnansweredGeneralTimer(latestTimer, unattendedSince);

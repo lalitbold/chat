@@ -314,7 +314,7 @@ npm run chat:command -- "/task create Check safety #ops" --dry-run
 npm run chat:command -- "/task list" --json
 ```
 
-Read-only commands run immediately. Write and risky commands ask for confirmation unless `--yes` is passed. The CLI currently supports `/task help|create|list|search|completed|chart|timers|complete|reopen|comment|codex-create|codex list|codex status`, `/timer help|list`, `/change help|add|list|summary`, `/changelog <handle>`, `/query help|create|list|respond|close`, `/codex`, `/plugin list|enable|disable`, `/lead list`, and `/team list|task list|followup list`. Browser-local commands such as `/remind`, `/debug`, and detailed day timer workflows still need the browser.
+Read-only commands run immediately. Write and risky commands ask for confirmation unless `--yes` is passed. The CLI currently supports `/task help|create|list|search|completed|chart|timers|complete|reopen|comment|codex-create|codex list|codex status`, `/timer help|list`, `/day help|idle`, `/change help|add|list|summary`, `/changelog <handle>`, `/query help|create|list|respond|close`, `/codex`, `/plugin list|enable|disable`, `/lead list`, and `/team list|task list|followup list`. Browser-local commands such as `/remind`, `/debug`, and detailed day timer workflows still need the browser.
 
 ## Query commands
 
@@ -520,11 +520,12 @@ Useful helper commands:
 npm run idle:status
 npm run idle:install-startup
 npm run idle:uninstall-startup
+npm run chat:command -- "/day idle today"
 ```
 
 The helper listens on `http://127.0.0.1:17347`, samples Win32 `GetLastInputInfo` about every 15 seconds, and starts an idle session after 5 minutes by default. The browser sends the current room/user context to the helper while you are signed in. The helper writes your `presence/{userId}` document and `idleSessions` records, but it does not mutate timers.
 
-When you return from idle, the browser shows a local prompt to keep or discard the idle session. In v1 this records `decision: "kept"` or `decision: "discarded"` only; timer elapsed time is not automatically adjusted. `/day status`, `/day summary`, and `/day timesheet` include recorded system idle totals.
+When you return from idle, the browser shows a local prompt to keep or discard the idle session. In v1 this records `decision: "kept"` or `decision: "discarded"` only; timer elapsed time is not automatically adjusted. `/day status`, `/day summary`, `/day timesheet`, and `/day idle` include recorded system idle totals.
 
 ## Day commands
 
@@ -543,6 +544,8 @@ Day commands are available after `/plugin enable day`. The Day plugin is disable
 - `/day coach` asks the local Codex bridge for a short AI day-coach recommendation.
 - `/day timesheet` shows your timesheet for today only to you.
 - `/day timesheet 2026-07-01 @lalit` shows a timesheet for a specific day and display-name handle.
+- `/day idle` shows your idle history for today only to you.
+- `/day idle 2026-07-01 @lalit` shows idle history for a specific day and display-name handle.
 - `/day break start` changes the app color while your break is active. Activity during a break shows a local prompt to stop it.
 - `/day end` ends your day and posts your work summary to the group.
 - `/day leave tomorrow Sick leave` schedules leave and posts it to the group.
