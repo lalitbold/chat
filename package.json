@@ -12,6 +12,7 @@
     "idle:install-startup": "node tools/idle-helper.mjs --install-startup",
     "idle:uninstall-startup": "node tools/idle-helper.mjs --uninstall-startup",
     "idle:status": "node tools/idle-helper.mjs --status",
+    "alexa:check": "npm --prefix alexa-skill run check",
     "release:chat": "node tools/release-workflow.mjs",
     "export:messages": "node tools/export-messages.mjs",
     "tasks:pending": "node tools/pending-tasks.mjs"

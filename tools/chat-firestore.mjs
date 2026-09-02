@@ -98,7 +98,7 @@ export async function runCollectionQuery({ token, parentPath, collectionId, wher
   const payload = await response.json();
 
   if (!response.ok) {
-    throw new Error(payload?.error?.message || `Could not load ${collectionId}.`);
+    throw new Error(getFirestoreErrorMessage(payload, `Could not load ${collectionId}.`));
   }
 
   return payload.filter((row) => row.document).map((row) => parseDocument(row.document));
@@ -161,4 +161,20 @@ function firestoreHeaders(token) {
     Authorization: `Bearer ${token}`,
     "Content-Type": "application/json",
   };
+}
+
+function getFirestoreErrorMessage(payload, fallback) {
+  if (payload?.error?.message) {
+    return payload.error.message;
+  }
+
+  if (Array.isArray(payload)) {
+    const rowError = payload.find((row) => row?.error?.message)?.error?.message;
+
+    if (rowError) {
+      return rowError;
+    }
+  }
+
+  return fallback;
 }

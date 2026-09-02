@@ -52,6 +52,7 @@ rooms/{roomId}
   plugins.day.schedule.weekdays.{sun|mon|tue|wed|thu|fri|sat}
   plugins.day.userOverrides.{userId}.weekdays.{sun|mon|tue|wed|thu|fri|sat}
   plugins.codex-tasks.enabled
+  plugins.alexa.enabled
   settings.queryReminderAudience
 
 rooms/{roomId}/messages/{messageId}
@@ -242,6 +243,20 @@ rooms/{roomId}/leaveAnnouncements/{dateKey_leaveId}
   dateKey
   announcedAt
   announcedBy
+
+appSettings/alexa/users/{encodedAlexaUserId}
+  roomId
+  userName
+  updatedAt
+
+appSettings/alexa/commandAudit/{auditId}
+  alexaUserId
+  roomId
+  userName
+  command
+  ok
+  text
+  createdAt
 ```
 
 ## Task commands
@@ -400,7 +415,35 @@ Safety gates:
 - `/plugin disable timer` disables standalone timer commands.
 - `/plugin enable codex-tasks` enables task-to-Codex commands for the current group.
 - `/plugin disable codex-tasks` disables task-to-Codex commands for the current group.
+- `/plugin enable alexa` enables Alexa voice commands for the current group.
+- `/plugin disable alexa` disables Alexa voice commands for the current group.
 - `/plugin list` shows enabled and disabled group plugins only to you.
+
+## Alexa plugin
+
+Alexa voice commands are available after `/plugin enable alexa`.
+
+The Firebase-hosted web app stays on Firebase Hosting. Alexa runs from a separate AWS Lambda custom skill backend in `alexa-skill/`.
+
+Setup:
+
+```powershell
+cd C:\work\poc\chat\alexa-skill
+npm install
+npm run check
+```
+
+Configure the Lambda with:
+
+```text
+ALEXA_SKILL_ID=amzn1.ask.skill...
+FIREBASE_PROJECT_ID=chat-6835e
+FIREBASE_SERVICE_ACCOUNT_JSON={"type":"service_account",...}
+```
+
+Use `alexa-skill/interaction-model.json` in the Alexa Developer Console. After deployment, say `setup room myteam as Lalit`, then try `list tasks`, `create task follow up with Rahul`, or `run command task list`.
+
+Alexa speaks results during the invoked skill session. Household Alexa Announcements and out-of-session notifications are not part of v1.
 
 ## Lead commands
 
@@ -546,6 +589,8 @@ Day commands are available after `/plugin enable day`. The Day plugin is disable
 - `/day timesheet 2026-07-01 @lalit` shows a timesheet for a specific day and display-name handle.
 - `/day idle` shows your idle history for today only to you.
 - `/day idle 2026-07-01 @lalit` shows idle history for a specific day and display-name handle.
+- `/day idle pending` lists idle sessions still waiting for Keep or Discard.
+- `/day idle pending 2026-07-01 @lalit` lists pending idle actions for a specific day and display-name handle.
 - `/day break start` changes the app color while your break is active. Activity during a break shows a local prompt to stop it.
 - `/day end` ends your day and posts your work summary to the group.
 - `/day leave tomorrow Sick leave` schedules leave and posts it to the group.

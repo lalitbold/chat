@@ -1,0 +1,16 @@
+{
+  "name": "firestore-chat-alexa-skill",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.mjs",
+  "scripts": {
+    "check": "node --check index.mjs"
+  },
+  "dependencies": {
+    "ask-sdk-core": "^2.14.0",
+    "ask-sdk-model": "^1.82.0",
+    "firebase-admin": "^12.7.0",
+    "firestore-chat-system": "file:.."
+  }
+}

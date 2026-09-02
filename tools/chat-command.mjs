@@ -5,6 +5,7 @@ import { access, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import { pathToFileURL } from "node:url";
 import {
   createDocument,
   getDocument,
@@ -20,11 +21,20 @@ const DEFAULT_LIMIT = 50;
 const TASK_CHART_DEFAULT_DAYS = 30;
 const TASK_CHART_ALLOWED_DAYS = new Set([7, 30, 90]);
 const COMMANDS = new Set(["/task", "/timer", "/change", "/changelog", "/query", "/codex", "/plugin", "/day", "/lead", "/team", "/remind", "/debug"]);
+const PLUGIN_LEADS = "leads";
+const PLUGIN_TEAM = "team";
+const PLUGIN_DAY = "day";
+const PLUGIN_CODEX_TASKS = "codex-tasks";
+const PLUGIN_TIMER = "timer";
+const PLUGIN_ALEXA = "alexa";
+const SUPPORTED_PLUGINS = new Set([PLUGIN_LEADS, PLUGIN_TEAM, PLUGIN_DAY, PLUGIN_CODEX_TASKS, PLUGIN_TIMER, PLUGIN_ALEXA]);
 
-main().catch((error) => {
-  console.error(`Error: ${error.message}`);
-  process.exitCode = 1;
-});
+if (isCliEntryPoint()) {
+  main().catch((error) => {
+    console.error(`Error: ${error.message}`);
+    process.exitCode = 1;
+  });
+}
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
@@ -77,18 +87,72 @@ async function main() {
     }
   }
 
-  const auth = await signInAnonymously();
+  const result = await runChatCommand({
+    commandText,
+    roomId,
+    userName,
+    limit: options.limit,
+    yes: true,
+  });
+  printResult(result, options);
+}
+
+function isCliEntryPoint() {
+  return process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+}
+
+export async function runChatCommand({
+  commandText,
+  roomId,
+  userName,
+  limit = DEFAULT_LIMIT,
+  dryRun = false,
+  yes = false,
+  now = new Date(),
+  auth,
+} = {}) {
+  const command = parseCommand(String(commandText || "").trim());
+  const risk = classifyRisk(command);
+
+  if (dryRun) {
+    return textResult(`Dry run: ${command.raw}`, {
+      dryRun: true,
+      roomId,
+      userName,
+      command: command.raw,
+      risk,
+    });
+  }
+
+  if (risk !== "read" && !yes) {
+    return {
+      ok: false,
+      confirmationRequired: true,
+      risk,
+      command: command.raw,
+      text: `Confirm ${risk} command before running: ${command.raw}`,
+    };
+  }
+
+  if (!roomId) {
+    throw new Error("Missing room.");
+  }
+
+  if (!userName) {
+    throw new Error("Missing user name.");
+  }
+
+  const resolvedAuth = auth || (await signInAnonymously());
   const context = {
-    token: auth.idToken,
-    uid: auth.uid,
+    token: resolvedAuth.idToken,
+    uid: resolvedAuth.uid,
     roomId,
     userName,
     parentPath: roomPath(roomId),
-    now: new Date(),
-    limit: options.limit,
+    now,
+    limit,
   };
-  const result = await dispatchCommand(command, context);
-  printResult(result, options);
+  return dispatchCommand(command, context);
 }
 
 function parseArgs(args) {
@@ -191,7 +255,7 @@ async function loadProfile() {
   return JSON.parse(await readFile(PROFILE_PATH, "utf8"));
 }
 
-function parseCommand(commandText) {
+export function parseCommand(commandText) {
   const normalizedCommandText = normalizeGitBashSlashCommand(commandText);
   const [name = "", ...rest] = normalizedCommandText.trim().split(/\s+/);
   const commandName = name.toLowerCase();
@@ -214,8 +278,8 @@ function normalizeGitBashSlashCommand(commandText) {
   );
 }
 
-function classifyRisk(command) {
-  if (["/codex", "/plugin"].includes(command.name)) return "risky";
+export function classifyRisk(command) {
+  if (command.name === "/codex") return "risky";
   if (["/remind", "/debug"].includes(command.name)) return "local";
 
   const [action = ""] = command.payload.split(/\s+/);
@@ -257,6 +321,10 @@ function classifyRisk(command) {
   }
 
   if (command.name === "/day" && ["", "help", "status", "summary", "timesheet", "sheet", "idle"].includes(normalizedAction)) {
+    return "read";
+  }
+
+  if (command.name === "/plugin" && ["", "help", "list"].includes(normalizedAction)) {
     return "read";
   }
 
@@ -477,10 +545,23 @@ async function dispatchDay(payload, context) {
   }
 
   if (normalizedAction === "idle") {
-    const request = parseDayIdleRequest(rest.join(" "));
+    const idleInput = rest.join(" ");
+    const pendingRequest = parsePendingIdleRequest(idleInput);
+
+    if (pendingRequest) {
+      const idleSessions = (await loadCollection(context, "idleSessions"))
+        .filter((session) => (session.decision || "pending") === "pending")
+        .filter((session) => session.endedAt)
+        .filter((session) => idleSessionMatches(session, pendingRequest, context))
+        .sort((left, right) => getTimestampMillis(left.startedAt) - getTimestampMillis(right.startedAt))
+        .slice(0, context.limit);
+      return textResult(formatPendingIdleActions(idleSessions, pendingRequest, context), { idleSessions });
+    }
+
+    const request = parseDayIdleRequest(idleInput);
 
     if (!request) {
-      return textResult("Use /day idle [today|yesterday|YYYY-MM-DD] [@handle].");
+      return textResult("Use /day idle [today|yesterday|YYYY-MM-DD] [@handle] or /day idle pending [date] [@handle].");
     }
 
     const idleSessions = (await loadCollection(context, "idleSessions"))
@@ -703,7 +784,7 @@ async function dispatchPlugin(payload, context) {
   const normalizedPlugin = normalizePluginName(plugin);
 
   if (!payload || normalizedAction === "help") {
-    return textResult("Plugin commands:\n/plugin enable leads\n/plugin disable leads\n/plugin enable team\n/plugin disable team\n/plugin enable day\n/plugin disable day\n/plugin enable codex-tasks\n/plugin disable codex-tasks\n/plugin list");
+    return textResult("Plugin commands:\n/plugin enable leads\n/plugin disable leads\n/plugin enable team\n/plugin disable team\n/plugin enable day\n/plugin disable day\n/plugin enable timer\n/plugin disable timer\n/plugin enable codex-tasks\n/plugin disable codex-tasks\n/plugin enable alexa\n/plugin disable alexa\n/plugin list");
   }
 
   if (normalizedAction === "list") {
@@ -711,8 +792,8 @@ async function dispatchPlugin(payload, context) {
     return textResult(formatPluginList(room.plugins));
   }
 
-  if (!["enable", "disable"].includes(normalizedAction) || !["leads", "team", "day", "codex-tasks"].includes(normalizedPlugin)) {
-    return textResult("Supported plugins: leads, team, day, codex-tasks.");
+  if (!["enable", "disable"].includes(normalizedAction) || !SUPPORTED_PLUGINS.has(normalizedPlugin)) {
+    return textResult("Supported plugins: leads, team, day, timer, codex-tasks, alexa.");
   }
 
   const enabled = normalizedAction === "enable";
@@ -1176,6 +1257,24 @@ function parseDayIdleRequest(input = "") {
   };
 }
 
+function parsePendingIdleRequest(input = "") {
+  const parts = String(input || "").trim().split(/\s+/).filter(Boolean);
+
+  if ((parts[0] || "").toLowerCase() !== "pending") {
+    return null;
+  }
+
+  const request = parseDayIdleRequest(parts.slice(1).join(" "));
+
+  if (!request) {
+    return null;
+  }
+
+  request.isPending = true;
+  request.isDateFiltered = parts.slice(1).some((part) => Boolean(parseDateKey(part)));
+  return request;
+}
+
 function parseDateKey(value) {
   const normalized = String(value || "").trim().toLowerCase();
 
@@ -1209,10 +1308,18 @@ function normalizeHandle(value) {
 }
 
 function idleSessionMatches(session, request, context) {
+  if (request.isPending && !request.isDateFiltered) {
+    return idleSessionUserMatches(session, request, context);
+  }
+
   if (!isTimestampWithin(session.startedAt, request.start, request.end) && !isTimestampWithin(session.endedAt, request.start, request.end)) {
     return false;
   }
 
+  return idleSessionUserMatches(session, request, context);
+}
+
+function idleSessionUserMatches(session, request, context) {
   if (!request.handle) {
     return session.userName === context.userName || session.userId === context.uid;
   }
@@ -1252,6 +1359,29 @@ function formatIdleHistory(idleSessions, request, context) {
   idleSessions.forEach((session) => {
     lines.push(
       `- ${formatTimeRange(session.startedAt, session.endedAt)} (${formatDuration(getIdleSessionDurationMs(session))}) ${session.decision || "pending"}`
+    );
+  });
+
+  return lines.join("\n");
+}
+
+function formatPendingIdleActions(idleSessions, request, context) {
+  const totalMs = idleSessions.reduce((total, session) => total + getIdleSessionDurationMs(session), 0);
+  const personLabel = request.handle ? `@${request.handle}` : context.userName;
+  const dateText = request.isDateFiltered ? ` on ${request.dateKey}` : "";
+  const lines = [
+    `Pending idle actions for ${personLabel}${dateText}`,
+    `Total: ${idleSessions.length} session${idleSessions.length === 1 ? "" : "s"}, ${formatDuration(totalMs)}`,
+  ];
+
+  if (idleSessions.length === 0) {
+    lines.push("No pending idle actions.");
+    return lines.join("\n");
+  }
+
+  idleSessions.forEach((session) => {
+    lines.push(
+      `- ${formatShortId(session.id, "#")} ${formatTimeRange(session.startedAt, session.endedAt)} (${formatDuration(getIdleSessionDurationMs(session))})`
     );
   });
 
@@ -1382,28 +1512,35 @@ function formatFollowupList(followups) {
 function formatPluginList(plugins = {}) {
   return [
     "Group plugins:",
-    `- Leads: ${plugins?.leads?.enabled ? "enabled" : "disabled"}`,
-    `- Team: ${plugins?.team?.enabled ? "enabled" : "disabled"}`,
-    `- Day: ${plugins?.day?.enabled ? "enabled" : "disabled"}`,
-    `- Codex Tasks: ${plugins?.["codex-tasks"]?.enabled ? "enabled" : "disabled"}`,
+    ...Array.from(SUPPORTED_PLUGINS, (pluginName) => `- ${formatPluginName(pluginName)}: ${plugins?.[pluginName]?.enabled ? "enabled" : "disabled"}`),
   ].join("\n");
 }
 
-function normalizePluginName(value) {
+export function normalizePluginName(value) {
   const normalized = String(value || "").trim().toLowerCase();
 
   if (["codex", "codextasks", "codex_tasks", "codex-task", "codex-tasks"].includes(normalized)) {
-    return "codex-tasks";
+    return PLUGIN_CODEX_TASKS;
+  }
+
+  if (normalized === "timers") {
+    return PLUGIN_TIMER;
+  }
+
+  if (["alexa-skill", "alexa_skill", "voice", "voice-control"].includes(normalized)) {
+    return PLUGIN_ALEXA;
   }
 
   return normalized;
 }
 
 function formatPluginName(pluginName) {
-  if (pluginName === "leads") return "Leads";
-  if (pluginName === "team") return "Team";
-  if (pluginName === "day") return "Day";
-  if (pluginName === "codex-tasks") return "Codex Tasks";
+  if (pluginName === PLUGIN_LEADS) return "Leads";
+  if (pluginName === PLUGIN_TEAM) return "Team";
+  if (pluginName === PLUGIN_DAY) return "Day";
+  if (pluginName === PLUGIN_CODEX_TASKS) return "Codex Tasks";
+  if (pluginName === PLUGIN_TIMER) return "Timer";
+  if (pluginName === PLUGIN_ALEXA) return "Alexa";
   return pluginName;
 }
 
@@ -1490,6 +1627,7 @@ function dayHelp() {
   return [
     "Day commands:",
     "/day idle [today|yesterday|YYYY-MM-DD] [@handle]",
+    "/day idle pending [today|yesterday|YYYY-MM-DD] [@handle]",
   ].join("\n");
 }
 

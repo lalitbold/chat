@@ -1,3 +1,4 @@
 /.firebase
 /.codex-queue
 /.chat-command-profile.json
+/alexa-skill/node_modules

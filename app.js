@@ -151,7 +151,8 @@ const PLUGIN_TEAM = "team";
 const PLUGIN_DAY = "day";
 const PLUGIN_CODEX_TASKS = "codex-tasks";
 const PLUGIN_TIMER = "timer";
-const SUPPORTED_PLUGINS = new Set([PLUGIN_LEADS, PLUGIN_TEAM, PLUGIN_DAY, PLUGIN_CODEX_TASKS, PLUGIN_TIMER]);
+const PLUGIN_ALEXA = "alexa";
+const SUPPORTED_PLUGINS = new Set([PLUGIN_LEADS, PLUGIN_TEAM, PLUGIN_DAY, PLUGIN_CODEX_TASKS, PLUGIN_TIMER, PLUGIN_ALEXA]);
 const WEEKDAY_KEYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 const WEEKDAY_LABELS = {
   sun: "Sun",
@@ -568,6 +569,11 @@ const DAY_SLASH_COMMANDS = [
     label: "/day idle [date] [@handle]",
     insertText: "/day idle ",
     hint: "Idle history",
+  },
+  {
+    label: "/day idle pending",
+    insertText: "/day idle pending",
+    hint: "Pending idle actions",
   },
   {
     label: "/day end",
@@ -2524,6 +2530,14 @@ function renderMessages(options = {}) {
   }
 
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function getMessageScrollPreservationOptions() {
+  return {
+    preserveScroll: true,
+    previousScrollHeight: messagesContainer.scrollHeight,
+    previousScrollTop: messagesContainer.scrollTop,
+  };
 }
 
 function renderTaskListMessage(message) {
@@ -5733,7 +5747,7 @@ async function handleDayCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     postLocalDayMessage(
-      "Day commands:\n/day start\n/day plan <plan>\n/day free <reason>\n/day status\n/day summary\n/day schedule\n/day schedule set mon-fri 09:30 18:30\n/day schedule off sat sun\n/day schedule user set mon-fri 10:00 19:00\n/day schedule user clear\n/day coach\n/day timesheet [today|yesterday|YYYY-MM-DD] [@handle]\n/day idle [today|yesterday|YYYY-MM-DD] [@handle]\n/day break start\n/day break stop\n/day break list\n/day end\n/day leave <date-or-range> <reason>\n/day leave weekly sat sun <reason>\n/day leave list\n/day leave cancel <id>\n\nIdle: after /day start, the app reminds you locally every 5 minutes when no timer is running. The optional Windows helper records OS idle sessions; /day status, /day summary, /day timesheet, and /day idle show those totals. Use /day free <reason> when you want to mark yourself free."
+      "Day commands:\n/day start\n/day plan <plan>\n/day free <reason>\n/day status\n/day summary\n/day schedule\n/day schedule set mon-fri 09:30 18:30\n/day schedule off sat sun\n/day schedule user set mon-fri 10:00 19:00\n/day schedule user clear\n/day coach\n/day timesheet [today|yesterday|YYYY-MM-DD] [@handle]\n/day idle [today|yesterday|YYYY-MM-DD] [@handle]\n/day idle pending [today|yesterday|YYYY-MM-DD] [@handle]\n/day break start\n/day break stop\n/day break list\n/day end\n/day leave <date-or-range> <reason>\n/day leave weekly sat sun <reason>\n/day leave list\n/day leave cancel <id>\n\nIdle: after /day start, the app reminds you locally every 5 minutes when no timer is running. The optional Windows helper records OS idle sessions; /day status, /day summary, /day timesheet, and /day idle show those totals. Use /day free <reason> when you want to mark yourself free."
     );
     return;
   }
@@ -6547,7 +6561,7 @@ async function handlePluginCommand(text) {
 
   if (!payload || normalizedAction === "help") {
     postLocalPluginMessage(
-      "Plugin commands:\n/plugin enable leads\n/plugin disable leads\n/plugin enable team\n/plugin disable team\n/plugin enable day\n/plugin disable day\n/plugin enable timer\n/plugin disable timer\n/plugin enable codex-tasks\n/plugin disable codex-tasks\n/plugin list"
+      "Plugin commands:\n/plugin enable leads\n/plugin disable leads\n/plugin enable team\n/plugin disable team\n/plugin enable day\n/plugin disable day\n/plugin enable timer\n/plugin disable timer\n/plugin enable codex-tasks\n/plugin disable codex-tasks\n/plugin enable alexa\n/plugin disable alexa\n/plugin list"
     );
     return;
   }
@@ -6564,7 +6578,7 @@ async function handlePluginCommand(text) {
   }
 
   if (!SUPPORTED_PLUGINS.has(normalizedPlugin)) {
-    postLocalPluginMessage("Supported plugins: leads, team, day, timer, codex-tasks.");
+    postLocalPluginMessage("Supported plugins: leads, team, day, timer, codex-tasks, alexa.");
     setStatus("Unknown plugin.", "error");
     return;
   }
@@ -10750,6 +10764,13 @@ async function postTimesheet(input = "") {
 }
 
 async function postIdleHistory(input = "") {
+  const trimmedInput = input.trim();
+
+  if (trimmedInput.toLowerCase() === "pending" || trimmedInput.toLowerCase().startsWith("pending ")) {
+    await postPendingIdleActions(trimmedInput.slice("pending".length).trim());
+    return;
+  }
+
   const request = parseTimesheetRequest(input);
 
   if (!request) {
@@ -10780,6 +10801,68 @@ async function postIdleHistory(input = "") {
 
   postLocalDayMessage(lines.join("\n"));
   setStatus("Idle history ready.", "success");
+}
+
+async function postPendingIdleActions(input = "") {
+  const request = parseOptionalIdleRequest(input);
+  const idleSessions = (await loadRoomIdleSessions())
+    .filter((session) => (session.decision || "pending") === "pending")
+    .filter((session) => session.endedAt)
+    .filter((session) => optionalIdleRequestMatches(session, request))
+    .sort((left, right) => getTimestampMillis(left.startedAt) - getTimestampMillis(right.startedAt));
+  const idleMs = getIdleSessionTotalMs(idleSessions);
+  const lines = [
+    `Pending idle actions${request.dateKey ? ` for ${request.dateKey}` : ""}:`,
+    `Total: ${idleSessions.length} session${idleSessions.length === 1 ? "" : "s"}, ${formatDuration(idleMs)}`,
+  ];
+
+  if (idleSessions.length === 0) {
+    lines.push("No pending idle actions.");
+  } else {
+    idleSessions.forEach((session) => {
+      lines.push(
+        `- ${formatIdleSessionId(session.id)} ${formatTimeRange(session.startedAt, session.endedAt)} (${formatDuration(getIdleSessionDurationMs(session))}) ${session.userName || "Unknown"}`
+      );
+    });
+  }
+
+  postLocalDayMessage(lines.join("\n"), idleSessions.flatMap((session) => [
+    {
+      label: `Keep ${formatIdleSessionId(session.id)}`,
+      action: "idle-session-keep",
+      sessionId: session.id,
+    },
+    {
+      label: `Discard ${formatIdleSessionId(session.id)}`,
+      action: "idle-session-discard",
+      sessionId: session.id,
+    },
+  ]));
+  setStatus("Pending idle actions ready.", "success");
+}
+
+function parseOptionalIdleRequest(input = "") {
+  const trimmedInput = input.trim();
+
+  if (!trimmedInput) {
+    return { dateKey: "", handle: "" };
+  }
+
+  const request = parseTimesheetRequest(trimmedInput);
+  return request || { dateKey: "", handle: "" };
+}
+
+function optionalIdleRequestMatches(session, request) {
+  if (!request.dateKey && !request.handle) {
+    return session.userId === state.profile?.id || normalizeProfileName(session.userName) === normalizeProfileName(getProfileDisplayName());
+  }
+
+  if (!request.dateKey) {
+    return idleSessionMatchesHandle(session, request.handle);
+  }
+
+  const { start, end } = getDateBounds(request.dateKey);
+  return idleSessionMatches(session, start, end, request.handle);
 }
 
 async function buildTimesheet({ dateKey, handle }) {
@@ -12626,7 +12709,7 @@ function runLocalAction(actionButton, action, successText) {
         return;
       }
 
-      renderMessages();
+      renderMessages(getMessageScrollPreservationOptions());
     })
     .catch((error) => {
       console.error("Local action failed:", error);
@@ -12646,6 +12729,8 @@ function replaceLocalMessage(messageId, text, extra = {}) {
     return;
   }
 
+  const scrollOptions = getMessageScrollPreservationOptions();
+
   state.localMessages[index] = {
     ...state.localMessages[index],
     ...extra,
@@ -12656,7 +12741,7 @@ function replaceLocalMessage(messageId, text, extra = {}) {
   syncStealthLayout();
   updatePrivacyIndicator();
   updateLocalMessagesUi();
-  renderMessages();
+  renderMessages(scrollOptions);
 }
 
 function clearLocalMessages(options = {}) {
@@ -14677,6 +14762,10 @@ function getIdleSessionTotalMs(sessions) {
   return sessions.reduce((total, session) => total + getIdleSessionDurationMs(session), 0);
 }
 
+function formatIdleSessionId(id) {
+  return `#${String(id || "").slice(0, 6)}`;
+}
+
 function getTimeEntryDurationMs(entry) {
   if (Number.isFinite(entry?.durationMs)) {
     return entry.durationMs;
@@ -16515,6 +16604,10 @@ function normalizePluginName(value) {
     return PLUGIN_TIMER;
   }
 
+  if (["alexa-skill", "alexa_skill", "voice", "voice-control"].includes(normalized)) {
+    return PLUGIN_ALEXA;
+  }
+
   return normalized;
 }
 
@@ -16537,6 +16630,10 @@ function formatPluginName(pluginName) {
 
   if (pluginName === PLUGIN_TIMER) {
     return "Timer";
+  }
+
+  if (pluginName === PLUGIN_ALEXA) {
+    return "Alexa";
   }
 
   return pluginName;

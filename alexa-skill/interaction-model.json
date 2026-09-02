@@ -1,0 +1,154 @@
+{
+  "interactionModel": {
+    "languageModel": {
+      "invocationName": "open box chat",
+      "intents": [
+        {
+          "name": "SetupIntent",
+          "slots": [
+            {
+              "name": "RoomId",
+              "type": "AMAZON.SearchQuery"
+            },
+            {
+              "name": "UserName",
+              "type": "AMAZON.SearchQuery"
+            }
+          ],
+          "samples": [
+            "setup room {RoomId} as {UserName}",
+            "use room {RoomId} as {UserName}",
+            "set my chat room to {RoomId} as {UserName}"
+          ]
+        },
+        {
+          "name": "RunCommandIntent",
+          "slots": [
+            {
+              "name": "CommandText",
+              "type": "AMAZON.SearchQuery"
+            }
+          ],
+          "samples": [
+            "run command {CommandText}",
+            "run chat command {CommandText}",
+            "command {CommandText}"
+          ]
+        },
+        {
+          "name": "CreateTaskIntent",
+          "slots": [
+            {
+              "name": "TaskDescription",
+              "type": "AMAZON.SearchQuery"
+            }
+          ],
+          "samples": [
+            "create task {TaskDescription}",
+            "add task {TaskDescription}",
+            "make a task {TaskDescription}"
+          ]
+        },
+        {
+          "name": "ListTasksIntent",
+          "slots": [
+            {
+              "name": "Label",
+              "type": "AMAZON.SearchQuery"
+            }
+          ],
+          "samples": [
+            "list tasks",
+            "show tasks",
+            "list tasks for {Label}",
+            "show pending tasks"
+          ]
+        },
+        {
+          "name": "SearchTasksIntent",
+          "slots": [
+            {
+              "name": "Query",
+              "type": "AMAZON.SearchQuery"
+            }
+          ],
+          "samples": [
+            "search tasks for {Query}",
+            "find tasks for {Query}"
+          ]
+        },
+        {
+          "name": "TimerListIntent",
+          "slots": [],
+          "samples": [
+            "list timers",
+            "show active timers",
+            "what timers are running"
+          ]
+        },
+        {
+          "name": "TeamListIntent",
+          "slots": [],
+          "samples": [
+            "list team",
+            "show team",
+            "who is in the team"
+          ]
+        },
+        {
+          "name": "QueryListIntent",
+          "slots": [],
+          "samples": [
+            "list queries",
+            "show pending queries"
+          ]
+        },
+        {
+          "name": "DayIdleIntent",
+          "slots": [
+            {
+              "name": "Pending",
+              "type": "AMAZON.SearchQuery"
+            },
+            {
+              "name": "Date",
+              "type": "AMAZON.DATE"
+            },
+            {
+              "name": "Handle",
+              "type": "AMAZON.SearchQuery"
+            }
+          ],
+          "samples": [
+            "show idle",
+            "show idle for {Date}",
+            "show pending idle",
+            "show pending idle for {Date}",
+            "show idle for {Handle}"
+          ]
+        },
+        {
+          "name": "AMAZON.YesIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.NoIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.HelpIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.CancelIntent",
+          "samples": []
+        },
+        {
+          "name": "AMAZON.StopIntent",
+          "samples": []
+        }
+      ],
+      "types": []
+    }
+  }
+}
