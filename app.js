@@ -3899,7 +3899,7 @@ function handleMessageActionClick(event) {
   }
 
   if (actionButton.dataset.action === "task-continue") {
-    runLocalAction(actionButton, () => continueTaskTimer(actionButton.dataset.taskId || ""), "Timer continued.");
+    runLocalAction(actionButton, () => continueTaskTimer(actionButton.dataset.taskId || ""));
   }
 
   if (actionButton.dataset.action === "day-break-stop") {
@@ -4042,7 +4042,7 @@ function handleMessageActionClick(event) {
   }
 
   if (actionButton.dataset.action === "general-timer-continue") {
-    runLocalAction(actionButton, () => continueGeneralTimer(), "General timer continued.");
+    runLocalAction(actionButton, () => continueGeneralTimer());
   }
 
   if (actionButton.dataset.action === "general-timer-stop") {
@@ -8035,6 +8035,7 @@ async function createTask(description, options = {}) {
     activeTimerStartedAt: null,
     activeTimerStartedBy: null,
     activeTimerStartedByName: null,
+    activeTimerReminderAnchorAt: null,
     subtasks: [],
     codexCommandId: null,
     codexStatus: null,
@@ -8053,6 +8054,7 @@ async function createTask(description, options = {}) {
     activeTimerStartedAt: null,
     activeTimerStartedBy: null,
     activeTimerStartedByName: null,
+    activeTimerReminderAnchorAt: null,
     subtasks: [],
     codexCommandId: null,
     codexStatus: null,
@@ -9102,6 +9104,7 @@ async function completeTask(taskIdInput) {
     completionUpdate.activeTimerStartedBy = null;
     completionUpdate.activeTimerStartedByName = null;
     completionUpdate.activeTimerDescription = null;
+    completionUpdate.activeTimerReminderAnchorAt = null;
     clearTaskTimerReminder(task.id);
   }
 
@@ -9637,6 +9640,7 @@ async function startTaskTimer(input) {
     activeTimerStartedBy: state.profile.id,
     activeTimerStartedByName: getProfileDisplayName(),
     activeTimerDescription: timerDescription || null,
+    activeTimerReminderAnchorAt: startedAt,
   });
 
   scheduleTaskTimerReminder({
@@ -9729,6 +9733,7 @@ async function stopTaskTimer(taskIdInput) {
     activeTimerStartedBy: null,
     activeTimerStartedByName: null,
     activeTimerDescription: null,
+    activeTimerReminderAnchorAt: null,
   });
 
   await recordTaskTimeEntry(task, task.activeTimerStartedAt, stoppedAt, elapsedMs);
@@ -9813,6 +9818,7 @@ async function startGeneralTimer(description = "", options = {}) {
       activeTimerStartedBy: state.profile.id,
       activeTimerStartedByName: getProfileDisplayName(),
       activeTimerDescription: timerDescription || null,
+      activeTimerReminderAnchorAt: startedAt,
       activeTimerSource: options.timerSource || "general",
       updatedAt: serverTimestamp(),
     },
@@ -9855,6 +9861,7 @@ async function stopGeneralTimer(options = {}) {
       activeTimerStartedBy: null,
       activeTimerStartedByName: null,
       activeTimerDescription: null,
+      activeTimerReminderAnchorAt: null,
       activeTimerSource: null,
       userId: state.profile.id,
       userName: getProfileDisplayName(),
@@ -9922,6 +9929,7 @@ async function pauseActiveTimersForCurrentUser(reason = "pause") {
       activeTimerStartedBy: null,
       activeTimerStartedByName: null,
       activeTimerDescription: null,
+      activeTimerReminderAnchorAt: null,
     });
 
     if (elapsedMs > 0) {
@@ -9945,6 +9953,7 @@ async function pauseActiveTimersForCurrentUser(reason = "pause") {
         activeTimerStartedBy: null,
         activeTimerStartedByName: null,
         activeTimerDescription: null,
+        activeTimerReminderAnchorAt: null,
         activeTimerSource: null,
         userId: state.profile.id,
         userName: getProfileDisplayName(),
@@ -9986,10 +9995,23 @@ async function continueGeneralTimer(options = {}) {
     return false;
   }
 
+  const continuedAt = new Date();
+  await setDoc(
+    activeTimer.ref,
+    {
+      activeTimerReminderAnchorAt: continuedAt,
+      userId: state.profile.id,
+      userName: getProfileDisplayName(),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  );
+
   scheduleTaskTimerReminder({
     id: getGeneralTimerReminderId(),
     description: getGeneralTimerDisplayDescription(activeTimer.data.activeTimerDescription),
     startedAt: new Date(),
+    reminderAnchorStartedAt: continuedAt,
     isGeneralTimer: true,
     timerDescription: activeTimer.data.activeTimerDescription || "",
     activeTimerDescription: activeTimer.data.activeTimerDescription || "",
@@ -10175,10 +10197,16 @@ async function continueTaskTimer(taskIdInput) {
     return;
   }
 
+  const continuedAt = new Date();
+  await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", task.id), {
+    activeTimerReminderAnchorAt: continuedAt,
+  });
+
   scheduleTaskTimerReminder({
     id: task.id,
     description: getTaskTimerDisplayDescription(task),
-    startedAt: new Date(),
+    startedAt: task.activeTimerStartedAt,
+    reminderAnchorStartedAt: continuedAt,
     timerDescription: task.activeTimerDescription || "",
   });
   postLocalTaskMessage(
@@ -11615,6 +11643,7 @@ function serializeTaskForMessage(task) {
     activeTimerStartedBy: task.activeTimerStartedBy || "",
     activeTimerStartedByName: task.activeTimerStartedByName || "",
     activeTimerDescription: task.activeTimerDescription || "",
+    activeTimerReminderAnchorAt: task.activeTimerReminderAnchorAt || null,
     commentCount: Number.isFinite(task.commentCount) ? task.commentCount : 0,
     assigneeMemberId: task.assigneeMemberId || "",
     assigneeName: task.assigneeName || "",
@@ -13212,14 +13241,16 @@ function scheduleTaskTimerReminder(task) {
   clearTaskTimerReminder(task.id);
 
   const reminderToken = createTaskTimerReminderToken(task.id);
-  const elapsedMs = Date.now() - getTimestampMillis(task.startedAt);
+  const reminderAnchorStartedAt = task.reminderAnchorStartedAt || task.startedAt;
+  const elapsedMs = Date.now() - getTimestampMillis(reminderAnchorStartedAt);
   const delayMs = Math.max(0, TASK_TIMER_REMINDER_MS - elapsedMs);
   const timeoutId = window.setTimeout(() => {
-    const reminderCount = getElapsedTaskTimerReminderCount(task.startedAt);
+    const reminderCount = getElapsedTaskTimerReminderCount(reminderAnchorStartedAt);
     void handleTaskTimerReminder({
       ...task,
+      reminderAnchorStartedAt,
       reminderCount,
-      unattendedSince: reminderCount > 0 ? getTaskTimerUnattendedSince(task.startedAt) : null,
+      unattendedSince: reminderCount > 0 ? getTaskTimerUnattendedSince(reminderAnchorStartedAt) : null,
       reminderToken,
     });
   }, delayMs);
@@ -13268,6 +13299,7 @@ async function syncActiveTaskTimerReminders() {
           id: task.id,
           description: task.description || "Untitled task",
           startedAt: task.activeTimerStartedAt,
+          reminderAnchorStartedAt: task.activeTimerReminderAnchorAt || task.activeTimerStartedAt,
         });
       }
     });
@@ -13282,6 +13314,9 @@ async function syncActiveTaskTimerReminders() {
           description: "General work",
           startedAt: activeGeneralTimer.data.activeTimerStartedAt,
           activeTimerStartedAt: activeGeneralTimer.data.activeTimerStartedAt,
+          reminderAnchorStartedAt:
+            activeGeneralTimer.data.activeTimerReminderAnchorAt ||
+            activeGeneralTimer.data.activeTimerStartedAt,
           isGeneralTimer: true,
           ref: activeGeneralTimer.ref,
         });
@@ -13349,6 +13384,11 @@ function getTaskTimerUnattendedSince(startedAt) {
   return new Date(startedTime + TASK_TIMER_REMINDER_MS);
 }
 
+function isTaskTimerReminderDue(startedAt) {
+  const startedTime = getTimestampMillis(startedAt);
+  return Boolean(startedTime) && Date.now() - startedTime >= TASK_TIMER_REMINDER_MS;
+}
+
 async function handleTaskTimerReminder(task, isFollowUp = false) {
   if (!isCurrentTaskTimerReminder(task.id, task.reminderToken)) {
     return;
@@ -13366,14 +13406,28 @@ async function handleTaskTimerReminder(task, isFollowUp = false) {
     return;
   }
 
+  const reminderAnchorStartedAt =
+    latestTask.activeTimerReminderAnchorAt ||
+    task.reminderAnchorStartedAt ||
+    latestTask.activeTimerStartedAt ||
+    latestTask.startedAt;
+
+  if (!isTaskTimerReminderDue(reminderAnchorStartedAt)) {
+    scheduleTaskTimerReminder({
+      ...latestTask,
+      reminderAnchorStartedAt,
+    });
+    return;
+  }
+
   const reminderCount = Math.max(
     Number.isFinite(task.reminderCount) ? task.reminderCount : 0,
-    getElapsedTaskTimerReminderCount(latestTask.activeTimerStartedAt || latestTask.startedAt)
+    getElapsedTaskTimerReminderCount(reminderAnchorStartedAt)
   );
   const unattendedSince =
     task.unattendedSince ||
     (reminderCount > 0
-      ? getTaskTimerUnattendedSince(latestTask.activeTimerStartedAt || latestTask.startedAt)
+      ? getTaskTimerUnattendedSince(reminderAnchorStartedAt)
       : new Date());
 
   if (reminderCount >= TASK_TIMER_MAX_UNANSWERED_REMINDERS) {
@@ -13419,6 +13473,7 @@ async function handleTaskTimerReminder(task, isFollowUp = false) {
 
   scheduleTaskTimerFollowUpReminder({
     ...latestTask,
+    reminderAnchorStartedAt,
     reminderCount: reminderCount + 1,
     unattendedSince,
     reminderToken: task.reminderToken,
@@ -13434,14 +13489,28 @@ async function handleGeneralTimerReminder(timer, isFollowUp = false) {
     return;
   }
 
+  const reminderAnchorStartedAt =
+    latestTimer.activeTimerReminderAnchorAt ||
+    timer.reminderAnchorStartedAt ||
+    latestTimer.activeTimerStartedAt ||
+    latestTimer.startedAt;
+
+  if (!isTaskTimerReminderDue(reminderAnchorStartedAt)) {
+    scheduleTaskTimerReminder({
+      ...latestTimer,
+      reminderAnchorStartedAt,
+    });
+    return;
+  }
+
   const reminderCount = Math.max(
     Number.isFinite(timer.reminderCount) ? timer.reminderCount : 0,
-    getElapsedTaskTimerReminderCount(latestTimer.activeTimerStartedAt || latestTimer.startedAt)
+    getElapsedTaskTimerReminderCount(reminderAnchorStartedAt)
   );
   const unattendedSince =
     timer.unattendedSince ||
     (reminderCount > 0
-      ? getTaskTimerUnattendedSince(latestTimer.activeTimerStartedAt || latestTimer.startedAt)
+      ? getTaskTimerUnattendedSince(reminderAnchorStartedAt)
       : new Date());
 
   if (reminderCount >= TASK_TIMER_MAX_UNANSWERED_REMINDERS) {
@@ -13479,6 +13548,7 @@ async function handleGeneralTimerReminder(timer, isFollowUp = false) {
 
   scheduleTaskTimerFollowUpReminder({
     ...latestTimer,
+    reminderAnchorStartedAt,
     reminderCount: reminderCount + 1,
     unattendedSince,
     reminderToken: timer.reminderToken,
@@ -13499,6 +13569,7 @@ async function autoStopUnansweredTaskTimer(task, unattendedSince) {
     activeTimerStartedBy: null,
     activeTimerStartedByName: null,
     activeTimerDescription: null,
+    activeTimerReminderAnchorAt: null,
   });
 
   if (elapsedMs > 0) {
@@ -13523,6 +13594,7 @@ async function autoStopUnansweredGeneralTimer(timer, unattendedSince) {
       activeTimerStartedBy: null,
       activeTimerStartedByName: null,
       activeTimerDescription: null,
+      activeTimerReminderAnchorAt: null,
       activeTimerSource: null,
       userId: state.profile.id,
       userName: getProfileDisplayName(),
@@ -13567,6 +13639,7 @@ async function getActiveTaskForLocalReminder(task) {
       description: getTaskTimerDisplayDescription(latestTask, task.timerDescription),
       startedAt: latestTask.activeTimerStartedAt || task.startedAt,
       activeTimerStartedAt: latestTask.activeTimerStartedAt,
+      activeTimerReminderAnchorAt: latestTask.activeTimerReminderAnchorAt || latestTask.activeTimerStartedAt,
       timerDescription: latestTask.activeTimerDescription || task.timerDescription || "",
     };
   } catch (error) {
@@ -13588,6 +13661,9 @@ async function getActiveGeneralTimerForLocalReminder(timer) {
       description: getGeneralTimerDisplayDescription(activeTimer.data.activeTimerDescription || timer.timerDescription),
       startedAt: activeTimer.data.activeTimerStartedAt || timer.startedAt,
       activeTimerStartedAt: activeTimer.data.activeTimerStartedAt,
+      activeTimerReminderAnchorAt:
+        activeTimer.data.activeTimerReminderAnchorAt ||
+        activeTimer.data.activeTimerStartedAt,
       isGeneralTimer: true,
       timerDescription: activeTimer.data.activeTimerDescription || timer.timerDescription || "",
       activeTimerDescription: activeTimer.data.activeTimerDescription || timer.activeTimerDescription || "",
