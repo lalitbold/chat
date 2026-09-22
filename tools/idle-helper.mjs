@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { firebaseConfig } from "../firebase-config.js";
+import { DEFAULT_IDLE_THRESHOLD_MS, DEFAULT_MERGE_GAP_MS, observeIdle } from "./idle-tracker.mjs";
 
 const execFileAsync = promisify(execFile);
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 17347;
-const DEFAULT_POLL_MS = 15000;
-const DEFAULT_IDLE_THRESHOLD_MS = 5 * 60 * 1000;
+const DEFAULT_POLL_MS = 5000;
 const STARTUP_VALUE_NAME = "OpenBoxIdleHelper";
 const POWERSHELL_IDLE_COMMAND = String.raw`
 Add-Type @"
@@ -31,14 +32,16 @@ public static class IdleNative {
 $info = New-Object IdleNative+LASTINPUTINFO
 $info.cbSize = [System.Runtime.InteropServices.Marshal]::SizeOf($info)
 if (-not [IdleNative]::GetLastInputInfo([ref]$info)) { throw "GetLastInputInfo failed." }
-$idle = [uint32]([IdleNative]::GetTickCount() - $info.dwTime)
-[Console]::WriteLine($idle)
+$idle = ([long][IdleNative]::GetTickCount() - [long]$info.dwTime + 4294967296) % 4294967296
+@{ idleMs = $idle; sampledAt = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() } | ConvertTo-Json -Compress
 `;
 
-main().catch((error) => {
-  console.error(`Error: ${error.message}`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(`Error: ${error.message}`);
+    process.exitCode = 1;
+  });
+}
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
@@ -66,13 +69,14 @@ async function main() {
   await startHelper(options);
 }
 
-function parseArgs(args) {
+export function parseArgs(args) {
   const options = {
     help: false,
     host: DEFAULT_HOST,
     port: DEFAULT_PORT,
     pollMs: DEFAULT_POLL_MS,
     idleThresholdMs: DEFAULT_IDLE_THRESHOLD_MS,
+    mergeGapMs: DEFAULT_MERGE_GAP_MS,
     installStartup: false,
     uninstallStartup: false,
     status: false,
@@ -125,6 +129,12 @@ function parseArgs(args) {
       continue;
     }
 
+    if (arg === "--merge-gap-ms") {
+      options.mergeGapMs = readPositiveInteger(readValue(args, index, arg), arg);
+      index += 1;
+      continue;
+    }
+
     throw new Error(`Unknown option: ${arg}`);
   }
 
@@ -158,6 +168,11 @@ async function startHelper(options) {
     latestEndedSession: null,
     lastSample: null,
     lastError: null,
+    tracker: {},
+    pendingWrites: [],
+    sampling: false,
+    syncing: false,
+    lastPresenceAt: 0,
     options,
   };
 
@@ -200,7 +215,13 @@ async function handleRequest(request, response, state) {
 
   if (request.method === "POST" && request.url === "/context") {
     const body = await readRequestJson(request);
-    state.context = normalizeContext(body);
+    const context = normalizeContext(body);
+    if (state.context && (state.context.roomId !== context.roomId || state.context.userId !== context.userId)) {
+      state.tracker = {};
+      state.currentIdleSession = null;
+      state.latestEndedSession = null;
+    }
+    state.context = context;
     await pollIdle(state);
     sendJson(response, 200, getPublicStatus(state));
     return;
@@ -229,9 +250,11 @@ function normalizeContext(body) {
 }
 
 async function pollIdle(state) {
+  if (state.sampling) return;
+  state.sampling = true;
   try {
-    const idleMs = await getSystemIdleMs();
-    const now = new Date();
+    const { idleMs, sampledAt } = await getSystemIdleSample();
+    const now = new Date(sampledAt);
     const idleStartedAt = new Date(now.getTime() - idleMs).toISOString();
     const isIdle = idleMs >= state.options.idleThresholdMs;
     state.lastSample = {
@@ -241,11 +264,11 @@ async function pollIdle(state) {
       sampledAt: now.toISOString(),
       idleStartedAt: isIdle ? idleStartedAt : null,
     };
-    state.lastError = null;
-
     if (state.context) {
-      await persistPresence(state, now);
-      await syncIdleSession(state, now, idleStartedAt);
+      for (const event of observeIdle(state.tracker, { idleMs, sampledAt }, state.options)) {
+        queueIdleSessionEvent(state, event, now);
+      }
+      void flushIdleWrites(state);
     }
   } catch (error) {
     state.lastError = error.message;
@@ -256,10 +279,12 @@ async function pollIdle(state) {
       sampledAt: new Date().toISOString(),
       idleStartedAt: null,
     };
+  } finally {
+    state.sampling = false;
   }
 }
 
-async function getSystemIdleMs() {
+async function getSystemIdleSample() {
   if (process.platform !== "win32") {
     throw new Error("OS-wide idle detection uses Win32 GetLastInputInfo and only runs on Windows.");
   }
@@ -269,13 +294,14 @@ async function getSystemIdleMs() {
     ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", POWERSHELL_IDLE_COMMAND],
     { windowsHide: true, timeout: 10000, maxBuffer: 1024 * 64 }
   );
-  const idleMs = Number.parseInt(String(stdout || "").trim(), 10);
+  const sample = JSON.parse(stdout);
+  const { idleMs, sampledAt } = sample;
 
-  if (!Number.isFinite(idleMs) || idleMs < 0) {
+  if (!Number.isFinite(idleMs) || idleMs < 0 || !Number.isFinite(sampledAt)) {
     throw new Error("GetLastInputInfo returned an invalid idle value.");
   }
 
-  return idleMs;
+  return sample;
 }
 
 async function persistPresence(state, now) {
@@ -293,43 +319,58 @@ async function persistPresence(state, now) {
   });
 }
 
-async function syncIdleSession(state, now, idleStartedAt) {
-  const { context, lastSample } = state;
-
-  if (lastSample.status === "idle") {
-    if (state.currentIdleSession) {
-      return;
-    }
-
-    const session = await createDocument(context.token, `${roomPath(context.roomId)}/idleSessions`, {
+export function queueIdleSessionEvent(state, event, now) {
+  const { context } = state;
+  if (event.type === "start") {
+    const id = randomUUID();
+    const fields = {
       userId: context.userId,
       userName: context.userName,
-      startedAt: idleStartedAt,
+      startedAt: new Date(event.startedAt).toISOString(),
       endedAt: null,
       durationMs: null,
       decision: "pending",
       source: "desktop-helper",
       createdAt: now.toISOString(),
       affectedTimer: context.activeTimer || null,
-    });
+    };
+    const session = { id, name: `${roomPath(context.roomId)}/idleSessions/${id}`, ...fields };
     state.currentIdleSession = session;
+    state.pendingWrites.push({ context, session, fields });
     return;
   }
-
-  if (!state.currentIdleSession) {
-    return;
-  }
-
   const session = state.currentIdleSession;
-  const durationMs = Math.max(0, now.getTime() - Date.parse(session.startedAt || now.toISOString()));
-  const endedSession = await patchDocument(context.token, session.name, {
-    endedAt: now.toISOString(),
-    durationMs,
-    decision: "pending",
+  const fields = {
+    endedAt: new Date(event.endedAt).toISOString(),
+    durationMs: Math.max(0, event.endedAt - event.startedAt),
     updatedAt: now.toISOString(),
-  });
-  state.latestEndedSession = endedSession;
+  };
+  state.pendingWrites.push({ context, session: { ...session, ...fields }, fields, ended: true });
   state.currentIdleSession = null;
+}
+
+export async function flushIdleWrites(state) {
+  if (state.syncing) return;
+  state.syncing = true;
+  try {
+    while (state.pendingWrites.length) {
+      const write = state.pendingWrites[0];
+      const sameUser = state.context?.userId === write.context.userId && state.context?.roomId === write.context.roomId;
+      const token = sameUser ? state.context.token : write.context.token;
+      await patchDocument(token, write.session.name, write.fields);
+      state.pendingWrites.shift();
+      if (write.ended && sameUser) state.latestEndedSession = write.session;
+    }
+    if (Date.now() - state.lastPresenceAt >= 15000) {
+      await persistPresence(state, new Date(state.lastSample.sampledAt));
+      state.lastPresenceAt = Date.now();
+    }
+    state.lastError = null;
+  } catch (error) {
+    state.lastError = error.message;
+  } finally {
+    state.syncing = false;
+  }
 }
 
 async function printStatus(options) {
@@ -344,7 +385,7 @@ async function printStatus(options) {
     // The helper may not be running; fall through to a direct local sample.
   }
 
-  const idleMs = await getSystemIdleMs();
+  const { idleMs } = await getSystemIdleSample();
   console.log(JSON.stringify({
     ok: true,
     helperRunning: false,
@@ -356,7 +397,7 @@ async function printStatus(options) {
 
 async function installStartup(options) {
   ensureWindows("Startup install");
-  const command = `"${process.execPath}" "${fileURLToPath(import.meta.url)}" --host ${options.host} --port ${options.port} --poll-ms ${options.pollMs} --idle-threshold-ms ${options.idleThresholdMs}`;
+  const command = `"${process.execPath}" "${fileURLToPath(import.meta.url)}" --host ${options.host} --port ${options.port} --poll-ms ${options.pollMs} --idle-threshold-ms ${options.idleThresholdMs} --merge-gap-ms ${options.mergeGapMs}`;
   await execFileAsync("reg.exe", [
     "add",
     "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
@@ -397,6 +438,8 @@ function getPublicStatus(state) {
     userId: state.context?.userId || null,
     pollMs: state.options.pollMs,
     idleThresholdMs: state.options.idleThresholdMs,
+    mergeGapMs: state.options.mergeGapMs,
+    pendingWrites: state.pendingWrites.length,
     currentIdleSession: summarizeSession(state.currentIdleSession),
     latestEndedSession: summarizeSession(state.latestEndedSession),
     lastSample: state.lastSample,
@@ -420,27 +463,13 @@ function summarizeSession(session) {
   };
 }
 
-async function createDocument(token, path, fields) {
-  const response = await fetch(`https://firestore.googleapis.com/v1/${path}`, {
-    method: "POST",
-    headers: firestoreHeaders(token),
-    body: JSON.stringify({ fields: toFirestoreFields(fields) }),
-  });
-  const payload = await response.json();
-
-  if (!response.ok) {
-    throw new Error(payload?.error?.message || "Could not create Firestore document.");
-  }
-
-  return parseDocument(payload);
-}
-
 async function patchDocument(token, name, fields) {
   const updateMask = Object.keys(fields)
     .map((fieldPath) => `updateMask.fieldPaths=${encodeURIComponent(fieldPath)}`)
     .join("&");
   const response = await fetch(`https://firestore.googleapis.com/v1/${name}?${updateMask}`, {
     method: "PATCH",
+    signal: AbortSignal.timeout(10000),
     headers: firestoreHeaders(token),
     body: JSON.stringify({ fields: toFirestoreFields(fields) }),
   });
@@ -566,6 +595,7 @@ Options:
       --port <port>               Local port. Defaults to ${DEFAULT_PORT}.
       --poll-ms <number>          OS idle polling interval. Defaults to ${DEFAULT_POLL_MS}.
       --idle-threshold-ms <n>     Minimum idle time before a session starts. Defaults to ${DEFAULT_IDLE_THRESHOLD_MS}.
+      --merge-gap-ms <n>          Include activity gaps up to this duration. Defaults to ${DEFAULT_MERGE_GAP_MS}.
       --status                    Print running helper status, or a direct Windows idle sample.
       --install-startup           Add an HKCU startup entry for this helper.
       --uninstall-startup         Remove the HKCU startup entry.

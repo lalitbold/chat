@@ -15,6 +15,7 @@ import {
   signInAnonymously,
 } from "./chat-firestore.mjs";
 import { findRepoChangelogEntry } from "./repo-changelog.mjs";
+import { clipIdleSession, formatIdleDuration } from "../idle-time.js";
 
 const PROFILE_PATH = join(process.cwd(), ".chat-command-profile.json");
 const DEFAULT_LIMIT = 50;
@@ -550,6 +551,8 @@ async function dispatchDay(payload, context) {
 
     if (pendingRequest) {
       const idleSessions = (await loadCollection(context, "idleSessions"))
+        .map((session) => pendingRequest.isDateFiltered ? clipIdleSession(session, pendingRequest.start, pendingRequest.end) : session)
+        .filter(Boolean)
         .filter((session) => (session.decision || "pending") === "pending")
         .filter((session) => session.endedAt)
         .filter((session) => idleSessionMatches(session, pendingRequest, context))
@@ -565,6 +568,8 @@ async function dispatchDay(payload, context) {
     }
 
     const idleSessions = (await loadCollection(context, "idleSessions"))
+      .map((session) => clipIdleSession(session, request.start, request.end))
+      .filter(Boolean)
       .filter((session) => idleSessionMatches(session, request, context))
       .sort((left, right) => getTimestampMillis(left.startedAt) - getTimestampMillis(right.startedAt))
       .slice(0, context.limit);
@@ -1348,7 +1353,7 @@ function formatIdleHistory(idleSessions, request, context) {
   const personLabel = request.handle ? `@${request.handle}` : context.userName;
   const lines = [
     `Idle history for ${personLabel} on ${request.dateKey}`,
-    `System idle: ${formatDuration(totalMs)} (${idleSessions.length} session${idleSessions.length === 1 ? "" : "s"})`,
+    `System idle: ${formatIdleDuration(totalMs)} (${idleSessions.length} session${idleSessions.length === 1 ? "" : "s"})`,
   ];
 
   if (idleSessions.length === 0) {
@@ -1358,7 +1363,7 @@ function formatIdleHistory(idleSessions, request, context) {
 
   idleSessions.forEach((session) => {
     lines.push(
-      `- ${formatTimeRange(session.startedAt, session.endedAt)} (${formatDuration(getIdleSessionDurationMs(session))}) ${session.decision || "pending"}`
+      `- ${formatTimeRange(session.startedAt, session.endedAt)} (${formatIdleDuration(getIdleSessionDurationMs(session))}) ${session.decision || "pending"}`
     );
   });
 
@@ -1371,7 +1376,7 @@ function formatPendingIdleActions(idleSessions, request, context) {
   const dateText = request.isDateFiltered ? ` on ${request.dateKey}` : "";
   const lines = [
     `Pending idle actions for ${personLabel}${dateText}`,
-    `Total: ${idleSessions.length} session${idleSessions.length === 1 ? "" : "s"}, ${formatDuration(totalMs)}`,
+    `Total: ${idleSessions.length} session${idleSessions.length === 1 ? "" : "s"}, ${formatIdleDuration(totalMs)}`,
   ];
 
   if (idleSessions.length === 0) {
@@ -1381,7 +1386,7 @@ function formatPendingIdleActions(idleSessions, request, context) {
 
   idleSessions.forEach((session) => {
     lines.push(
-      `- ${formatShortId(session.id, "#")} ${formatTimeRange(session.startedAt, session.endedAt)} (${formatDuration(getIdleSessionDurationMs(session))})`
+      `- ${formatShortId(session.id, "#")} ${formatTimeRange(session.startedAt, session.endedAt)} (${formatIdleDuration(getIdleSessionDurationMs(session))})`
     );
   });
 

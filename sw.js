@@ -1,9 +1,10 @@
-const CACHE_NAME = "openbox-v7";
+const CACHE_NAME = "openbox-v8";
 const APP_SHELL = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
+  "./idle-time.js",
   "./firebase-config.js",
   "./manifest.webmanifest",
   "./icons/icon.svg",
@@ -43,6 +44,7 @@ self.addEventListener("fetch", (event) => {
     (requestUrl.pathname.endsWith("/") ||
       requestUrl.pathname.endsWith("/index.html") ||
       requestUrl.pathname.endsWith("/app.js") ||
+      requestUrl.pathname.endsWith("/idle-time.js") ||
       requestUrl.pathname.endsWith("/styles.css") ||
       requestUrl.pathname.endsWith("/manifest.webmanifest") ||
       requestUrl.pathname.endsWith("/firebase-config.js"));

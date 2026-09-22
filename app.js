@@ -33,6 +33,7 @@ import {
   where,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
+import { clipIdleSession, formatIdleDuration } from "./idle-time.js";
 
 const joinForm = document.getElementById("join-form");
 const showJoinFormButton = document.getElementById("show-join-form");
@@ -6150,7 +6151,7 @@ function postIdleSessionPrompt(session) {
   const timerText = formatIdleSessionTimerText(session.affectedTimer);
   postLocalDayMessage(
     [
-      `You were idle for ${formatDuration(session.durationMs || 0)}.`,
+      `You were idle for ${formatIdleDuration(session.durationMs || 0)}.`,
       timerText,
       "Choose what to record for this idle session. Timer time is not changed automatically.",
     ].filter(Boolean).join("\n"),
@@ -10435,7 +10436,10 @@ async function postDayStatus() {
   const workDay = await getWorkDay();
   const activeGeneralTimer = await findActiveGeneralTimer();
   const { start, end } = getDateBounds(getTodayKey());
-  const idleSessions = (await loadRoomIdleSessions()).filter((session) => idleSessionMatches(session, start, end));
+  const idleSessions = (await loadRoomIdleSessions())
+    .map((session) => clipIdleSession(session, start, end))
+    .filter(Boolean)
+    .filter((session) => idleSessionMatches(session, start, end));
   const idleSessionMs = getIdleSessionTotalMs(idleSessions);
   const activeTaskTimers = (await loadRoomTasks())
     .filter((task) => task.activeTimerStartedAt && isCurrentUserTaskTimerOwner(task))
@@ -10478,7 +10482,7 @@ async function postDayStatus() {
 
   lines.push(`Idle reminders today: ${getDayIdleReminderCount(workDay)}`);
   if (idleSessions.length > 0) {
-    lines.push(`System idle today: ${formatDuration(idleSessionMs)} (${idleSessions.length} session${idleSessions.length === 1 ? "" : "s"})`);
+    lines.push(`System idle today: ${formatIdleDuration(idleSessionMs)} (${idleSessions.length} session${idleSessions.length === 1 ? "" : "s"})`);
   }
 
   postLocalDayMessage(lines.join("\n"));
@@ -10809,20 +10813,22 @@ async function postIdleHistory(input = "") {
 
   const { start, end } = getDateBounds(request.dateKey);
   const idleSessions = (await loadRoomIdleSessions())
+    .map((session) => clipIdleSession(session, start, end))
+    .filter(Boolean)
     .filter((session) => idleSessionMatches(session, start, end, request.handle))
     .sort((left, right) => getTimestampMillis(left.startedAt) - getTimestampMillis(right.startedAt));
   const idleMs = getIdleSessionTotalMs(idleSessions);
   const personLabel = request.handle || getProfileDisplayName();
   const lines = [`Idle history for ${personLabel} on ${request.dateKey}`];
 
-  lines.push(`System idle: ${formatDuration(idleMs)} (${idleSessions.length} session${idleSessions.length === 1 ? "" : "s"})`);
+  lines.push(`System idle: ${formatIdleDuration(idleMs)} (${idleSessions.length} session${idleSessions.length === 1 ? "" : "s"})`);
 
   if (idleSessions.length === 0) {
     lines.push("No idle sessions found.");
   } else {
     idleSessions.forEach((session) => {
       lines.push(
-        `- ${formatTimeRange(session.startedAt, session.endedAt)} (${formatDuration(getIdleSessionDurationMs(session))}) ${session.decision || "pending"}`
+        `- ${formatTimeRange(session.startedAt, session.endedAt)} (${formatIdleDuration(getIdleSessionDurationMs(session))}) ${session.decision || "pending"}`
       );
     });
   }
@@ -10833,7 +10839,10 @@ async function postIdleHistory(input = "") {
 
 async function postPendingIdleActions(input = "") {
   const request = parseOptionalIdleRequest(input);
+  const bounds = request.dateKey ? getDateBounds(request.dateKey) : null;
   const idleSessions = (await loadRoomIdleSessions())
+    .map((session) => bounds ? clipIdleSession(session, bounds.start, bounds.end) : session)
+    .filter(Boolean)
     .filter((session) => (session.decision || "pending") === "pending")
     .filter((session) => session.endedAt)
     .filter((session) => optionalIdleRequestMatches(session, request))
@@ -10841,7 +10850,7 @@ async function postPendingIdleActions(input = "") {
   const idleMs = getIdleSessionTotalMs(idleSessions);
   const lines = [
     `Pending idle actions${request.dateKey ? ` for ${request.dateKey}` : ""}:`,
-    `Total: ${idleSessions.length} session${idleSessions.length === 1 ? "" : "s"}, ${formatDuration(idleMs)}`,
+    `Total: ${idleSessions.length} session${idleSessions.length === 1 ? "" : "s"}, ${formatIdleDuration(idleMs)}`,
   ];
 
   if (idleSessions.length === 0) {
@@ -10849,7 +10858,7 @@ async function postPendingIdleActions(input = "") {
   } else {
     idleSessions.forEach((session) => {
       lines.push(
-        `- ${formatIdleSessionId(session.id)} ${formatTimeRange(session.startedAt, session.endedAt)} (${formatDuration(getIdleSessionDurationMs(session))}) ${session.userName || "Unknown"}`
+        `- ${formatIdleSessionId(session.id)} ${formatTimeRange(session.startedAt, session.endedAt)} (${formatIdleDuration(getIdleSessionDurationMs(session))}) ${session.userName || "Unknown"}`
       );
     });
   }
@@ -10906,7 +10915,10 @@ async function buildTimesheet({ dateKey, handle }) {
     ? (await loadWorkDayTimeEntries(workDay.ref)).filter((entry) => timesheetEntryMatches(entry, start, end, handle))
     : [];
   const breakEntries = workDay ? getTimesheetBreakEntries(workDay, start, end, handle) : [];
-  const idleSessions = (await loadRoomIdleSessions()).filter((session) => idleSessionMatches(session, start, end, handle));
+  const idleSessions = (await loadRoomIdleSessions())
+    .map((session) => clipIdleSession(session, start, end))
+    .filter(Boolean)
+    .filter((session) => idleSessionMatches(session, start, end, handle));
   const shouldShowRunningState = dateKey === getTodayKey();
   const activeTaskTimers = shouldShowRunningState
     ? tasks
@@ -10926,7 +10938,7 @@ async function buildTimesheet({ dateKey, handle }) {
   lines.push(`Task time: ${formatDuration(taskTrackedMs)}`);
   lines.push(`General time: ${formatDuration(generalTrackedMs)}`);
   lines.push(`Break time: ${formatDuration(breakMs)}`);
-  lines.push(`System idle: ${formatDuration(idleMs)}`);
+  lines.push(`System idle: ${formatIdleDuration(idleMs)}`);
   lines.push(`Total work time: ${formatDuration(taskTrackedMs + generalTrackedMs)}`);
 
   if (workDay?.availabilityStatus === "free") {
@@ -10967,7 +10979,7 @@ async function buildTimesheet({ dateKey, handle }) {
     lines.push("Idle sessions:");
     idleSessions.forEach((session) => {
       lines.push(
-        `- ${formatTimeRange(session.startedAt, session.endedAt)} (${formatDuration(getIdleSessionDurationMs(session))}) ${session.decision || "pending"}`
+        `- ${formatTimeRange(session.startedAt, session.endedAt)} (${formatIdleDuration(getIdleSessionDurationMs(session))}) ${session.decision || "pending"}`
       );
     });
   }
@@ -11442,7 +11454,10 @@ async function buildDailyTaskSummary(options = {}) {
       entry.userId === state.profile.id &&
       isTimestampWithin(entry.stoppedAt, start, end)
   );
-  const idleSessions = (await loadRoomIdleSessions()).filter((session) => idleSessionMatches(session, start, end));
+  const idleSessions = (await loadRoomIdleSessions())
+    .map((session) => clipIdleSession(session, start, end))
+    .filter(Boolean)
+    .filter((session) => idleSessionMatches(session, start, end));
   const timeEntriesByTaskId = new Map();
 
   await Promise.all(
@@ -11502,7 +11517,7 @@ async function buildDailyTaskSummary(options = {}) {
     lines.push(`Break time: ${formatDuration(breakMs)}`);
   }
   if (idleMs > 0) {
-    lines.push(`System idle: ${formatDuration(idleMs)}`);
+    lines.push(`System idle: ${formatIdleDuration(idleMs)}`);
   }
   lines.push(`Idle reminders: ${getDayIdleReminderCount(workDay)}`);
   if (plannedTasks.length > 0) {

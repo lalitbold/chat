@@ -566,7 +566,9 @@ npm run idle:uninstall-startup
 npm run chat:command -- "/day idle today"
 ```
 
-The helper listens on `http://127.0.0.1:17347`, samples Win32 `GetLastInputInfo` about every 15 seconds, and starts an idle session after 5 minutes by default. The browser sends the current room/user context to the helper while you are signed in. The helper writes your `presence/{userId}` document and `idleSessions` records, but it does not mutate timers.
+The helper listens on `http://127.0.0.1:17347`, samples Win32 `GetLastInputInfo` about every 5 seconds, and starts an idle session after 1 minute by default, including that first minute. Activity spanning at most 2 minutes between breaks stays in the same session and counts toward its duration. More than 2 minutes of activity ends the session at the first observed return, so the Keep/Discard prompt is delayed until the return is confirmed. Configure these limits with `--idle-threshold-ms` and `--merge-gap-ms`. Polling gives approximate boundaries (normally within one polling interval), not exact input-event timestamps. The browser sends the current room/user context to the helper while you are signed in. The helper writes your `presence/{userId}` document and `idleSessions` records, but it does not mutate timers. Failed session writes retry while the helper remains running; pending writes are held in memory.
+
+Idle reports show seconds and limit each session to the selected calendar day. Existing records are not rewritten, and previously unrecorded short breaks cannot be recovered. Restart an already-running helper to load code changes. Existing startup entries contain explicit polling/threshold settings; run `npm run idle:install-startup` again to adopt the new defaults for future logins.
 
 When you return from idle, the browser shows a local prompt to keep or discard the idle session. In v1 this records `decision: "kept"` or `decision: "discarded"` only; timer elapsed time is not automatically adjusted. `/day status`, `/day summary`, `/day timesheet`, and `/day idle` include recorded system idle totals.
 
