@@ -2561,19 +2561,26 @@ function renderTaskListMessage(message) {
   const list = document.createElement("ol");
   list.className = "task-list";
 
-  message.tasks.forEach((task) => {
-    list.append(
-      renderTaskListItem(task, {
-        maskIdentity: Boolean(message.maskIdentity),
-        rolloverReview: Boolean(message.rolloverReview),
-        rolloverDateKey: message.rolloverDateKey || "",
-        showTodayPlanActions: Boolean(message.showTodayPlanActions),
-        privateAliases: message.privateAliases || {},
-      })
-    );
-  });
+  if (message.tasks.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "task-chart-empty";
+    empty.textContent = message.emptyText || "No tasks remain in this list.";
+    container.append(empty);
+  } else {
+    message.tasks.forEach((task) => {
+      list.append(
+        renderTaskListItem(task, {
+          maskIdentity: Boolean(message.maskIdentity),
+          rolloverReview: Boolean(message.rolloverReview),
+          rolloverDateKey: message.rolloverDateKey || "",
+          showTodayPlanActions: Boolean(message.showTodayPlanActions),
+          privateAliases: message.privateAliases || {},
+        })
+      );
+    });
 
-  container.append(list);
+    container.append(list);
+  }
 
   const footer = document.createElement("div");
   footer.className = "task-list-footer";
@@ -3900,7 +3907,7 @@ function handleMessageActionClick(event) {
   }
 
   if (actionButton.dataset.action === "task-continue") {
-    runLocalAction(actionButton, () => continueTaskTimer(actionButton.dataset.taskId || ""));
+    runTaskListAction(actionButton, () => continueTaskTimer(actionButton.dataset.taskId || ""), "task-continue");
   }
 
   if (actionButton.dataset.action === "day-break-stop") {
@@ -3923,15 +3930,30 @@ function handleMessageActionClick(event) {
   }
 
   if (actionButton.dataset.action === "task-start") {
-    runLocalAction(actionButton, () => startTaskTimer(actionButton.dataset.taskId || ""), "Timer started.");
+    runTaskListAction(
+      actionButton,
+      () => startTaskTimer(actionButton.dataset.taskId || ""),
+      "task-start",
+      "Timer started."
+    );
   }
 
   if (actionButton.dataset.action === "task-complete") {
-    runLocalAction(actionButton, () => completeTask(actionButton.dataset.taskId || ""), "Task completed.");
+    runTaskListAction(
+      actionButton,
+      () => completeTask(actionButton.dataset.taskId || ""),
+      "task-complete",
+      "Task completed."
+    );
   }
 
   if (actionButton.dataset.action === "task-reopen") {
-    runLocalAction(actionButton, () => reopenTask(actionButton.dataset.taskId || ""), "Task reopened.");
+    runTaskListAction(
+      actionButton,
+      () => reopenTask(actionButton.dataset.taskId || ""),
+      "task-reopen",
+      "Task reopened."
+    );
   }
 
   if (actionButton.dataset.action === "message-react") {
@@ -3991,37 +4013,55 @@ function handleMessageActionClick(event) {
   }
 
   if (actionButton.dataset.action === "task-day-carry") {
-    runLocalAction(
+    runTaskListAction(
       actionButton,
-      () => carryDailyTaskToToday(actionButton.dataset.taskId || "", actionButton.dataset.sourceDateKey || ""),
+      () =>
+        carryDailyTaskToToday(actionButton.dataset.taskId || "", actionButton.dataset.sourceDateKey || "", {
+          refreshReview: false,
+        }),
+      "task-day-carry",
       "Task carried to today."
     );
   }
 
   if (actionButton.dataset.action === "task-day-add-today") {
-    runLocalAction(actionButton, () => addTaskToTodayPlan(actionButton.dataset.taskId || ""), "Task planned for today.");
+    runTaskListAction(
+      actionButton,
+      () => addTaskToTodayPlan(actionButton.dataset.taskId || ""),
+      "task-day-add-today",
+      "Task planned for today."
+    );
   }
 
   if (actionButton.dataset.action === "task-day-remove-today") {
-    runLocalAction(
+    runTaskListAction(
       actionButton,
       () => removeTaskFromTodayPlan(actionButton.dataset.taskId || ""),
+      "task-day-remove-today",
       "Task removed from today's plan."
     );
   }
 
   if (actionButton.dataset.action === "task-day-complete") {
-    runLocalAction(
+    runTaskListAction(
       actionButton,
-      () => completeDailyTaskReviewItem(actionButton.dataset.taskId || "", actionButton.dataset.sourceDateKey || ""),
+      () =>
+        completeDailyTaskReviewItem(actionButton.dataset.taskId || "", actionButton.dataset.sourceDateKey || "", {
+          refreshReview: false,
+        }),
+      "task-day-complete",
       "Task completed."
     );
   }
 
   if (actionButton.dataset.action === "task-day-skip") {
-    runLocalAction(
+    runTaskListAction(
       actionButton,
-      () => skipDailyTaskReviewItem(actionButton.dataset.taskId || "", actionButton.dataset.sourceDateKey || ""),
+      () =>
+        skipDailyTaskReviewItem(actionButton.dataset.taskId || "", actionButton.dataset.sourceDateKey || "", {
+          refreshReview: false,
+        }),
+      "task-day-skip",
       "Task skipped."
     );
   }
@@ -4039,7 +4079,12 @@ function handleMessageActionClick(event) {
   }
 
   if (actionButton.dataset.action === "task-stop") {
-    runLocalAction(actionButton, () => stopTaskTimer(actionButton.dataset.taskId || ""), "Timer stopped.");
+    runTaskListAction(
+      actionButton,
+      () => stopTaskTimer(actionButton.dataset.taskId || ""),
+      "task-stop",
+      "Timer stopped."
+    );
   }
 
   if (actionButton.dataset.action === "general-timer-continue") {
@@ -6338,7 +6383,7 @@ async function postCodexTaskList() {
     "Codex tasks",
     tasks,
     `Codex tasks:\n${tasks.map(formatCodexTaskLine).join("\n")}\nTotal: ${tasks.length}`,
-    { showTodayPlanActions: true }
+    { listType: "codex", showTodayPlanActions: true }
   );
   setStatus(`${tasks.length} Codex task${tasks.length === 1 ? "" : "s"} listed.`, "success");
 }
@@ -7342,6 +7387,7 @@ async function postTeamTaskList(memberIdInput = "") {
     tasks,
     `${member ? `Tasks for ${member.name}` : "Team tasks"}:\n${tasks.map((task) => `${formatTaskId(task.id)} - ${task.description || "Untitled task"}`).join("\n")}`,
     {
+      listType: "team",
       showTodayPlanActions: true,
     }
   );
@@ -8134,7 +8180,7 @@ async function postTaskList(filterText = "") {
     heading.replace(/:$/, ""),
     pendingTasksWithPlanState,
     `${heading}\n${taskLines.join("\n")}\n${totalLine}`,
-    { showTodayPlanActions: true, todayPlanResetHint }
+    { listType: "pending", showTodayPlanActions: true, todayPlanResetHint }
   );
   setStatus(`${pendingTasksWithPlanState.length} pending task${pendingTasksWithPlanState.length === 1 ? "" : "s"} listed.`, "success");
 }
@@ -8190,7 +8236,7 @@ async function postTaskSearch(input = "") {
     heading.replace(/:$/, ""),
     matchingTasksWithPlanState,
     `${heading}\n${taskLines.join("\n")}\n${totalLine}`,
-    { privateAliases, showTodayPlanActions: true }
+    { listType: "search", privateAliases, showTodayPlanActions: true }
   );
   setStatus(`${matchingTasksWithPlanState.length} matching task${matchingTasksWithPlanState.length === 1 ? "" : "s"} listed.`, "success");
 }
@@ -8342,7 +8388,7 @@ async function postCompletedTaskList(filterText = "") {
     heading.replace(/:$/, ""),
     completedTasks,
     `${heading}\n${taskLines.join("\n")}\n${totalLine}`,
-    { privateAliases }
+    { listType: "completed", privateAliases }
   );
   setStatus(`${completedTasks.length} completed task${completedTasks.length === 1 ? "" : "s"} listed.`, "success");
 }
@@ -8726,7 +8772,12 @@ async function postDailyTaskPlan(dateInput = "") {
     `Planned tasks for ${formatTaskPlanDate(dateKey)}:\n${tasksWithPlanState
       .map((task) => `${formatTaskId(task.id)} - ${task.description || "Untitled task"}`)
       .join("\n")}`,
-    { plannedDateKey: dateKey, showTodayPlanActions: dateKey === getTodayKey(), todayPlanResetHint }
+    {
+      listType: "planned",
+      plannedDateKey: dateKey,
+      showTodayPlanActions: dateKey === getTodayKey(),
+      todayPlanResetHint,
+    }
   );
   setStatus(`${tasksWithPlanState.length} planned task${tasksWithPlanState.length === 1 ? "" : "s"} listed.`, "success");
 }
@@ -8777,7 +8828,7 @@ async function postDailyTaskRolloverReview(options = {}) {
   setStatus(`${tasksWithComments.length} rollover task${tasksWithComments.length === 1 ? "" : "s"} ready.`, "success");
 }
 
-async function carryDailyTaskToToday(taskIdInput, sourceDateKey = "") {
+async function carryDailyTaskToToday(taskIdInput, sourceDateKey = "", options = {}) {
   const task = await findTaskById(taskIdInput);
 
   if (!task) {
@@ -8813,20 +8864,20 @@ async function carryDailyTaskToToday(taskIdInput, sourceDateKey = "") {
   postLocalTaskMessage(`Carried Task ${formatTaskId(task.id)} to today: ${task.description || "Untitled task"}`);
   setStatus("Task carried to today.", "success");
 
-  if (sourceDateKey) {
+  if (sourceDateKey && options.refreshReview !== false) {
     await postDailyTaskRolloverReview({ auto: false, sourceDateKey });
   }
 }
 
-async function completeDailyTaskReviewItem(taskIdInput, sourceDateKey = "") {
+async function completeDailyTaskReviewItem(taskIdInput, sourceDateKey = "", options = {}) {
   await completeTask(taskIdInput);
 
-  if (sourceDateKey) {
+  if (sourceDateKey && options.refreshReview !== false) {
     await postDailyTaskRolloverReview({ auto: false, sourceDateKey });
   }
 }
 
-async function skipDailyTaskReviewItem(taskIdInput, sourceDateKey = "") {
+async function skipDailyTaskReviewItem(taskIdInput, sourceDateKey = "", options = {}) {
   const task = await findTaskById(taskIdInput);
 
   if (!task) {
@@ -8854,7 +8905,7 @@ async function skipDailyTaskReviewItem(taskIdInput, sourceDateKey = "") {
   postLocalTaskMessage(`Skipped Task ${formatTaskId(task.id)} for today's rollover review.`);
   setStatus("Rollover task skipped.", "success");
 
-  if (sourceDateKey) {
+  if (sourceDateKey && options.refreshReview !== false) {
     await postDailyTaskRolloverReview({ auto: false, sourceDateKey });
   }
 }
@@ -12515,6 +12566,8 @@ function postLocalTaskListMessage(heading, tasks, fallbackText, options = {}) {
   postLocalMessage(fallbackText, "Tasks (only you)", "task-list", [], {
     heading,
     tasks,
+    listType: options.listType || "mixed",
+    emptyText: options.emptyText || "No tasks remain in this list.",
     maskIdentity: isPrivacyModeActive(),
     rolloverReview: Boolean(options.rolloverReview),
     rolloverDateKey: options.rolloverDateKey || "",
@@ -12577,6 +12630,7 @@ function postLocalDailyTaskReviewMessage(heading, tasks, sourceDateKey) {
     tasks,
     `${heading}:\n${tasks.map((task) => `${formatTaskId(task.id)} - ${task.description || "Untitled task"}`).join("\n")}`,
     {
+      listType: "rollover",
       rolloverReview: true,
       rolloverDateKey: sourceDateKey,
     }
@@ -12765,6 +12819,81 @@ function runLocalAction(actionButton, action, successText) {
     });
 }
 
+function runTaskListAction(actionButton, action, taskAction, successText = "") {
+  const messageId = actionButton.closest(".message")?.dataset.messageId || "";
+  const localMessage = state.localMessages.find((message) => message.id === messageId);
+
+  if (localMessage?.type !== "task-list") {
+    runLocalAction(actionButton, action, successText);
+    return;
+  }
+
+  const taskId = actionButton.dataset.taskId || "";
+  runLocalAction(actionButton, async () => {
+    const result = await action();
+    await refreshLocalTaskListAfterAction(messageId, taskId, taskAction);
+    return result;
+  });
+}
+
+async function refreshLocalTaskListAfterAction(messageId, taskId, taskAction) {
+  const index = state.localMessages.findIndex((message) => message.id === messageId);
+  const message = state.localMessages[index];
+
+  if (index === -1 || message?.type !== "task-list" || !Array.isArray(message.tasks)) {
+    return;
+  }
+
+  const latestTask = await findTaskById(taskId);
+
+  if (!latestTask) {
+    return;
+  }
+
+  const taskWithComments = await loadTaskCommentSummary(latestTask);
+  const [refreshedTask] = await attachTodayPlanState([taskWithComments]);
+  const shouldRemove = shouldRemoveTaskFromLocalList(message, refreshedTask, taskAction);
+  const tasks = shouldRemove
+    ? message.tasks.filter((task) => task.id !== taskId)
+    : message.tasks.map((task) => (task.id === taskId ? refreshedTask : task));
+
+  state.localMessages[index] = {
+    ...message,
+    tasks,
+    text: formatLocalTaskListFallback(message.heading, tasks),
+  };
+  syncStealthLayout();
+  updatePrivacyIndicator();
+  updateLocalMessagesUi();
+  renderMessages(getMessageScrollPreservationOptions());
+}
+
+function shouldRemoveTaskFromLocalList(message, task, taskAction) {
+  if (message.listType === "pending") {
+    return task.status !== "pending";
+  }
+
+  if (message.listType === "completed") {
+    return task.status !== "complete";
+  }
+
+  if (message.listType === "planned") {
+    return task.status === "complete" || taskAction === "task-day-remove-today";
+  }
+
+  if (message.listType === "rollover") {
+    return task.status === "complete" || ["task-day-carry", "task-day-skip"].includes(taskAction);
+  }
+
+  return false;
+}
+
+function formatLocalTaskListFallback(heading, tasks) {
+  const taskLines = tasks.map((task) => `${formatTaskId(task.id)} - ${task.description || "Untitled task"}`);
+  const total = `Total: ${tasks.length} task${tasks.length === 1 ? "" : "s"}`;
+  return [heading || "Task list", ...taskLines, total].join("\n");
+}
+
 function replaceLocalMessage(messageId, text, extra = {}) {
   const index = state.localMessages.findIndex((message) => message.id === messageId);
 
@@ -12780,7 +12909,7 @@ function replaceLocalMessage(messageId, text, extra = {}) {
     ...extra,
     text,
     actions: [],
-    createdAt: new Date(),
+    createdAt: extra.createdAt || state.localMessages[index].createdAt,
   };
   syncStealthLayout();
   updatePrivacyIndicator();
