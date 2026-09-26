@@ -2245,6 +2245,10 @@ function renderMessage(message, context = {}) {
     if (Array.isArray(message.taskPreviews) && message.taskPreviews.length > 0) {
       wrapper.append(renderInlineTaskPreviews(message.taskPreviews));
     }
+
+    if (message.taskActionMenu && message.task?.id) {
+      wrapper.append(renderTaskMessageActions(message.task));
+    }
   }
 
   if (message.isLocalOnly && Array.isArray(message.actions) && message.actions.length > 0) {
@@ -3028,6 +3032,13 @@ function renderTaskActionsOverflow(task, definitions) {
 
   menu.append(trigger, panel);
   return menu;
+}
+
+function renderTaskMessageActions(task) {
+  const actions = document.createElement("div");
+  actions.className = "task-message-actions";
+  actions.append(renderTaskActionsOverflow(task, getTaskActionDefinitions(task)));
+  return actions;
 }
 
 function renderTaskViewMessage(message) {
@@ -8116,7 +8127,10 @@ async function createTask(description, options = {}) {
     if (isPrivacyModeActive()) {
       postLocalTaskMessage(message);
     } else {
-      await postTaskMessage(message);
+      await postTaskMessage(message, {
+        taskActionMenu: true,
+        task: serializeTaskForMessage(task),
+      });
     }
     setStatus("Task created.", "success");
   }
@@ -12471,13 +12485,14 @@ async function loadCompletedRoomTasks() {
   }));
 }
 
-async function postTaskMessage(text) {
+async function postTaskMessage(text, extra = {}) {
   await addDoc(collection(state.db, "rooms", state.roomId, "messages"), {
     text,
     senderId: state.profile.id,
     senderName: "Tasks",
     type: "task",
     createdAt: serverTimestamp(),
+    ...extra,
   });
 }
 

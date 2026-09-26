@@ -1270,6 +1270,12 @@ button.task-list-id:focus-visible {
   outline: none;
 }
 
+.task-message-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
 .task-view-share-actions {
   display: flex;
   justify-content: flex-end;
