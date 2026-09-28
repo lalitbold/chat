@@ -1276,6 +1276,96 @@ button.task-list-id:focus-visible {
   margin-top: 8px;
 }
 
+.task-recurrence-dialog {
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+  color: var(--text);
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.24);
+}
+
+.task-recurrence-dialog::backdrop {
+  background: rgba(15, 23, 42, 0.46);
+}
+
+.task-recurrence-form {
+  display: grid;
+  gap: 18px;
+  padding: 20px;
+}
+
+.task-recurrence-heading,
+.task-recurrence-actions,
+.task-recurrence-presets {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.task-recurrence-heading {
+  justify-content: space-between;
+}
+
+.task-recurrence-heading h2 {
+  max-width: 420px;
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+  font-size: 1.05rem;
+  letter-spacing: 0;
+}
+
+.task-recurrence-presets {
+  flex-wrap: wrap;
+}
+
+.task-recurrence-weekdays {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.task-recurrence-weekdays legend {
+  padding: 0 6px;
+  font-weight: 700;
+}
+
+.task-recurrence-weekdays label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.task-recurrence-weekdays input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.task-recurrence-error {
+  min-height: 1.25em;
+  margin: 0;
+  color: #b91c1c;
+  font-size: 0.82rem;
+}
+
+.task-recurrence-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.task-recurrence-actions .danger-button {
+  margin-right: auto;
+}
+
 .task-view-share-actions {
   display: flex;
   justify-content: flex-end;
@@ -1490,6 +1580,11 @@ button.task-list-id:focus-visible {
   color: #15803d;
 }
 
+.task-list-badge.recurring {
+  background: rgba(15, 118, 110, 0.1);
+  color: #0f766e;
+}
+
 .task-label {
   background: rgba(130, 108, 55, 0.12);
   color: #6f5b24;
@@ -1700,6 +1795,14 @@ body.stealth-active .composer-count.active {
   .task-list-main > .task-list-actions {
     justify-content: flex-start;
     max-width: none;
+  }
+
+  .task-recurrence-form {
+    padding: 16px;
+  }
+
+  .task-recurrence-weekdays {
+    grid-template-columns: 1fr;
   }
 
   body.preview-active .messages {

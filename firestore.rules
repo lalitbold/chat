@@ -79,10 +79,28 @@ service cloud.firestore {
           && request.resource.data.userId == request.auth.uid;
       }
 
-      match /tasks/{taskId} {
+      match /taskRecurrences/{recurrenceId} {
         allow read: if request.auth != null;
         allow create: if request.auth != null
           && request.resource.data.createdBy == request.auth.uid;
+        allow update: if request.auth != null;
+      }
+
+      match /tasks/{taskId} {
+        allow read: if request.auth != null;
+        allow create: if request.auth != null
+          && (
+            request.resource.data.createdBy == request.auth.uid
+            || (
+              request.resource.data.recurrenceId is string
+              && request.resource.data.recurrenceDateKey is string
+              && exists(/databases/$(database)/documents/rooms/$(roomId)/taskRecurrences/$(request.resource.data.recurrenceId))
+              && get(/databases/$(database)/documents/rooms/$(roomId)/taskRecurrences/$(request.resource.data.recurrenceId)).data.status == "active"
+              && get(/databases/$(database)/documents/rooms/$(roomId)/taskRecurrences/$(request.resource.data.recurrenceId)).data.createdBy == request.resource.data.createdBy
+              && get(/databases/$(database)/documents/rooms/$(roomId)/taskRecurrences/$(request.resource.data.recurrenceId)).data.description == request.resource.data.description
+              && get(/databases/$(database)/documents/rooms/$(roomId)/taskRecurrences/$(request.resource.data.recurrenceId)).data.labels == request.resource.data.labels
+            )
+          );
         allow update: if request.auth != null;
 
         match /timeEntries/{entryId} {

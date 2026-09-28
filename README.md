@@ -184,6 +184,25 @@ rooms/{roomId}/tasks/{taskId}
   codexQueuedAt
   codexCompletedAt
   codexResultSummary
+  recurrenceId
+  recurrenceDateKey
+  recurrenceWeekdays
+  recurrenceStatus
+
+rooms/{roomId}/taskRecurrences/{sourceTaskId}
+  sourceTaskId
+  description
+  labels
+  weekdays
+  timezone
+  status
+  startDateKey
+  createdAt
+  createdBy
+  createdByName
+  updatedAt
+  updatedBy
+  updatedByName
 
 rooms/{roomId}/tasks/{taskId}/timeEntries/{entryId}
   taskId
@@ -263,6 +282,8 @@ appSettings/alexa/commandAudit/{auditId}
 
 - `/task create fix that issue #bug #urgent` creates a pending task with optional labels.
 - `/task create-start fix that issue #bug` creates a task and starts its timer immediately.
+- Task three-dot menus include Repeat settings. Select any weekdays, use the Every day/Weekdays/Weekends shortcuts, or stop an existing recurrence.
+- The original task is the first occurrence. Future matching days create separate tasks when the room opens, becomes visible, or remains open across midnight. Missed days are not backfilled.
 - `/task list` shows the pending task list only to you. Completed tasks are hidden by default.
 - `/task list #bug` shows pending tasks with that label only to you.
 - `/task search <query>` searches tasks by visible task fields and comments, and shows results only to you.

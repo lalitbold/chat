@@ -26,6 +26,7 @@ import {
   onSnapshot,
   orderBy,
   query,
+  runTransaction,
   serverTimestamp,
   startAfter,
   setDoc,
@@ -83,6 +84,13 @@ const checkNotificationsButton = document.getElementById("check-notifications");
 const toggleNotificationsButton = document.getElementById("toggle-notifications");
 const testNotificationButton = document.getElementById("test-notification");
 const logoutButton = document.getElementById("logout-account");
+const taskRecurrenceDialog = document.getElementById("task-recurrence-dialog");
+const taskRecurrenceForm = document.getElementById("task-recurrence-form");
+const taskRecurrenceTitle = document.getElementById("task-recurrence-title");
+const taskRecurrenceError = document.getElementById("task-recurrence-error");
+const closeTaskRecurrenceButton = document.getElementById("close-task-recurrence");
+const cancelTaskRecurrenceButton = document.getElementById("cancel-task-recurrence");
+const stopTaskRecurrenceButton = document.getElementById("stop-task-recurrence");
 const DEFAULT_TITLE = "OpenBox";
 
 const DEFAULT_ROOM_COMMANDS = {
@@ -752,6 +760,9 @@ const state = {
   localCodexResultSyncIntervalId: null,
   idleHelperSyncIntervalId: null,
   idleHelperSeenSessionIds: new Set(),
+  taskRecurrenceTaskId: null,
+  taskRecurrenceSyncTimeoutId: null,
+  isSyncingTaskRecurrences: false,
 };
 
 boot();
@@ -940,6 +951,15 @@ function wireEvents() {
   showJoinFormButton.addEventListener("click", () => setJoinFormExpanded(true));
   roomPasscodeInput.addEventListener("input", scheduleAvailableGroupsRefresh);
   availableGroupsList.addEventListener("click", handleAvailableGroupClick);
+  taskRecurrenceForm.addEventListener("submit", saveTaskRecurrence);
+  taskRecurrenceForm.addEventListener("click", handleTaskRecurrenceFormClick);
+  taskRecurrenceDialog.addEventListener("close", () => {
+    state.taskRecurrenceTaskId = null;
+    taskRecurrenceError.textContent = "";
+  });
+  closeTaskRecurrenceButton.addEventListener("click", closeTaskRecurrenceDialog);
+  cancelTaskRecurrenceButton.addEventListener("click", closeTaskRecurrenceDialog);
+  stopTaskRecurrenceButton.addEventListener("click", stopTaskRecurrence);
 
   createRoomButton.addEventListener("click", () => {
     roomIdInput.value = generateRoomId();
@@ -1785,6 +1805,8 @@ async function connectToRoom(roomId, roomPasscode = "", roomData = null) {
   scheduleSelfReminders();
   startTeamFollowupReminderSync();
   void announceTodaysLeaves();
+  void syncTodaysRecurringTasks();
+  scheduleTaskRecurrenceSync();
   void postDailyTaskRolloverReview({ auto: true });
   void syncActiveBreakState();
 }
@@ -2114,6 +2136,7 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   clearTeamFollowupReminders();
   clearDayIdleTaskReminder();
   clearDayScheduleChecks();
+  clearTaskRecurrenceSync();
   clearMessageMaskRevealTimer();
   clearPrivacyPreviewTimer();
   state.roomId = null;
@@ -2128,6 +2151,8 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   state.teamFollowupReminderTimeouts = new Map();
   state.activeBreakStartedAt = null;
   state.lastBreakActivityPromptAt = 0;
+  state.taskRecurrenceTaskId = null;
+  state.isSyncingTaskRecurrences = false;
   state.isAdvancedSettingsVisible = false;
   state.pendingInvitePrivacyMode = false;
   state.isClaimingPrivacyFeatureInvite = false;
@@ -2154,6 +2179,7 @@ function disconnectFromRoom(clearSession = true, resetStealthState = true) {
   leaveRoomButton.disabled = true;
   setComposerState(false);
   hideShareLinkPanel();
+  closeTaskRecurrenceDialog();
   setAdvancedSettingsVisibility(false);
   syncStealthLayout();
   syncBreakVisualState();
@@ -2867,6 +2893,16 @@ function renderTaskListItem(task, options = {}) {
     meta.append(codex);
   }
 
+  if (task.recurrenceId) {
+    const recurring = document.createElement("span");
+    recurring.className = "task-list-badge recurring";
+    recurring.textContent =
+      task.recurrenceStatus === "stopped"
+        ? "Repeat stopped"
+        : `Repeats ${formatTaskRecurrenceSchedule(task.recurrenceWeekdays)}`;
+    meta.append(recurring);
+  }
+
   if (task.plannedToday) {
     const planned = document.createElement("span");
     planned.className = "task-list-badge planned";
@@ -2972,6 +3008,7 @@ function getTaskActionDefinitions(task, options = {}) {
   }
 
   definitions.push(
+    { label: "Repeat settings", action: "task-recurrence-settings" },
     { label: "Edit", action: "task-edit-draft", description: task.description || "" },
     { label: "Add comment", action: "task-comment-draft" },
     { label: commentCount > 0 ? `Comments (${commentCount})` : "Comments", action: "task-comments-list" },
@@ -3700,6 +3737,15 @@ function renderTaskPreviewCard(task, options = {}) {
     meta.append(codex);
   }
 
+  if (task.recurrenceId) {
+    const recurring = document.createElement("span");
+    recurring.textContent =
+      task.recurrenceStatus === "stopped"
+        ? "Repeat stopped"
+        : `Repeats ${formatTaskRecurrenceSchedule(task.recurrenceWeekdays)}`;
+    meta.append(recurring);
+  }
+
   card.append(meta);
 
   card.append(renderTaskSubtasksPanel(task, { compact: true }));
@@ -4012,6 +4058,17 @@ function handleMessageActionClick(event) {
   if (actionButton.dataset.action === "task-view") {
     actionButton.disabled = true;
     void postTaskView(actionButton.dataset.taskId || "").finally(() => {
+      actionButton.disabled = false;
+    });
+  }
+
+  if (actionButton.dataset.action === "task-recurrence-settings") {
+    actionButton.disabled = true;
+    const menu = actionButton.closest("details");
+    if (menu) {
+      menu.open = false;
+    }
+    void openTaskRecurrenceDialog(actionButton.dataset.taskId || "").finally(() => {
       actionButton.disabled = false;
     });
   }
@@ -8101,6 +8158,10 @@ async function createTask(description, options = {}) {
     codexQueuedAt: null,
     codexCompletedAt: null,
     codexResultSummary: null,
+    recurrenceId: null,
+    recurrenceDateKey: null,
+    recurrenceWeekdays: [],
+    recurrenceStatus: null,
   });
 
   const task = {
@@ -8120,6 +8181,10 @@ async function createTask(description, options = {}) {
     codexQueuedAt: null,
     codexCompletedAt: null,
     codexResultSummary: null,
+    recurrenceId: null,
+    recurrenceDateKey: null,
+    recurrenceWeekdays: [],
+    recurrenceStatus: null,
   };
 
   if (shouldAnnounce) {
@@ -8154,6 +8219,392 @@ async function createAndStartTask(description) {
   }
 
   await startTaskTimer(task.id);
+}
+
+async function openTaskRecurrenceDialog(taskIdInput) {
+  const task = await findTaskById(taskIdInput);
+
+  if (!task) {
+    setStatus("Task not found.", "error");
+    return;
+  }
+
+  const recurrence = task.recurrenceId ? await loadTaskRecurrence(task.recurrenceId) : null;
+  const selectedWeekdays = normalizeTaskRecurrenceWeekdays(
+    recurrence?.weekdays || task.recurrenceWeekdays
+  );
+
+  state.taskRecurrenceTaskId = task.id;
+  taskRecurrenceTitle.textContent = `${formatTaskId(task.id)} ${task.description || "Untitled task"}`;
+  taskRecurrenceError.textContent = "";
+  stopTaskRecurrenceButton.hidden = recurrence?.status !== "active";
+
+  taskRecurrenceForm.querySelectorAll('input[name="recurrenceWeekday"]').forEach((input) => {
+    input.checked = selectedWeekdays.includes(input.value);
+  });
+
+  if (!taskRecurrenceDialog.open) {
+    taskRecurrenceDialog.showModal();
+  }
+}
+
+function closeTaskRecurrenceDialog() {
+  if (taskRecurrenceDialog?.open) {
+    taskRecurrenceDialog.close();
+  }
+  state.taskRecurrenceTaskId = null;
+  if (taskRecurrenceError) {
+    taskRecurrenceError.textContent = "";
+  }
+}
+
+function handleTaskRecurrenceFormClick(event) {
+  const presetButton = event.target.closest("[data-recurrence-preset]");
+
+  if (!presetButton) {
+    return;
+  }
+
+  const selectedWeekdays = new Set(expandWeekdayToken(presetButton.dataset.recurrencePreset || ""));
+  taskRecurrenceForm.querySelectorAll('input[name="recurrenceWeekday"]').forEach((input) => {
+    input.checked = selectedWeekdays.has(input.value);
+  });
+  taskRecurrenceError.textContent = "";
+}
+
+async function saveTaskRecurrence(event) {
+  event.preventDefault();
+  const taskId = state.taskRecurrenceTaskId || "";
+  const weekdays = getSelectedTaskRecurrenceWeekdays();
+
+  if (weekdays.length === 0) {
+    taskRecurrenceError.textContent = "Select at least one day.";
+    return;
+  }
+
+  setTaskRecurrenceFormDisabled(true);
+
+  try {
+    const task = await findTaskById(taskId);
+
+    if (!task) {
+      taskRecurrenceError.textContent = "Task was not found.";
+      return;
+    }
+
+    const recurrenceId = task.recurrenceId || task.id;
+    const existingRecurrence = await loadTaskRecurrence(recurrenceId);
+    const recurrenceRef = getTaskRecurrenceRef(recurrenceId);
+    const recurrenceData = {
+      sourceTaskId: existingRecurrence?.sourceTaskId || task.id,
+      description: existingRecurrence?.description || task.description || "Untitled task",
+      labels: Array.isArray(existingRecurrence?.labels)
+        ? existingRecurrence.labels
+        : Array.isArray(task.labels)
+          ? task.labels
+          : [],
+      weekdays,
+      timezone: existingRecurrence?.timezone || DEFAULT_DAY_SCHEDULE_TIMEZONE,
+      status: "active",
+      startDateKey: existingRecurrence?.startDateKey || getTodayKey(),
+      updatedAt: serverTimestamp(),
+      updatedBy: state.profile.id,
+      updatedByName: getProfileDisplayName(),
+    };
+
+    if (!existingRecurrence) {
+      recurrenceData.createdAt = serverTimestamp();
+      recurrenceData.createdBy = state.profile.id;
+      recurrenceData.createdByName = getProfileDisplayName();
+    }
+
+    await setDoc(recurrenceRef, recurrenceData, { merge: true });
+    const updatedTaskIds = await updateTaskRecurrenceMetadata(task, recurrenceId, weekdays, "active");
+    updateTaskRecurrenceSnapshots(updatedTaskIds, recurrenceId, weekdays, "active");
+    await postTaskMessage(
+      `Task ${formatTaskId(task.id)} repeats ${formatTaskRecurrenceSchedule(weekdays)}: ${task.description || "Untitled task"}`
+    );
+    closeTaskRecurrenceDialog();
+    await syncTodaysRecurringTasks();
+    scheduleTaskRecurrenceSync();
+    setStatus("Task recurrence saved.", "success");
+  } catch (error) {
+    console.error("Task recurrence save failed:", error);
+    taskRecurrenceError.textContent = "Repeat settings could not be saved.";
+    setStatus("Task recurrence could not be saved.", "error");
+  } finally {
+    setTaskRecurrenceFormDisabled(false);
+  }
+}
+
+async function stopTaskRecurrence() {
+  const taskId = state.taskRecurrenceTaskId || "";
+  setTaskRecurrenceFormDisabled(true);
+
+  try {
+    const task = await findTaskById(taskId);
+
+    if (!task?.recurrenceId) {
+      taskRecurrenceError.textContent = "This task is not recurring.";
+      return;
+    }
+
+    const recurrence = await loadTaskRecurrence(task.recurrenceId);
+    const weekdays = normalizeTaskRecurrenceWeekdays(recurrence?.weekdays || task.recurrenceWeekdays);
+    await updateDoc(getTaskRecurrenceRef(task.recurrenceId), {
+      status: "stopped",
+      stoppedAt: serverTimestamp(),
+      stoppedBy: state.profile.id,
+      stoppedByName: getProfileDisplayName(),
+      updatedAt: serverTimestamp(),
+    });
+    const updatedTaskIds = await updateTaskRecurrenceMetadata(
+      task,
+      task.recurrenceId,
+      weekdays,
+      "stopped"
+    );
+    updateTaskRecurrenceSnapshots(updatedTaskIds, task.recurrenceId, weekdays, "stopped");
+    await postTaskMessage(
+      `Task ${formatTaskId(task.id)} recurrence stopped: ${task.description || "Untitled task"}`
+    );
+    closeTaskRecurrenceDialog();
+    setStatus("Task recurrence stopped.", "success");
+  } catch (error) {
+    console.error("Task recurrence stop failed:", error);
+    taskRecurrenceError.textContent = "Recurring task could not be stopped.";
+    setStatus("Task recurrence could not be stopped.", "error");
+  } finally {
+    setTaskRecurrenceFormDisabled(false);
+  }
+}
+
+function getSelectedTaskRecurrenceWeekdays() {
+  return normalizeTaskRecurrenceWeekdays(
+    [...taskRecurrenceForm.querySelectorAll('input[name="recurrenceWeekday"]:checked')].map(
+      (input) => input.value
+    )
+  );
+}
+
+function setTaskRecurrenceFormDisabled(disabled) {
+  taskRecurrenceForm.querySelectorAll("button, input").forEach((control) => {
+    control.disabled = disabled;
+  });
+}
+
+function getTaskRecurrenceRef(recurrenceId) {
+  return doc(state.db, "rooms", state.roomId, "taskRecurrences", recurrenceId);
+}
+
+async function loadTaskRecurrence(recurrenceId) {
+  if (!recurrenceId) {
+    return null;
+  }
+
+  const snapshot = await trackedGetDoc("tasks.recurrence", getTaskRecurrenceRef(recurrenceId));
+  return snapshot.exists() ? { id: snapshot.id, ...snapshot.data() } : null;
+}
+
+async function loadRoomTaskRecurrences() {
+  const snapshot = await trackedGetDocs(
+    "tasks.recurrences",
+    collection(state.db, "rooms", state.roomId, "taskRecurrences")
+  );
+  return snapshot.docs.map((recurrenceDoc) => ({ id: recurrenceDoc.id, ...recurrenceDoc.data() }));
+}
+
+async function updateTaskRecurrenceMetadata(task, recurrenceId, weekdays, status) {
+  const matchingTasks = (await loadRoomTasks()).filter(
+    (candidate) => candidate.id === task.id || candidate.recurrenceId === recurrenceId
+  );
+
+  await Promise.all(
+    matchingTasks.map((candidate) =>
+      updateDoc(doc(state.db, "rooms", state.roomId, "tasks", candidate.id), {
+        recurrenceId,
+        recurrenceWeekdays: weekdays,
+        recurrenceStatus: status,
+        updatedAt: serverTimestamp(),
+      })
+    )
+  );
+
+  return matchingTasks.map((candidate) => candidate.id);
+}
+
+function updateTaskRecurrenceSnapshots(taskIds, recurrenceId, weekdays, status) {
+  const taskIdSet = new Set(taskIds);
+  const updateTask = (task) =>
+    task && (taskIdSet.has(task.id) || task.recurrenceId === recurrenceId)
+      ? {
+          ...task,
+          recurrenceId,
+          recurrenceWeekdays: weekdays,
+          recurrenceStatus: status,
+        }
+      : task;
+  const updateMessage = (message) => ({
+    ...message,
+    task: updateTask(message.task),
+    tasks: Array.isArray(message.tasks) ? message.tasks.map(updateTask) : message.tasks,
+  });
+
+  state.localMessages = state.localMessages.map(updateMessage);
+  state.messages = state.messages.map(updateMessage);
+  renderMessages(getMessageScrollPreservationOptions());
+}
+
+function normalizeTaskRecurrenceWeekdays(weekdays) {
+  const selected = new Set(
+    (Array.isArray(weekdays) ? weekdays : [])
+      .map(normalizeWeekdayKey)
+      .filter(Boolean)
+  );
+  return WEEKDAY_KEYS.filter((weekday) => selected.has(weekday));
+}
+
+function formatTaskRecurrenceSchedule(weekdays) {
+  const normalizedWeekdays = normalizeTaskRecurrenceWeekdays(weekdays);
+
+  if (normalizedWeekdays.length === WEEKDAY_KEYS.length) {
+    return "every day";
+  }
+
+  if (["mon", "tue", "wed", "thu", "fri"].every((weekday) => normalizedWeekdays.includes(weekday)) && normalizedWeekdays.length === 5) {
+    return "on weekdays";
+  }
+
+  if (["sat", "sun"].every((weekday) => normalizedWeekdays.includes(weekday)) && normalizedWeekdays.length === 2) {
+    return "on weekends";
+  }
+
+  return `every ${formatWeekdays(normalizedWeekdays)}`;
+}
+
+async function syncTodaysRecurringTasks() {
+  if (!state.db || !state.roomId || !state.profile || state.isSyncingTaskRecurrences) {
+    return;
+  }
+
+  state.isSyncingTaskRecurrences = true;
+
+  try {
+    const todayKey = getTodayKey();
+    const todayWeekday = getTodayWeekdayKey();
+    const recurrences = (await loadRoomTaskRecurrences()).filter(
+      (recurrence) => shouldMaterializeTaskRecurrence(recurrence, todayKey, todayWeekday)
+    );
+
+    for (const recurrence of recurrences) {
+      await materializeRecurringTask(recurrence, todayKey);
+    }
+  } catch (error) {
+    console.error("Recurring task sync failed:", error);
+  } finally {
+    state.isSyncingTaskRecurrences = false;
+  }
+}
+
+function shouldMaterializeTaskRecurrence(recurrence, dateKey, weekday) {
+  return (
+    recurrence?.status === "active" &&
+    Boolean(recurrence.startDateKey && recurrence.startDateKey < dateKey) &&
+    normalizeTaskRecurrenceWeekdays(recurrence.weekdays).includes(weekday)
+  );
+}
+
+async function materializeRecurringTask(recurrence, dateKey) {
+  const taskId = getRecurringTaskOccurrenceId(recurrence.id, dateKey);
+  const taskRef = doc(state.db, "rooms", state.roomId, "tasks", taskId);
+  const weekdays = normalizeTaskRecurrenceWeekdays(recurrence.weekdays);
+  const taskData = {
+    description: recurrence.description || "Untitled task",
+    labels: Array.isArray(recurrence.labels) ? recurrence.labels : [],
+    status: "pending",
+    createdAt: serverTimestamp(),
+    createdBy: recurrence.createdBy,
+    createdByName: recurrence.createdByName || "Unknown",
+    completedAt: null,
+    completedBy: null,
+    completedByName: null,
+    totalTrackedMs: 0,
+    activeTimerStartedAt: null,
+    activeTimerStartedBy: null,
+    activeTimerStartedByName: null,
+    activeTimerReminderAnchorAt: null,
+    subtasks: [],
+    codexCommandId: null,
+    codexStatus: null,
+    codexPrompt: null,
+    codexQueuedAt: null,
+    codexCompletedAt: null,
+    codexResultSummary: null,
+    recurrenceId: recurrence.id,
+    recurrenceDateKey: dateKey,
+    recurrenceWeekdays: weekdays,
+    recurrenceStatus: "active",
+  };
+  const created = await runTransaction(state.db, async (transaction) => {
+    const existingTask = await transaction.get(taskRef);
+
+    if (existingTask.exists()) {
+      return false;
+    }
+
+    transaction.set(taskRef, taskData);
+    return true;
+  });
+
+  if (!created) {
+    return;
+  }
+
+  const task = { id: taskId, ...taskData, createdAt: new Date() };
+  await postTaskMessage(
+    `Recurring Task ${formatTaskId(taskId)} created: ${task.description}${formatTaskLabels(task.labels)}`,
+    {
+      taskActionMenu: true,
+      task: serializeTaskForMessage(task),
+    }
+  );
+}
+
+function getRecurringTaskOccurrenceId(recurrenceId, dateKey) {
+  const source = `${recurrenceId}:${dateKey}`;
+  let hash = 2166136261;
+
+  for (let index = 0; index < source.length; index += 1) {
+    hash ^= source.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  const shortHash = (hash >>> 0).toString(36).padStart(7, "0");
+  return `r${shortHash}_${dateKey.replaceAll("-", "")}_${recurrenceId}`;
+}
+
+function scheduleTaskRecurrenceSync() {
+  clearTaskRecurrenceSync();
+
+  if (!state.db || !state.roomId || !state.profile) {
+    return;
+  }
+
+  const nextMidnight = new Date();
+  nextMidnight.setDate(nextMidnight.getDate() + 1);
+  nextMidnight.setHours(0, 0, 2, 0);
+  state.taskRecurrenceSyncTimeoutId = window.setTimeout(async () => {
+    state.taskRecurrenceSyncTimeoutId = null;
+    await syncTodaysRecurringTasks();
+    scheduleTaskRecurrenceSync();
+  }, Math.max(1000, nextMidnight.getTime() - Date.now()));
+}
+
+function clearTaskRecurrenceSync() {
+  if (state.taskRecurrenceSyncTimeoutId) {
+    window.clearTimeout(state.taskRecurrenceSyncTimeoutId);
+    state.taskRecurrenceSyncTimeoutId = null;
+  }
 }
 
 async function postTaskList(filterText = "") {
@@ -11738,6 +12189,10 @@ function serializeTaskForMessage(task) {
     codexQueuedAt: task.codexQueuedAt || null,
     codexCompletedAt: task.codexCompletedAt || null,
     codexResultSummary: task.codexResultSummary || "",
+    recurrenceId: task.recurrenceId || "",
+    recurrenceDateKey: task.recurrenceDateKey || "",
+    recurrenceWeekdays: normalizeTaskRecurrenceWeekdays(task.recurrenceWeekdays),
+    recurrenceStatus: task.recurrenceStatus || "",
   };
 }
 
@@ -16685,6 +17140,8 @@ function handleAttentionChange() {
 
   if (document.visibilityState === "visible") {
     resumeRemoteSync();
+    void syncTodaysRecurringTasks();
+    scheduleTaskRecurrenceSync();
   }
 
   if (!shouldAutoMarkAsRead()) {

@@ -289,6 +289,53 @@
       </section>
     </main>
 
+    <dialog id="task-recurrence-dialog" class="task-recurrence-dialog">
+      <form id="task-recurrence-form" class="task-recurrence-form">
+        <div class="task-recurrence-heading">
+          <div>
+            <p class="label">Repeat task</p>
+            <h2 id="task-recurrence-title">Repeat settings</h2>
+          </div>
+          <button
+            id="close-task-recurrence"
+            class="ghost icon-button"
+            type="button"
+            aria-label="Close repeat settings"
+            title="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        <div class="task-recurrence-presets" aria-label="Repeat presets">
+          <button type="button" class="secondary" data-recurrence-preset="all">Every day</button>
+          <button type="button" class="secondary" data-recurrence-preset="weekdays">Weekdays</button>
+          <button type="button" class="secondary" data-recurrence-preset="weekends">Weekends</button>
+        </div>
+
+        <fieldset class="task-recurrence-weekdays">
+          <legend>Repeat on</legend>
+          <label><input type="checkbox" name="recurrenceWeekday" value="mon" /> Monday</label>
+          <label><input type="checkbox" name="recurrenceWeekday" value="tue" /> Tuesday</label>
+          <label><input type="checkbox" name="recurrenceWeekday" value="wed" /> Wednesday</label>
+          <label><input type="checkbox" name="recurrenceWeekday" value="thu" /> Thursday</label>
+          <label><input type="checkbox" name="recurrenceWeekday" value="fri" /> Friday</label>
+          <label><input type="checkbox" name="recurrenceWeekday" value="sat" /> Saturday</label>
+          <label><input type="checkbox" name="recurrenceWeekday" value="sun" /> Sunday</label>
+        </fieldset>
+
+        <p id="task-recurrence-error" class="task-recurrence-error" aria-live="polite"></p>
+
+        <div class="task-recurrence-actions">
+          <button id="stop-task-recurrence" class="ghost danger-button" type="button" hidden>
+            Stop recurring
+          </button>
+          <button id="cancel-task-recurrence" class="ghost" type="button">Cancel</button>
+          <button class="primary" type="submit">Save</button>
+        </div>
+      </form>
+    </dialog>
+
     <script type="module" src="./app.js"></script>
   </body>
 </html>
