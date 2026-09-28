@@ -923,6 +923,7 @@ function wireEvents() {
   window.addEventListener("pagehide", flushPendingSessionPersist);
   document.addEventListener("visibilitychange", handleAttentionChange);
   document.addEventListener("click", handleBreakActivity);
+  document.addEventListener("click", closeTaskActionMenusOnOutsideClick);
   document.addEventListener("keydown", handleBreakActivity);
   messageInput.addEventListener("keydown", handleMessageInputKeydown);
   messageInput.addEventListener("input", handleMessageInputChange);
@@ -2263,6 +2264,10 @@ function renderMessage(message, context = {}) {
   } else if (message.type === "voice" && message.audioDataUrl) {
     wrapper.append(renderVoiceMessage(message));
   } else {
+    if (message.taskActionMenu && message.task?.id) {
+      wrapper.append(renderTaskMessageActions(message.task));
+    }
+
     const body = document.createElement("p");
     body.className = "message-text";
     body.textContent = message.text;
@@ -2272,9 +2277,6 @@ function renderMessage(message, context = {}) {
       wrapper.append(renderInlineTaskPreviews(message.taskPreviews));
     }
 
-    if (message.taskActionMenu && message.task?.id) {
-      wrapper.append(renderTaskMessageActions(message.task));
-    }
   }
 
   if (message.isLocalOnly && Array.isArray(message.actions) && message.actions.length > 0) {
@@ -2799,10 +2801,10 @@ function renderTaskListItem(task, options = {}) {
       { label: "Query", action: "task-query-draft" }
     );
 
+    actions.append(renderTaskActionsOverflow(task, getTaskActionDefinitions(task, options)));
     visibleActionDefinitions.forEach((definition) => {
       actions.append(createTaskActionButton(task, definition));
     });
-    actions.append(renderTaskActionsOverflow(task, getTaskActionDefinitions(task, options)));
     main.append(actions);
   }
 
@@ -2944,10 +2946,10 @@ function renderTaskActionButtons(task) {
 
   const buttonDefinitions = getVisibleTaskActionDefinitions(task);
 
+  actions.append(renderTaskActionsOverflow(task, getTaskActionDefinitions(task)));
   buttonDefinitions.forEach((definition) => {
     actions.append(createTaskActionButton(task, definition));
   });
-  actions.append(renderTaskActionsOverflow(task, getTaskActionDefinitions(task)));
 
   return actions;
 }
@@ -3076,6 +3078,16 @@ function renderTaskMessageActions(task) {
   actions.className = "task-message-actions";
   actions.append(renderTaskActionsOverflow(task, getTaskActionDefinitions(task)));
   return actions;
+}
+
+function closeTaskActionMenusOnOutsideClick(event) {
+  const clickedMenu = event.target instanceof Element ? event.target.closest(".task-action-menu") : null;
+
+  document.querySelectorAll(".task-action-menu[open]").forEach((menu) => {
+    if (menu !== clickedMenu) {
+      menu.removeAttribute("open");
+    }
+  });
 }
 
 function renderTaskViewMessage(message) {
@@ -14231,9 +14243,8 @@ async function autoStopUnansweredGeneralTimer(timer, unattendedSince) {
     );
   }
 
-  postLocalTaskMessage(
-    `General timer auto-stopped after ${formatDuration(elapsedMs)} because two reminders went unanswered.`
-  );
+  const summary = await buildDailyTaskSummary({ includePlan: true });
+  postLocalTaskMessage(summary);
   scheduleDayIdleTaskReminder();
   setStatus("General timer auto-stopped.", "success");
 }
