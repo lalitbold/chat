@@ -4166,8 +4166,11 @@ function handleMessageActionClick(event) {
   if (actionButton.dataset.action === "idle-session-keep") {
     runLocalAction(
       actionButton,
-      () => decideIdleSession(actionButton.dataset.sessionId || "", "kept"),
-      "Idle session kept. Timer time was not changed."
+      async () => {
+        await decideIdleSession(actionButton.dataset.sessionId || "", "kept");
+        return buildDailyTaskSummary({ includePlan: true });
+      },
+      (summary) => summary
     );
   }
 
