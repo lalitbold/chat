@@ -9646,8 +9646,26 @@ async function completeTask(taskIdInput) {
     await recordTaskTimeEntry(task, task.activeTimerStartedAt, new Date(), timerElapsedMs);
   }
 
+  const completedTask = {
+    ...task,
+    status: "complete",
+    completedAt: new Date(),
+    completedBy: state.profile.id,
+    completedByName: getProfileDisplayName(),
+    totalTrackedMs: (Number.isFinite(task.totalTrackedMs) ? task.totalTrackedMs : 0) + timerElapsedMs,
+    activeTimerStartedAt: null,
+    activeTimerStartedBy: null,
+    activeTimerStartedByName: null,
+    activeTimerDescription: null,
+    activeTimerReminderAnchorAt: null,
+  };
+
   await postTaskMessage(
-    `Task ${formatTaskId(task.id)} completed${timerElapsedMs > 0 ? ` and timer stopped after ${formatDuration(timerElapsedMs)}` : ""}: ${getTaskTimerDisplayDescription(task)}`
+    `Task ${formatTaskId(task.id)} completed${timerElapsedMs > 0 ? ` and timer stopped after ${formatDuration(timerElapsedMs)}` : ""}: ${getTaskTimerDisplayDescription(task)}`,
+    {
+      taskActionMenu: true,
+      task: serializeTaskForMessage(completedTask),
+    }
   );
   scheduleDayIdleTaskReminder();
   setStatus("Task completed.", "success");
