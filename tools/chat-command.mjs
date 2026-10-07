@@ -425,11 +425,23 @@ async function dispatchTask(payload, context) {
       return textResult("Use /task search <query>.");
     }
 
-    const tasks = (await loadCollection(context, "tasks"))
+    const tasks = (await loadTasks(context, "pending"))
       .filter((task) => taskMatchesSearchQuery(task, input))
       .sort(compareTaskSearchResults)
       .slice(0, context.limit);
-    return textResult(formatTaskSearchList(tasks, input), { tasks });
+    return textResult(formatTaskSearchList(tasks, input, "pending"), { tasks });
+  }
+
+  if (normalizedAction === "search-completed" || normalizedAction === "completed-search") {
+    if (!input) {
+      return textResult("Use /task search-completed <query>.");
+    }
+
+    const tasks = (await loadTasks(context, "complete"))
+      .filter((task) => taskMatchesSearchQuery(task, input))
+      .sort(compareTaskSearchResults)
+      .slice(0, context.limit);
+    return textResult(formatTaskSearchList(tasks, input, "complete"), { tasks });
   }
 
   if (normalizedAction === "chart") {
@@ -936,10 +948,11 @@ function formatTaskList(tasks, status, labels) {
   ].join("\n");
 }
 
-function formatTaskSearchList(tasks, queryText) {
-  if (tasks.length === 0) return `No tasks matching "${queryText}".`;
+function formatTaskSearchList(tasks, queryText, status = "pending") {
+  const statusLabel = status === "complete" ? "completed" : "pending";
+  if (tasks.length === 0) return `No ${statusLabel} tasks matching "${queryText}".`;
   return [
-    `Task search "${queryText}":`,
+    `${status === "complete" ? "Completed task" : "Pending task"} search "${queryText}":`,
     ...tasks.map((task) => `${formatShortId(task.id, "#")} - ${task.description || "(no description)"}${formatLabels(task.labels)}${formatCodexTaskSummary(task)} (${formatTaskSearchMetadata(task)})`),
     `Total: ${tasks.length}`,
   ].join("\n");
@@ -1609,6 +1622,7 @@ function taskHelp() {
     "/task create <description> #label",
     "/task list [#label]",
     "/task search <query>",
+    "/task search-completed <query>",
     "/task completed [#label]",
     "/task chart [created|completed|pending] [7d|30d|90d] [#label]",
     "/task timers",

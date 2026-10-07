@@ -286,7 +286,8 @@ appSettings/alexa/commandAudit/{auditId}
 - The original task is the first occurrence. Future matching days create separate tasks when the room opens, becomes visible, or remains open across midnight. Missed days are not backfilled.
 - `/task list` shows the pending task list only to you. Completed tasks are hidden by default.
 - `/task list #bug` shows pending tasks with that label only to you.
-- `/task search <query>` searches tasks by visible task fields and comments, and shows results only to you.
+- `/task search <query>` searches pending tasks by visible task fields and comments, and shows results only to you.
+- `/task search-completed <query>` searches completed tasks separately and shows results only to you.
 - `/task current` shows your current active task with quick action buttons.
 - `/task view <id>` shows a task only to you. Clicking a task ID in task lists uses this private view.
 - `/task share <id>` posts a task view to the group. Private task views also include a Share to group button.

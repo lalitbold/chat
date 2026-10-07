@@ -280,7 +280,12 @@ const BASE_SLASH_COMMANDS = [
   {
     label: "/task search <query>",
     insertText: "/task search ",
-    hint: "Search tasks",
+    hint: "Search pending tasks",
+  },
+  {
+    label: "/task search-completed <query>",
+    insertText: "/task search-completed ",
+    hint: "Search completed tasks",
   },
   {
     label: "/task view <id>",
@@ -5656,7 +5661,12 @@ async function handleTaskCommand(text) {
   }
 
   if (normalizedAction === "search" || normalizedAction === "find") {
-    await postTaskSearch(rest.join(" "));
+    await postTaskSearch(rest.join(" "), "pending");
+    return;
+  }
+
+  if (normalizedAction === "search-completed" || normalizedAction === "completed-search") {
+    await postTaskSearch(rest.join(" "), "complete");
     return;
   }
 
@@ -5801,6 +5811,7 @@ function getTaskHelpText() {
     "/task list",
     "/task list #bug",
     "/task search <query>",
+    "/task search-completed <query>",
     "/task completed",
     "/task completed #bug",
     "/task chart [created|completed|pending] [7d|30d|90d] [#label]",
@@ -8665,16 +8676,20 @@ async function postTaskList(filterText = "") {
   setStatus(`${pendingTasksWithPlanState.length} pending task${pendingTasksWithPlanState.length === 1 ? "" : "s"} listed.`, "success");
 }
 
-async function postTaskSearch(input = "") {
+async function postTaskSearch(input = "", status = "pending") {
   const queryText = input.trim();
+  const isCompletedSearch = status === "complete";
+  const command = isCompletedSearch ? "/task search-completed" : "/task search";
+  const statusLabel = isCompletedSearch ? "completed" : "pending";
 
   if (!queryText) {
-    postLocalTaskMessage("Use /task search <query>.");
+    postLocalTaskMessage(`Use ${command} <query>.`);
     setStatus("Task search needs a query.", "error");
     return;
   }
 
-  const tasksWithComments = await Promise.all((await loadRoomTasks())
+  const tasks = isCompletedSearch ? await loadCompletedRoomTasks() : await loadPendingRoomTasks();
+  const tasksWithComments = await Promise.all(tasks
     .sort(compareTaskSearchResults)
     .map(async (task) => {
       const comments = await loadTaskComments(task.id);
@@ -8690,7 +8705,7 @@ async function postTaskSearch(input = "") {
   const matchingTasksWithPlanState = await attachTodayPlanState(matchingTasks);
 
   if (matchingTasksWithPlanState.length === 0) {
-    postLocalTaskMessage(`No tasks matching "${queryText}".`);
+    postLocalTaskMessage(`No ${statusLabel} tasks matching "${queryText}".`);
     setStatus("No matching tasks.", "success");
     return;
   }
@@ -8709,14 +8724,14 @@ async function postTaskSearch(input = "") {
     const commentSummary = commentMatchText ? ` [comment: ${commentMatchText}]` : "";
     return `${formatTaskId(task.id)} - ${task.description || "Untitled task"}${formatTaskLabels(task.labels)}${formatTaskTimeSummary(task, { maskIdentity })}${commentSummary} (${metadata})`;
   });
-  const heading = `Task search "${queryText}":`;
+  const heading = `${isCompletedSearch ? "Completed task" : "Pending task"} search "${queryText}":`;
   const totalLine = `Total: ${matchingTasksWithPlanState.length} task${matchingTasksWithPlanState.length === 1 ? "" : "s"}`;
 
   postLocalTaskListMessage(
     heading.replace(/:$/, ""),
     matchingTasksWithPlanState,
     `${heading}\n${taskLines.join("\n")}\n${totalLine}`,
-    { listType: "search", privateAliases, showTodayPlanActions: true }
+    { listType: "search", privateAliases, showTodayPlanActions: !isCompletedSearch }
   );
   setStatus(`${matchingTasksWithPlanState.length} matching task${matchingTasksWithPlanState.length === 1 ? "" : "s"} listed.`, "success");
 }
