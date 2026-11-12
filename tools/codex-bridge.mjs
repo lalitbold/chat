@@ -2,9 +2,10 @@
 
 import { spawn } from "node:child_process";
 import { createReadStream, existsSync } from "node:fs";
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
+import { CodexWorker, WorkerApi, acquireWorkerLock } from "./codex-worker.mjs";
 import { firebaseConfig } from "../firebase-config.js";
 
 const DEFAULT_POLL_MS = 60000;
@@ -13,7 +14,6 @@ const DEFAULT_MAX_OUTPUT_CHARS = 12000;
 const DEFAULT_LOCAL_HOST = "127.0.0.1";
 const DEFAULT_LOCAL_PORT = 17345;
 const DEFAULT_QUEUE_DIR = ".codex-queue";
-const readStats = new Map();
 const DEFAULT_CODEX_BIN_CANDIDATES = [
   "/Applications/Codex.app/Contents/Resources/codex",
   "codex",
@@ -33,35 +33,55 @@ async function main() {
   }
 
   const roomId = options.room || process.env.ROOM_ID;
+  if (!["read-only", "workspace-write"].includes(options.sandbox)) {
+    throw new Error("Use --sandbox read-only or workspace-write.");
+  }
+  for (const args of [["--version"], ["login", "status"]]) await new Promise((resolve, reject) => {
+    const invocation = getCodexSpawnCommand(options.codexBin, args);
+    const probe = spawn(invocation.file, invocation.args, { stdio: "ignore", timeout: 10000 });
+    probe.once("error", () => reject(new Error("Codex executable unavailable. Set --codex-bin or add codex to PATH.")));
+    probe.once("exit", (code) => code === 0 ? resolve() : reject(new Error("Codex startup check failed. Check --codex-bin and run codex login.")));
+  });
 
   if (!roomId && !options.localServer) {
     throw new Error("Missing room id. Use --room <roomId> or set ROOM_ID.");
   }
 
+  const queueDir = join(options.cwd, options.queueDir);
+  const release = await acquireWorkerLock(queueDir);
   if (options.localServer) {
-    await startLocalServer({ roomId, options });
+    try { await startLocalServer({ roomId, options }); }
+    catch (error) { await release(); throw error; }
     return;
   }
-
-  const auth = await signInAnonymously(firebaseConfig.apiKey);
-  console.log(
-    `Codex bridge listening in room "${roomId}" with ${options.sandbox} sandbox from ${options.cwd}`
-  );
-
-  do {
-    const command = await loadNextQueuedCommand({
-      projectId: firebaseConfig.projectId,
-      roomId,
-      token: auth.idToken,
-      debugReads: options.debugReads,
-    });
-
-    if (command) {
-      await processCommand({ auth, roomId, command, options });
-    } else if (!options.once) {
-      await sleep(options.pollMs);
-    }
-  } while (!options.once);
+  const api = new WorkerApi({ debugReads: options.debugReads });
+  const worker = new CodexWorker({ api, roomId,
+    parent: getRoomDocumentPath(firebaseConfig.projectId, roomId),
+    directory: join(queueDir, "outbox"), timeoutMs: options.timeoutMs,
+    execute: async (command) => {
+      const result = await runCodex(command.prompt, options);
+      const text = truncateText(result.stdout.trim(), options.maxOutputChars);
+      if (result.ok) await maybeAppendChangelog(command, text, options);
+      return { ok: result.ok, text, error: truncateText(
+        [result.error, result.stderr, result.stdout].filter(Boolean).join("\n"), options.maxOutputChars) };
+    },
+  });
+  try {
+    await worker.initialize();
+    await api.token();
+    console.log(`Codex worker: room=${roomId}, cwd=${options.cwd}, sandbox=${options.sandbox}, binary=${options.codexBin}`);
+    console.log("Commands use Firestore; this Mac must remain awake. Stop with Ctrl+C.");
+    do {
+      try {
+        const worked = await worker.tick();
+        if (!worked && !options.once) await sleep(options.pollMs);
+      } catch (error) {
+        if (options.once) throw error;
+        console.error(`Worker will retry: ${error.message}`);
+        await sleep(options.pollMs);
+      }
+    } while (!options.once);
+  } finally { await release(); }
 }
 
 function parseArgs(args) {
@@ -223,9 +243,33 @@ async function startLocalServer({ roomId, options }) {
   const queueDir = join(options.cwd, options.queueDir);
   await mkdir(queueDir, { recursive: true });
   const localCommands = new Map();
+  for (const filename of ["commands.jsonl", "results.jsonl"]) {
+    const text = await readFile(join(queueDir, filename), "utf8").catch((error) => {
+      if (error.code === "ENOENT") return "";
+      throw error;
+    });
+    for (const line of text.split("\n").filter(Boolean)) {
+      try { const record = JSON.parse(line); localCommands.set(record.id, record); } catch { /* incomplete trailing record */ }
+    }
+  }
+  for (const [id, record] of localCommands) {
+    if (!["completed", "failed"].includes(record.status)) {
+      const failed = { ...record, status: "failed", completedAt: new Date().toISOString(), error: "Local worker interrupted. Review changes before resubmitting." };
+      localCommands.set(id, failed);
+      await appendJsonLine(join(queueDir, "results.jsonl"), failed);
+    }
+  }
+  let pending = Promise.resolve();
+  const schedule = (command, context) => {
+    pending = pending.then(() => processLocalCommand(command, context)).catch(async (error) => {
+      const failed = { ...command, status: "failed", completedAt: new Date().toISOString(), error: error.message };
+      localCommands.set(command.id, failed);
+      await appendJsonLine(join(queueDir, "results.jsonl"), failed);
+    });
+  };
 
   const server = createServer((request, response) => {
-    handleLocalRequest(request, response, { roomId, queueDir, localCommands, options }).catch((error) => {
+    handleLocalRequest(request, response, { roomId, queueDir, localCommands, options, schedule }).catch((error) => {
       sendJson(response, 500, { error: error.message });
     });
   });
@@ -309,9 +353,7 @@ async function handleLocalRequest(request, response, context) {
     status: "queued",
   });
 
-  processLocalCommand(command, context).catch((error) => {
-    console.error(`Local command ${formatCommandId(command.id)} failed: ${error.message}`);
-  });
+  context.schedule(command, context);
 
   sendJson(response, 202, {
     id: command.id,
@@ -402,152 +444,6 @@ function createLocalCommandId() {
   return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 }
 
-async function signInAnonymously(apiKey) {
-  const response = await fetch(
-    `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${encodeURIComponent(apiKey)}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ returnSecureToken: true }),
-    }
-  );
-  const payload = await response.json();
-
-  if (!response.ok) {
-    throw new Error(payload?.error?.message || "Anonymous Firebase sign-in failed.");
-  }
-
-  return {
-    idToken: payload.idToken,
-    localId: payload.localId,
-  };
-}
-
-async function loadNextQueuedCommand({ projectId, roomId, token, debugReads }) {
-  const parentPath = getRoomDocumentPath(projectId, roomId);
-  const response = await fetch(`https://firestore.googleapis.com/v1/${parentPath}:runQuery`, {
-    method: "POST",
-    headers: getJsonAuthHeaders(token),
-    body: JSON.stringify({
-      structuredQuery: {
-        from: [{ collectionId: "codexCommands" }],
-        where: {
-          fieldFilter: {
-            field: { fieldPath: "status" },
-            op: "EQUAL",
-            value: { stringValue: "queued" },
-          },
-        },
-        limit: 1,
-      },
-    }),
-  });
-  const payload = await response.json();
-
-  if (!response.ok) {
-    throw new Error(getFirestoreErrorMessage(payload, "Could not load Codex commands."));
-  }
-
-  recordRestReadEstimate("codexBridge.queue", payload, debugReads);
-
-  const commands = payload
-    .filter((row) => row.document)
-    .map((row) => parseDocument(row.document))
-    .sort(compareCommandsByCreatedAt);
-
-  return commands[0] || null;
-}
-
-function recordRestReadEstimate(feature, payload, debugReads = false) {
-  const reads = Math.max(payload.filter?.((row) => row.document).length || 0, 1);
-  const current = readStats.get(feature) || { reads: 0, calls: 0 };
-  current.reads += reads;
-  current.calls += 1;
-  readStats.set(feature, current);
-
-  if (debugReads) {
-    console.log(`[reads] ${feature}: +${reads}, total ${current.reads} reads / ${current.calls} calls`);
-  }
-}
-
-async function processCommand({ auth, roomId, command, options }) {
-  const shortId = formatCommandId(command.id);
-  console.log(`Running ${shortId}: ${command.prompt}`);
-
-  await updateDocument(command.name, auth.idToken, {
-    status: "running",
-    startedAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-    error: null,
-  });
-  await postRoomMessage({
-    projectId: firebaseConfig.projectId,
-    roomId,
-    token: auth.idToken,
-    senderId: auth.localId,
-    text: `Codex command ${shortId} started.`,
-  });
-
-  const result = await runCodex(command.prompt, options);
-  const completedAt = new Date().toISOString();
-
-  if (result.ok) {
-    const finalText = truncateText(result.stdout.trim() || "Codex finished without a final message.", options.maxOutputChars);
-    await maybeAppendChangelog(command, finalText, options);
-    await updateDocument(command.name, auth.idToken, {
-      status: "completed",
-      completedAt,
-      updatedAt: completedAt,
-      result: finalText,
-      error: null,
-    });
-    await updateLinkedTaskFromCommand({
-      command,
-      token: auth.idToken,
-      status: "completed",
-      completedAt,
-      resultText: finalText,
-    });
-    await postRoomMessage({
-      projectId: firebaseConfig.projectId,
-      roomId,
-      token: auth.idToken,
-      senderId: auth.localId,
-      text: formatCompletionMessage(command, finalText),
-    });
-    console.log(`Completed ${shortId}`);
-    return;
-  }
-
-  const errorText = truncateText(
-    [result.error, result.stderr, result.stdout].filter(Boolean).join("\n\n").trim() ||
-      `Codex exited with code ${result.exitCode}.`,
-    options.maxOutputChars
-  );
-  await updateDocument(command.name, auth.idToken, {
-    status: "failed",
-    completedAt,
-    updatedAt: completedAt,
-    result: result.stdout.trim() || null,
-    error: errorText,
-  });
-  await updateLinkedTaskFromCommand({
-    command,
-    token: auth.idToken,
-    status: "failed",
-    completedAt,
-    resultText: errorText,
-  });
-  await postRoomMessage({
-    projectId: firebaseConfig.projectId,
-    roomId,
-    token: auth.idToken,
-    senderId: auth.localId,
-    text: formatFailureMessage(command, errorText),
-  });
-  console.error(`Failed ${shortId}`);
-}
-
 async function maybeAppendChangelog(command, resultText, options) {
   if (options.sandbox === "read-only") {
     return;
@@ -580,21 +476,34 @@ function runCodex(prompt, options) {
       "exec",
       "--sandbox",
       options.sandbox,
-      prompt,
+      "-",
     ]);
     const child = spawn(command.file, command.args, {
       cwd: options.cwd,
-      stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+      stdio: ["pipe", "pipe", "pipe"],
     });
 
+    child.stdin.on("error", () => {});
+    child.stdin.end(prompt);
+    const killTree = (signal) => {
+      try {
+        if (process.platform !== "win32") process.kill(-child.pid, signal);
+        else child.kill(signal);
+      } catch (error) { if (error.code !== "ESRCH") throw error; }
+    };
+    const stop = () => { killTree("SIGKILL"); process.exit(130); };
+    process.once("SIGINT", stop);
+    process.once("SIGTERM", stop);
+    const removeSignals = () => { process.removeListener("SIGINT", stop); process.removeListener("SIGTERM", stop); };
     let stdout = "";
     let stderr = "";
     let timedOut = false;
 
     const timeoutId = setTimeout(() => {
       timedOut = true;
-      child.kill("SIGTERM");
-      setTimeout(() => child.kill("SIGKILL"), 5000).unref();
+      killTree("SIGTERM");
+      setTimeout(() => killTree("SIGKILL"), 5000).unref();
     }, options.timeoutMs);
     timeoutId.unref();
 
@@ -607,6 +516,7 @@ function runCodex(prompt, options) {
       process.stderr.write(chunk);
     });
     child.on("error", (error) => {
+      removeSignals();
       clearTimeout(timeoutId);
       resolve({
         ok: false,
@@ -617,6 +527,7 @@ function runCodex(prompt, options) {
       });
     });
     child.on("close", (exitCode) => {
+      removeSignals();
       clearTimeout(timeoutId);
       resolve({
         ok: exitCode === 0 && !timedOut,
@@ -706,221 +617,6 @@ function getCodexSpawnCommand(codexBin, codexArgs) {
   return { file: codexBin, args: codexArgs };
 }
 
-async function updateDocument(documentName, token, fields) {
-  const updateMask = Object.keys(fields)
-    .map((field) => `updateMask.fieldPaths=${encodeURIComponent(field)}`)
-    .join("&");
-  const response = await fetch(`https://firestore.googleapis.com/v1/${documentName}?${updateMask}`, {
-    method: "PATCH",
-    headers: getJsonAuthHeaders(token),
-    body: JSON.stringify({
-      fields: toFirestoreFields(fields),
-    }),
-  });
-  const payload = await response.json();
-
-  if (!response.ok) {
-    throw new Error(getFirestoreErrorMessage(payload, "Could not update Firestore document."));
-  }
-
-  return payload;
-}
-
-async function postRoomMessage({ projectId, roomId, token, senderId, text }) {
-  const parentPath = getRoomDocumentPath(projectId, roomId);
-  const response = await fetch(`https://firestore.googleapis.com/v1/${parentPath}/messages`, {
-    method: "POST",
-    headers: getJsonAuthHeaders(token),
-    body: JSON.stringify({
-      fields: toFirestoreFields({
-        text,
-        senderId,
-        senderName: "Codex",
-        type: "codex",
-        createdAt: new Date().toISOString(),
-      }),
-    }),
-  });
-  const payload = await response.json();
-
-  if (!response.ok) {
-    throw new Error(getFirestoreErrorMessage(payload, "Could not post Codex message."));
-  }
-
-  return payload;
-}
-
-async function updateLinkedTaskFromCommand({ command, token, status, completedAt, resultText }) {
-  if (!command.taskId || !command.name || !command.taskLink) {
-    return;
-  }
-
-  const taskName = getTaskDocumentNameForCommand(command);
-  const summary = truncateTaskCodexResultSummary(resultText);
-
-  await updateDocument(taskName, token, {
-    codexStatus: status,
-    codexCompletedAt: completedAt,
-    codexResultSummary: summary,
-    updatedAt: completedAt,
-  });
-
-  await createTaskComment({
-    taskName,
-    token,
-    taskId: command.taskId,
-    text: `Codex ${status}: ${summary}`,
-    createdAt: completedAt,
-    createdBy: command.requestedBy || null,
-    createdByName: command.requestedByName || "Codex",
-  });
-}
-
-function getTaskDocumentNameForCommand(command) {
-  return command.name.replace(/\/codexCommands\/[^/]+$/, `/tasks/${encodeURIComponent(command.taskId)}`);
-}
-
-async function createTaskComment({ taskName, token, taskId, text, createdAt, createdBy, createdByName }) {
-  const response = await fetch(`https://firestore.googleapis.com/v1/${taskName}/comments`, {
-    method: "POST",
-    headers: getJsonAuthHeaders(token),
-    body: JSON.stringify({
-      fields: toFirestoreFields({
-        taskId,
-        text,
-        createdAt,
-        createdBy,
-        createdByName,
-      }),
-    }),
-  });
-  const payload = await response.json();
-
-  if (!response.ok) {
-    throw new Error(getFirestoreErrorMessage(payload, "Could not add task comment."));
-  }
-
-  return payload;
-}
-
-function truncateTaskCodexResultSummary(text) {
-  const normalized = String(text || "").replace(/\s+/g, " ").trim();
-  if (normalized.length <= 500) {
-    return normalized || "No Codex result text.";
-  }
-
-  return `${normalized.slice(0, 497)}...`;
-}
-
-function getRoomDocumentPath(projectId, roomId) {
-  return `projects/${projectId}/databases/(default)/documents/rooms/${encodeURIComponent(roomId)}`;
-}
-
-function getJsonAuthHeaders(token) {
-  return {
-    Authorization: `Bearer ${token}`,
-    "Content-Type": "application/json",
-  };
-}
-
-function getFirestoreErrorMessage(payload, fallback) {
-  if (payload?.error?.message) {
-    return payload.error.message;
-  }
-
-  if (Array.isArray(payload)) {
-    const rowError = payload.find((row) => row?.error?.message)?.error?.message;
-
-    if (rowError) {
-      return rowError;
-    }
-  }
-
-  return fallback;
-}
-
-function parseDocument(document) {
-  const fields = document.fields || {};
-  const id = document.name.split("/").pop();
-  const parsed = { id, name: document.name };
-
-  for (const [key, value] of Object.entries(fields)) {
-    parsed[key] = parseFirestoreValue(value);
-  }
-
-  return parsed;
-}
-
-function parseFirestoreValue(value) {
-  if ("stringValue" in value) return value.stringValue;
-  if ("integerValue" in value) return Number(value.integerValue);
-  if ("doubleValue" in value) return Number(value.doubleValue);
-  if ("booleanValue" in value) return value.booleanValue;
-  if ("timestampValue" in value) return value.timestampValue;
-  if ("nullValue" in value) return null;
-  if ("arrayValue" in value) {
-    return (value.arrayValue.values || []).map(parseFirestoreValue);
-  }
-  if ("mapValue" in value) {
-    return Object.fromEntries(
-      Object.entries(value.mapValue.fields || {}).map(([key, nestedValue]) => [
-        key,
-        parseFirestoreValue(nestedValue),
-      ])
-    );
-  }
-
-  return undefined;
-}
-
-function toFirestoreFields(fields) {
-  return Object.fromEntries(
-    Object.entries(fields).map(([key, value]) => [key, toFirestoreValue(value)])
-  );
-}
-
-function toFirestoreValue(value) {
-  if (value === null || value === undefined) return { nullValue: null };
-  if (typeof value === "string" && isIsoTimestamp(value)) return { timestampValue: value };
-  if (typeof value === "string") return { stringValue: value };
-  if (Number.isInteger(value)) return { integerValue: String(value) };
-  if (typeof value === "number") return { doubleValue: value };
-  if (typeof value === "boolean") return { booleanValue: value };
-  if (Array.isArray(value)) {
-    return { arrayValue: { values: value.map(toFirestoreValue) } };
-  }
-  if (typeof value === "object") {
-    return { mapValue: { fields: toFirestoreFields(value) } };
-  }
-
-  return { stringValue: String(value) };
-}
-
-function isIsoTimestamp(value) {
-  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(value);
-}
-
-function compareCommandsByCreatedAt(left, right) {
-  const leftTime = Date.parse(left.createdAt || "") || 0;
-  const rightTime = Date.parse(right.createdAt || "") || 0;
-
-  if (leftTime !== rightTime) {
-    return leftTime - rightTime;
-  }
-
-  return left.id.localeCompare(right.id);
-}
-
-function formatCompletionMessage(command, result) {
-  return `Codex command ${formatCommandId(command.id)} completed.\nRequested by: ${
-    command.requestedByName || "Unknown"
-  }\nPrompt: ${command.prompt}\n\n${result}`;
-}
-
-function formatFailureMessage(command, error) {
-  return `Codex command ${formatCommandId(command.id)} failed.\nPrompt: ${command.prompt}\n\n${error}`;
-}
-
 function formatCommandId(id) {
   return `#${String(id || "").slice(0, 6)}`;
 }
@@ -936,3 +632,5 @@ function truncateText(text, maxChars) {
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+function getRoomDocumentPath(projectId, roomId) { return `projects/${projectId}/databases/(default)/documents/rooms/${encodeURIComponent(roomId)}`; }

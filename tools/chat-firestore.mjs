@@ -107,13 +107,32 @@ export async function runCollectionQuery({ token, parentPath, collectionId, wher
 export function parseDocument(document) {
   const fields = document.fields || {};
   const id = document.name.split("/").pop();
-  const data = { id, name: document.name };
+  const data = { id, name: document.name, updateTime: document.updateTime };
 
   for (const [key, value] of Object.entries(fields)) {
     data[key] = parseFirestoreValue(value);
   }
 
   return data;
+}
+
+export async function commitDocuments({ token, parentPath, writes }) {
+  const database = parentPath.split("/documents")[0];
+  const response = await fetch(`https://firestore.googleapis.com/v1/${database}/documents:commit`, {
+    method: "POST", headers: firestoreHeaders(token), body: JSON.stringify({ writes }),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    const error = new Error(payload?.error?.message || "Could not commit documents.");
+    error.status = response.status;
+    throw error;
+  }
+  return payload;
+}
+
+export function documentWrite(name, fields, currentDocument = { exists: false }, merge = false) {
+  return { update: { name, fields: toFirestoreFields(fields) }, currentDocument,
+    ...(merge ? { updateMask: { fieldPaths: Object.keys(fields) } } : {}) };
 }
 
 export function toFirestoreFields(data) {

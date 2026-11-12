@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { firebaseConfig } from "../firebase-config.js";
 
 const DEFAULT_LIMIT = 50;
@@ -17,7 +19,10 @@ async function main() {
     return;
   }
 
-  const roomId = options.room || process.env.ROOM_ID;
+  let profile = {};
+  try { profile = JSON.parse(await readFile(join(process.cwd(), ".chat-command-profile.json"), "utf8")); }
+  catch (error) { if (error.code !== "ENOENT") throw new Error(`Could not read CLI profile: ${error.message}`); }
+  const roomId = options.room || process.env.ROOM_ID || profile.room;
 
   if (!roomId) {
     throw new Error("Missing room id. Use --room <roomId> or set ROOM_ID.");

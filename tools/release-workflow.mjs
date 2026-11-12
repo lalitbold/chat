@@ -15,6 +15,7 @@ const DEFAULT_TARGET = "C:\\work\\poc\\chat";
 const FIREBASE_COMMAND = process.platform === "win32" ? "firebase.cmd" : "firebase";
 const CHECK_FILES = [
   "app.js",
+  "codex-tasks.js",
   "firebase-config.js",
   "firebase-config.example.js",
   "sw.js",
@@ -22,6 +23,7 @@ const CHECK_FILES = [
   "tools/chat-command.mjs",
   "tools/chat-firestore.mjs",
   "tools/codex-bridge.mjs",
+  "tools/codex-worker.mjs",
   "tools/export-messages.mjs",
   "tools/pending-tasks.mjs",
   "tools/release-workflow.mjs",

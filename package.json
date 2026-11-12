@@ -15,6 +15,8 @@
     "alexa:check": "npm --prefix alexa-skill run check",
     "release:chat": "node tools/release-workflow.mjs",
     "export:messages": "node tools/export-messages.mjs",
-    "tasks:pending": "node tools/pending-tasks.mjs"
+    "tasks:pending": "node tools/pending-tasks.mjs",
+    "test:codex": "node --test tools/codex-worker.test.mjs",
+    "test:codex:local": "node --test tools/codex-local.test.mjs"
   }
 }

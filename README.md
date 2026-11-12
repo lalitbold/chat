@@ -300,7 +300,7 @@ appSettings/alexa/commandAudit/{auditId}
 - `/task today #abc123 #def456` adds existing pending tasks to today's plan.
 - `/task today list` shows today's planned tasks only to you.
 - `/task today review` shows unfinished planned tasks from yesterday with carry, complete, and skip actions.
-- `/task important [#label]` asks the local Codex bridge to recommend important pending tasks without changing task state. Requires `/plugin enable codex-tasks`.
+- `/task important [#label]` asks the Codex worker to recommend important pending tasks without changing task state. Requires `/plugin enable codex-tasks`.
 - `/task codex-create <id> [instruction]` queues the task for Codex and stores the linked Codex command/status on the task.
 - `/task codex list` shows tasks linked to Codex.
 - `/task codex status <id>` shows the linked Codex status and latest result summary for a task.
@@ -351,7 +351,7 @@ npm run chat:command -- "/task create Check safety #ops" --dry-run
 npm run chat:command -- "/task list" --json
 ```
 
-Read-only commands run immediately. Write and risky commands ask for confirmation unless `--yes` is passed. The CLI currently supports `/task help|create|list|search|completed|chart|timers|complete|reopen|comment|codex-create|codex list|codex status`, `/timer help|list`, `/day help|idle`, `/change help|add|list|summary`, `/changelog <handle>`, `/query help|create|list|respond|close`, `/codex`, `/plugin list|enable|disable`, `/lead list`, and `/team list|task list|followup list`. Browser-local commands such as `/remind`, `/debug`, and detailed day timer workflows still need the browser.
+Read-only commands run immediately. Write and risky commands ask for confirmation unless `--yes` is passed. The CLI currently supports `/task help|create|show|list|search|completed|chart|timers|complete|reopen|comment|codex-create|codex list|codex status`, `/timer help|list`, `/day help|idle`, `/change help|add|list|summary`, `/changelog <handle>`, `/query help|create|list|respond|close`, `/codex`, `/plugin list|enable|disable`, `/lead list`, and `/team list|task list|followup list`. Browser-local commands such as `/remind`, `/debug`, and detailed day timer workflows still need the browser.
 
 ## Query commands
 
@@ -503,46 +503,50 @@ Jira integration is prepared through task fields (`jiraKey`, `jiraUrl`, `jiraSta
 
 ## Codex commands
 
-Task-to-Codex commands are available after `/plugin enable codex-tasks`.
+The browser and terminal use the shared Firestore queue by default. Submit from a phone or another PC; the worker runs on the Mac and posts results even if the submitting browser closes.
 
-- `/codex <instruction>` queues an instruction for a trusted local Codex bridge process.
-- `/codex help` shows local help for the command.
-- `/task codex-create <id> [instruction]` queues a task for the same local Codex bridge and links the command status back to the task.
-- `/task codex <id> [instruction]` queues a task for the same local Codex bridge without making it the persistent Codex task link.
+- `/plugin enable codex-tasks` enables task commands for the current room.
+- `/task codex-create <id> [instruction]` atomically queues a command and links it to an existing task.
+- `/task codex list` and `/task codex status <id>` show linked task state.
+- `/task codex <id> [instruction]` in the browser queues task context without replacing its persistent link.
+- `/codex <instruction>` queues a standalone command.
+- `/codex results` in the browser shows the latest result for the current room and selected transport.
+- `/task show <id>` in the terminal reads task details and all comments; add `--json` for structured output.
 
-Start the local bridge from the machine where Codex should run:
+Task prompts include the room, full task ID, description, labels, comments, and instruction. Successful execution changes **Codex status**, not the task's pending/complete status. Clarification questions are returned as result text.
 
-```powershell
-npm run codex:local -- --sandbox workspace-write --cwd C:\work\poc\chat
+### Mac setup
+
+Check `codex --version` and `codex login status` first; run `codex login` if needed. The worker detects `codex` on PATH or the standalone macOS app binary. Use `--codex-bin <path>` to override.
+
+Start with the separate integration room and read-only sandbox:
+
+```sh
+npm run chat:command -- profile --room codex-integration-test --user Lalit
+npm run tasks:pending -- --json
+npm run chat:command -- "/task show <id>" --json
+npm run codex:bridge -- --room codex-integration-test --sandbox read-only --cwd /Users/lalitj/work/iw/chat
 ```
 
-For another repo:
+For actual fixes, explicitly select `--sandbox workspace-write`. The room and working directory are fixed by the worker; queued prompts cannot choose them. Start workers only for rooms whose submitters you trust. Existing room rules permit authenticated clients; room passcodes are not server-side queue authorization.
 
-```powershell
-npm run codex:local -- --sandbox workspace-write --cwd C:\xampp\htdocs\wp\zety
+The worker starts manually, and this Mac must remain awake. Stop with Ctrl+C. Polling defaults to 60 seconds; use `--poll-ms 5000` for testing or `--once` to recover saved results and process at most one queued command.
+
+Commands are claimed atomically and processed oldest-first, one at a time per worker. A process lock prevents two workers using the same queue directory. Results are saved in `<cwd>/.codex-queue/outbox` before uploading. Network failures retry, expired Firebase tokens refresh, and restarting the worker retries saved result delivery. Interrupted executions become failed; inspect any edits before explicitly resubmitting. Do not delete the outbox before recovery.
+
+Task status, result comment, and room result message are committed atomically. Comments use the worker's authenticated identity. Older results never replace a task's newer Codex link, and replaying delivery does not duplicate comments. Existing queued commands remain compatible.
+
+### Optional localhost transport
+
+Explicitly choose `/codex transport local` in the browser to use the local HTTP bridge. Switch back with `/codex transport firebase`. No automatic fallback or duplicate submission occurs. The terminal always uses Firestore.
+
+```sh
+npm run codex:local -- --sandbox read-only --cwd /Users/lalitj/work/iw/chat
 ```
 
-The browser posts Codex commands to `http://127.0.0.1:17345/commands`. The local bridge writes JSONL audit files under `<cwd>/.codex-queue/commands.jsonl` and `<cwd>/.codex-queue/results.jsonl`, then runs `codex exec`.
+Local mode is for a browser on the same machine. It uses `http://127.0.0.1:17345`; override with `--local-port` and browser `localStorage.setItem("codex-local-bridge-url", "http://127.0.0.1:17346")`. It serializes commands and restores status from `commands.jsonl` and `results.jsonl` after restart. Local-mode task updates require the submitting browser to reconnect; shared mode does not.
 
-Useful local options:
-
-```powershell
-npm run codex:local -- --local-port 17346
-npm run codex:local -- --timeout-ms 1800000
-npm run codex:local -- --queue-dir .codex-queue
-```
-
-To point the browser at a different local bridge URL:
-
-```js
-localStorage.setItem("codex-local-bridge-url", "http://127.0.0.1:17346")
-```
-
-Legacy Firebase polling is still available if needed:
-
-```powershell
-npm run codex:bridge -- --room testroom --sandbox workspace-write --cwd C:\work\poc\chat
-```
+Run integration regression tests with `npm run test:codex`. Run the macOS localhost/restart test with `npm run test:codex:local` (requires a loopback listener).
 
 ## Codex pending task export
 
@@ -560,7 +564,7 @@ npm run tasks:pending -- --room testroom --created-by-name Lalit --limit 10
 npm run tasks:pending -- --room testroom --json
 ```
 
-The script signs in anonymously with the Firebase web app config and reads pending tasks using the same Firestore rules as the chat app.
+Room selection is `--room`, then `ROOM_ID`, then the saved terminal profile. The script signs in anonymously with the Firebase web app config and reads pending tasks using the same Firestore rules as the chat app.
 
 ## Timer commands
 
@@ -608,7 +612,7 @@ Day commands are available after `/plugin enable day`. The Day plugin is disable
 - `/day schedule off sat sun` marks group weekdays off.
 - `/day schedule user set mon-fri 10:00 19:00` sets your personal schedule override.
 - `/day schedule user clear` clears your personal schedule override.
-- `/day coach` asks the local Codex bridge for a short AI day-coach recommendation.
+- `/day coach` asks the Codex worker for a short AI day-coach recommendation.
 - `/day timesheet` shows your timesheet for today only to you.
 - `/day timesheet 2026-07-01 @lalit` shows a timesheet for a specific day and display-name handle.
 - `/day idle` shows your idle history for today only to you.

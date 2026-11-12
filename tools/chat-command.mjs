@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { randomUUID } from "node:crypto";
+import { buildTaskCodexPrompt, codexTaskLink } from "../codex-tasks.js";
 import { constants as fsConstants } from "node:fs";
 import { access, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -7,6 +9,8 @@ import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
 import { pathToFileURL } from "node:url";
 import {
+  commitDocuments,
+  documentWrite,
   createDocument,
   getDocument,
   patchDocument,
@@ -286,7 +290,7 @@ export function classifyRisk(command) {
   const [action = ""] = command.payload.split(/\s+/);
   const normalizedAction = action.toLowerCase();
 
-  if (command.name === "/task" && ["", "help", "list", "search", "find", "completed", "chart", "view", "comments", "summary", "timers", "active", "current"].includes(normalizedAction)) {
+  if (command.name === "/task" && ["", "help", "list", "search", "find", "completed", "chart", "show", "view", "comments", "summary", "timers", "active", "current"].includes(normalizedAction)) {
     return "read";
   }
 
@@ -375,6 +379,17 @@ async function dispatchTask(payload, context) {
 
   if (!payload || normalizedAction === "help") {
     return textResult(taskHelp());
+  }
+
+  if (normalizedAction === "show") {
+    if (!input) return textResult("Use /task show <id>.");
+    const task = await findByShortId(context, "tasks", input);
+    if (!task) return textResult(`Task ${input} was not found.`);
+    const comments = await loadCodexTaskComments(context, task.id);
+    return textResult([`#${task.id}: ${task.description}`, `Status: ${task.status}`,
+      `Labels: ${(task.labels || []).join(", ")}`, formatTaskCodexStatus(task), "Comments:",
+      ...comments.map((comment) => `${comment.createdByName || "Unknown"}: ${comment.text || ""}`)].join("\n"),
+    { task, comments, roomId: context.roomId });
   }
 
   if (normalizedAction === "create") {
@@ -531,7 +546,7 @@ async function dispatchTask(payload, context) {
     return textResult(`Task ${formatShortId(task.id, "#")} ${complete ? "completed" : "reopened"}: ${task.description}`);
   }
 
-  return unsupported("/task", `Terminal /task supports help, create, list, search, completed, chart, timers, complete, reopen, comment, codex-create, codex list, and codex status. Received: ${payload}`);
+  return unsupported("/task", `Terminal /task supports help, create, show, list, search, completed, chart, timers, complete, reopen, comment, codex-create, codex list, and codex status. Received: ${payload}`);
 }
 
 async function dispatchTimer(payload, context) {
@@ -622,48 +637,20 @@ async function queueTaskCodexCommand(input, context) {
     return textResult(`Task ${taskIdInput} was not found.`);
   }
 
-  const prompt = buildTaskCodexPrompt(task, instructionParts.join(" "));
-  const command = await createDocument({
-    token: context.token,
-    path: `${context.parentPath}/codexCommands`,
-    fields: {
-      prompt,
-      status: "queued",
-      requestedBy: context.uid,
-      requestedByName: context.userName,
-      taskId: task.id,
-      taskDescription: task.description || "Untitled task",
-      taskLink: true,
-      createdAt: context.now,
-      updatedAt: context.now,
-      startedAt: null,
-      completedAt: null,
-      result: null,
-      error: null,
-    },
-  });
-
-  await patchDocument({
-    token: context.token,
-    name: task.name,
-    fields: {
-      codexCommandId: command.id,
-      codexStatus: "queued",
-      codexPrompt: prompt,
-      codexQueuedAt: context.now,
-      codexCompletedAt: null,
-      codexResultSummary: null,
-      updatedAt: context.now,
-      updatedBy: context.uid,
-      updatedByName: context.userName,
-    },
-  });
-
-  await postMessage(
-    context,
-    `Task ${formatShortId(task.id, "#")} linked to Codex command ${formatShortId(command.id, "#")}: ${task.description || "Untitled task"}`,
-    "Tasks"
-  );
+  const comments = await loadCodexTaskComments(context, task.id);
+  const prompt = buildTaskCodexPrompt(task, instructionParts.join(" "), context.roomId, comments);
+  const id = randomUUID();
+  const name = `${context.parentPath}/codexCommands/${id}`;
+  const fields = { prompt, roomId: context.roomId, status: "queued", requestedBy: context.uid,
+    requestedByName: context.userName, taskId: task.id, taskDescription: task.description || "Untitled task",
+    taskLink: true, createdAt: context.now, updatedAt: context.now,
+    startedAt: null, completedAt: null, result: null, error: null };
+  await commitDocuments({ token: context.token, parentPath: context.parentPath, writes: [
+    documentWrite(name, fields),
+    documentWrite(task.name, { ...codexTaskLink(id, prompt, context.now), updatedAt: context.now,
+      updatedBy: context.uid, updatedByName: context.userName }, { updateTime: task.updateTime }, true),
+  ] });
+  const command = { id, name, ...fields };
 
   return textResult(`Queued Codex command ${formatShortId(command.id, "#")} for task ${formatShortId(task.id, "#")}.`, {
     taskId: task.id,
@@ -780,6 +767,7 @@ async function dispatchCodex(payload, context) {
     path: `${context.parentPath}/codexCommands`,
     fields: {
       prompt,
+      roomId: context.roomId,
       status: "queued",
       requestedBy: context.uid,
       requestedByName: context.userName,
@@ -1464,26 +1452,10 @@ function formatCodexStatus(status) {
   return normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1) : "Unknown";
 }
 
-function buildTaskCodexPrompt(task, instruction) {
-  const labels = Array.isArray(task.labels) && task.labels.length > 0
-    ? task.labels.map((label) => `#${label}`).join(" ")
-    : "none";
-  const userInstruction = instruction.trim() || "Process this task and report what was done.";
-
-  return [
-    "Process this chat task through Codex.",
-    "If the task lacks enough context, do not guess. Ask concise clarification questions using this exact chat command format:",
-    `/query task ${formatShortId(task.id, "#")} <one clear question>`,
-    "Ask at most 3 questions. If the next step is clear, proceed normally.",
-    "",
-    `Task: ${formatShortId(task.id, "#")}`,
-    `Full ID: ${task.id}`,
-    `Description: ${task.description || "Untitled task"}`,
-    `Labels: ${labels}`,
-    `Creator: ${task.createdByName || "Unknown"}`,
-    "",
-    `Instruction: ${userInstruction}`,
-  ].join("\n");
+async function loadCodexTaskComments(context, taskId) {
+  const comments = await runCollectionQuery({ token: context.token,
+    parentPath: `${context.parentPath}/tasks/${taskId}`, collectionId: "comments" });
+  return comments.sort((a, b) => (Date.parse(a.createdAt) || 0) - (Date.parse(b.createdAt) || 0));
 }
 
 function formatChangeList(changes) {
@@ -1620,6 +1592,7 @@ function taskHelp() {
   return [
     "Task commands:",
     "/task create <description> #label",
+    "/task show <id>",
     "/task list [#label]",
     "/task search <query>",
     "/task search-completed <query>",
@@ -1666,7 +1639,7 @@ Options:
   -h, --help               Show this help.
 
 Implemented:
-  /task help|create|list|search|completed|chart|timers|complete|reopen|comment
+  /task help|create|show|list|search|completed|chart|timers|complete|reopen|comment
   /timer help|list
   /change help|add|list|summary
   /changelog <handle>

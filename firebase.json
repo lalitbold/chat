@@ -11,7 +11,10 @@
       ".git/**",
       ".gitignore",
       "README.md",
-      "node_modules/**"
+      "node_modules/**",
+      ".codex-queue/**",
+      ".chat-command-profile.json",
+      "output/**"
     ],
     "headers": [
       {

@@ -33,6 +33,7 @@ import {
   updateDoc,
   where,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { buildTaskCodexPrompt, codexTaskLink, matchesCodexResult } from "./codex-tasks.js";
 import { firebaseConfig } from "./firebase-config.js";
 import { clipIdleSession, formatIdleDuration } from "./idle-time.js";
 
@@ -5992,20 +5993,43 @@ async function handleCodexCommand(text) {
 
   if (!prompt || prompt.toLowerCase() === "help") {
     postLocalCodexMessage(
-      "Codex commands:\n/codex summarize this repo\n/codex review the latest diff\n/codex fix the failing test\n/codex results\nEnable task links with /plugin enable codex-tasks, then use /task codex-create #abc123 fix this or /task codex #abc123 fix this.\nStart the local bridge with npm run codex:bridge -- --local-server --sandbox workspace-write --cwd <path>."
+      "Codex commands:\n/codex summarize this repo\n/codex review the latest diff\n/codex fix the failing test\n/codex results\nEnable task links with /plugin enable codex-tasks, then use /task codex-create #abc123 fix this or /task codex #abc123 fix this.\nDefault: shared Firestore queue. Start worker: npm run codex:bridge -- --room <room> --sandbox workspace-write. Use /codex transport local or /codex transport firebase to switch explicitly."
     );
     return;
   }
 
+  if (/^transport(?:\s|$)/i.test(prompt)) {
+    const mode = prompt.split(/\s+/)[1];
+    if (!["firebase", "local"].includes(mode)) {
+      postLocalCodexMessage(`Transport: ${getCodexTransport()}. Use /codex transport firebase|local.`);
+      return;
+    }
+    localStorage.setItem("codex-transport", mode);
+    postLocalCodexMessage(`Codex transport: ${mode}.`);
+    return;
+  }
+
   if (["results", "result", "latest"].includes(prompt.toLowerCase())) {
-    await postLatestLocalCodexResult();
+    if (getCodexTransport() === "local") await postLatestLocalCodexResult();
+    else {
+      const snapshot = await getDocs(collection(state.db, "rooms", state.roomId, "codexCommands"));
+      const latest = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }))
+        .filter((item) => ["completed", "failed"].includes(item.status))
+        .sort((a, b) => (Date.parse(b.completedAt?.toDate?.() || b.completedAt) || 0) - (Date.parse(a.completedAt?.toDate?.() || a.completedAt) || 0))[0];
+      postLocalCodexMessage(latest ? `Codex #${latest.id.slice(0, 6)} ${latest.status}:\n${latest.result || latest.error}` : "No completed Codex results yet.");
+    }
     return;
   }
 
   await queueCodexPrompt(prompt);
 }
 
+function getCodexTransport() {
+  return localStorage.getItem("codex-transport") === "local" ? "local" : "firebase";
+}
+
 async function queueCodexPrompt(prompt, metadata = {}) {
+  if (getCodexTransport() === "firebase") return queueFirebaseCodexPrompt(prompt, metadata);
   const bridgeUrl = getCodexLocalBridgeUrl();
   const response = await fetch(`${bridgeUrl}/commands`, {
     method: "POST",
@@ -6026,7 +6050,7 @@ async function queueCodexPrompt(prompt, metadata = {}) {
     throw new Error(payload?.error || `Local Codex bridge returned HTTP ${response.status}.`);
   }
 
-  if (payload.id) {
+  if (payload.id && !metadata.taskLink) {
     state.localCodexPendingCommandIds.add(payload.id);
     saveLocalCodexPendingCommandIds();
   }
@@ -6035,30 +6059,33 @@ async function queueCodexPrompt(prompt, metadata = {}) {
     `Queued local Codex command ${payload.shortId || formatCodexCommandId(payload.id)} from ${getProfileDisplayName()}.\n${prompt}`
   );
   setStatus("Local Codex command queued.", "success");
-  return payload;
+  return { ...payload, transport: "local" };
 }
 
 async function queueFirebaseCodexPrompt(prompt, metadata = {}) {
-  const commandRef = await addDoc(collection(state.db, "rooms", state.roomId, "codexCommands"), {
-    prompt,
-    status: "queued",
-    requestedBy: state.profile.id,
-    requestedByName: getProfileDisplayName(),
-    taskId: metadata.taskId || null,
-    taskDescription: metadata.taskDescription || null,
-    taskLink: Boolean(metadata.taskLink),
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-    startedAt: null,
-    completedAt: null,
-    result: null,
-    error: null,
+  const roomId = state.roomId;
+  const profile = { ...state.profile };
+  const displayName = getProfileDisplayName();
+  const commandRef = doc(collection(state.db, "rooms", roomId, "codexCommands"));
+  const now = new Date().toISOString();
+  await runTransaction(state.db, async (transaction) => {
+    let taskRef;
+    if (metadata.taskLink && metadata.taskId) {
+      taskRef = doc(state.db, "rooms", roomId, "tasks", metadata.taskId);
+      if (!(await transaction.get(taskRef)).exists()) throw new Error("Task no longer exists.");
+    }
+    transaction.set(commandRef, {
+      prompt, roomId, status: "queued", requestedBy: profile.id, requestedByName: displayName,
+      taskId: metadata.taskId || null, taskDescription: metadata.taskDescription || null,
+      taskLink: Boolean(metadata.taskLink), createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+      startedAt: null, completedAt: null, result: null, error: null,
+    });
+    if (taskRef) transaction.update(taskRef, { ...codexTaskLink(commandRef.id, prompt, now),
+      updatedAt: serverTimestamp(), updatedBy: profile.id, updatedByName: displayName });
   });
-
-  await postCodexMessage(
-    `Queued Codex command ${formatCodexCommandId(commandRef.id)} from ${getProfileDisplayName()}.\n${prompt}`
-  );
+  postLocalCodexMessage(`Queued Codex command ${formatCodexCommandId(commandRef.id)}. The room worker will process it.`);
   setStatus("Codex command queued.", "success");
+  return { id: commandRef.id, status: "queued", transport: "firebase" };
 }
 
 function getCodexLocalBridgeUrl() {
@@ -6109,21 +6136,23 @@ async function syncLocalCodexResults() {
 }
 
 async function postLocalCodexResult(result, options = {}) {
+  if (result.roomId !== state.roomId) return;
   const resultKey = `${result.id}:${result.status}:${result.completedAt || ""}`;
 
   if (!options.force && state.localCodexSeenResultKeys.has(resultKey)) {
     return;
   }
 
-  state.localCodexSeenResultKeys.add(resultKey);
-  state.localCodexPendingCommandIds.delete(result.id);
-  saveLocalCodexPendingCommandIds();
-
   const resultText =
     result.status === "completed"
       ? result.result || "Codex completed without a final message."
       : result.error || "Codex failed without an error message.";
   await updateLinkedTaskFromCodexResult(result, resultText);
+  state.localCodexSeenResultKeys.add(resultKey);
+  state.localCodexPendingCommandIds.delete(result.id);
+  saveLocalCodexPendingCommandIds();
+
+  if (state.roomId !== result.roomId) return;
   postLocalCodexMessage(`Local Codex command ${formatCodexCommandId(result.id)} ${result.status}.\n\n${resultText}`);
 }
 
@@ -6136,7 +6165,7 @@ async function postLatestLocalCodexResult() {
   }
 
   const results = parseLocalCodexResultLines(await response.text())
-    .filter((result) => result.status === "completed" || result.status === "failed");
+    .filter((result) => result.roomId === state.roomId && (result.status === "completed" || result.status === "failed"));
   const latestResult = results.at(-1);
 
   if (!latestResult) {
@@ -6355,26 +6384,23 @@ function getIdleHelperSeenStorageKey() {
 }
 
 async function updateLinkedTaskFromCodexResult(result, resultText) {
-  if (!result?.taskId || !result.taskLink) {
-    return;
-  }
-
-  const completedAt = result.completedAt || new Date().toISOString();
-  const summary = truncateTaskCodexResultSummary(resultText);
-
-  await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", result.taskId), {
-    codexStatus: result.status,
-    codexCompletedAt: completedAt,
-    codexResultSummary: summary,
-    updatedAt: serverTimestamp(),
-    updatedBy: state.profile.id,
-    updatedByName: getProfileDisplayName(),
+  if (!result?.taskId || !result.taskLink || result.roomId !== state.roomId) return;
+  const roomId = state.roomId;
+  const uid = state.profile.id;
+  const displayName = getProfileDisplayName();
+  const taskRef = doc(state.db, "rooms", roomId, "tasks", result.taskId);
+  const commentRef = doc(collection(taskRef, "comments"), `codex-${result.id}`);
+  await runTransaction(state.db, async (transaction) => {
+    const task = await transaction.get(taskRef);
+    const comment = await transaction.get(commentRef);
+    if (!matchesCodexResult(task.data(), result, roomId) || comment.exists()) return;
+    const completedAt = result.completedAt || new Date().toISOString();
+    const summary = truncateTaskCodexResultSummary(resultText);
+    transaction.update(taskRef, { codexStatus: result.status, codexCompletedAt: completedAt,
+      codexResultSummary: summary, updatedAt: serverTimestamp(), updatedBy: uid, updatedByName: displayName });
+    transaction.set(commentRef, { taskId: result.taskId, text: `Codex ${result.status}: ${summary}`,
+      createdAt: serverTimestamp(), createdBy: uid, createdByName: displayName });
   });
-
-  await addCodexTaskComment(
-    result.taskId,
-    `Codex ${result.status}: ${summary}`
-  );
 }
 
 async function addCodexTaskComment(taskId, text) {
@@ -6414,6 +6440,9 @@ async function handleTaskCodexCommand(payload) {
 }
 
 async function queueTaskForCodex(payload, options = {}) {
+  const roomId = state.roomId;
+  const profile = { ...state.profile };
+  const displayName = getProfileDisplayName();
   const [taskIdInput = "", ...instructionParts] = payload.trim().split(/\s+/);
   const shouldLinkTask = Boolean(options.linkTask);
 
@@ -6429,19 +6458,21 @@ async function queueTaskForCodex(payload, options = {}) {
     return;
   }
 
-  const prompt = buildTaskCodexPrompt(task, instructionParts.join(" "));
+  const comments = await loadTaskComments(task.id);
+  if (state.roomId !== roomId) throw new Error("Room changed. Submit the task again in its original room.");
+  const prompt = buildTaskCodexPrompt(task, instructionParts.join(" "), roomId, comments);
   const command = await queueCodexPrompt(prompt, {
     taskId: task.id,
     taskDescription: task.description || "Untitled task",
     taskLink: shouldLinkTask,
   });
 
-  if (!shouldLinkTask) {
+  if (!shouldLinkTask || command.transport === "firebase") {
     return;
   }
 
   const queuedAt = new Date().toISOString();
-  await updateDoc(doc(state.db, "rooms", state.roomId, "tasks", task.id), {
+  await updateDoc(doc(state.db, "rooms", roomId, "tasks", task.id), {
     codexCommandId: command.id || null,
     codexStatus: "queued",
     codexPrompt: prompt,
@@ -6449,14 +6480,12 @@ async function queueTaskForCodex(payload, options = {}) {
     codexCompletedAt: null,
     codexResultSummary: null,
     updatedAt: serverTimestamp(),
-    updatedBy: state.profile.id,
-    updatedByName: getProfileDisplayName(),
+    updatedBy: profile.id,
+    updatedByName: displayName,
   });
 
-  await addCodexTaskComment(
-    task.id,
-    `Codex command ${formatCodexCommandId(command.id)} queued: ${instructionParts.join(" ").trim() || "Process this task and report what was done."}`
-  );
+  state.localCodexPendingCommandIds.add(command.id);
+  saveLocalCodexPendingCommandIds();
   postLocalTaskMessage(`Task ${formatTaskId(task.id)} linked to Codex command ${formatCodexCommandId(command.id)}.`);
 }
 
@@ -6535,30 +6564,6 @@ function formatCodexStatus(status) {
   return normalized ? normalized.charAt(0).toUpperCase() + normalized.slice(1) : "Unknown";
 }
 
-function buildTaskCodexPrompt(task, instruction) {
-  const labels = Array.isArray(task.labels) && task.labels.length > 0
-    ? task.labels.map((label) => `#${label}`).join(" ")
-    : "none";
-  const creator = task.createdByName || "Unknown";
-  const timeSummary = formatTaskTimeSummary(task).trim() || "none";
-  const userInstruction = instruction.trim() || "Process this task and report what was done.";
-
-  return [
-    "Process this chat task through Codex.",
-    "If the task lacks enough context, do not guess. Ask concise clarification questions using this exact chat command format:",
-    `/query task ${formatTaskId(task.id)} <one clear question>`,
-    "Ask at most 3 questions. If the next step is clear, proceed normally.",
-    "",
-    `Task: ${formatTaskId(task.id)}`,
-    `Full ID: ${task.id}`,
-    `Description: ${task.description || "Untitled task"}`,
-    `Labels: ${labels}`,
-    `Creator: ${creator}`,
-    `Time: ${timeSummary}`,
-    "",
-    `Instruction: ${userInstruction}`,
-  ].join("\n");
-}
 
 async function queueTaskContextSummaryForCodex(payload) {
   const [taskIdInput = ""] = payload.trim().split(/\s+/);
